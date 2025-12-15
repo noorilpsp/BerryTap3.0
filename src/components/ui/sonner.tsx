@@ -1,0 +1,25 @@
+'use client'
+
+import { Toaster as Sonner, ToasterProps } from 'sonner'
+
+type ThemeValue = ToasterProps['theme']
+
+const Toaster = ({ theme = 'system', ...props }: ToasterProps) => {
+  return (
+    <Sonner
+      theme={theme as ThemeValue}
+      className="toaster group"
+      style={
+        {
+          '--normal-bg': 'var(--popover)',
+          '--normal-text': 'var(--popover-foreground)',
+          '--normal-border': 'var(--border)',
+        } as React.CSSProperties
+      }
+      {...props}
+    />
+  )
+}
+
+export { Toaster }
+
