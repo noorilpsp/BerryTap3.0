@@ -55,3 +55,4 @@ export function MerchantTableRow({ merchant }: MerchantTableRowProps) {
     </TableRow>
   )
 }
+
