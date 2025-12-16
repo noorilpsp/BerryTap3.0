@@ -87,3 +87,4 @@ export function useIsAdmin() {
 
   return { isAdmin, loading, error, refetch }
 }
+

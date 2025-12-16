@@ -1,9 +1,8 @@
 import { AdminPermissionsProvider } from '@/components/AdminPermissionsProvider'
-import { AdminSidebar } from './components/AdminSidebar'
 
 /**
  * Root layout for all /admin routes.
- * Wraps admin pages with AdminPermissionsProvider and AdminSidebar.
+ * Wraps admin pages with AdminPermissionsProvider to provide lightweight admin status check.
  */
 export default function AdminLayout({
   children,
@@ -12,7 +11,11 @@ export default function AdminLayout({
 }) {
   return (
     <AdminPermissionsProvider>
-      <AdminSidebar>{children}</AdminSidebar>
+      <main
+        id="main-content"
+      >
+        {children}
+      </main>
     </AdminPermissionsProvider>
   )
 }
