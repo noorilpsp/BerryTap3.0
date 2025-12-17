@@ -7,7 +7,7 @@ import {
   users,
 } from "@/db/schema";
 import { db } from "@/db";
-import { eq, and, count } from "drizzle-orm";
+import { eq, and, count, desc } from "drizzle-orm";
 import { unstable_cache } from "./unstable-cache";
 import { sql } from "drizzle-orm";
 import { supabaseServer } from "./supabaseServer";
@@ -76,6 +76,19 @@ export const getMerchantWithLocations = unstable_cache(
   },
 );
 
+export const getMerchantLocations = unstable_cache(
+  (merchantId: string) =>
+    db.query.merchantLocations.findMany({
+      where: (merchantLocations, { eq }) => eq(merchantLocations.merchantId, merchantId),
+      orderBy: (merchantLocations, { desc }) => [desc(merchantLocations.createdAt)],
+      limit: 50,
+    }),
+  ["merchant-locations"],
+  {
+    revalidate: 60 * 60 * 2, // two hours,
+  },
+);
+
 export const getMerchantsList = unstable_cache(
   () =>
     db.query.merchants.findMany({
@@ -96,6 +109,36 @@ export const getMerchantsList = unstable_cache(
   ["merchants-list"],
   {
     revalidate: 60 * 60 * 2, // two hours,
+  },
+);
+
+export const getAdminMerchants = unstable_cache(
+  () =>
+    db.query.merchants.findMany({
+      columns: {
+        id: true,
+        name: true,
+        status: true,
+        businessType: true,
+        createdAt: true,
+      },
+      with: {
+        locations: {
+          columns: {
+            logoUrl: true,
+            bannerUrl: true,
+          },
+          orderBy: (merchantLocations, { desc }) => [
+            desc(merchantLocations.createdAt),
+          ],
+        },
+      },
+      orderBy: (merchants, { desc }) => [desc(merchants.createdAt)],
+      limit: 100,
+    }),
+  ["admin-merchants-list"],
+  {
+    revalidate: 60 * 60 * 2, // two hours
   },
 );
 
@@ -157,6 +200,14 @@ export const getCollectionDetails = unstable_cache(
 export const getProductCount = unstable_cache(
   () => db.select({ count: count() }).from(products),
   ["total-product-count"],
+  {
+    revalidate: 60 * 60 * 2, // two hours,
+  },
+);
+
+export const getMerchantsCount = unstable_cache(
+  () => db.select({ count: count() }).from(merchants),
+  ["total-merchants-count"],
   {
     revalidate: 60 * 60 * 2, // two hours,
   },

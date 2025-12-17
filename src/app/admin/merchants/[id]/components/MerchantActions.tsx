@@ -12,6 +12,11 @@ type MerchantActionsProps = {
 export function MerchantActions({ merchantId }: MerchantActionsProps) {
   const { isAdmin } = useIsAdmin()
 
+  // Guard against null/undefined merchantId
+  if (!merchantId) {
+    return null
+  }
+  
   return (
     <div className="flex items-center gap-2">
       {/* Edit button - visible to platform admins */}

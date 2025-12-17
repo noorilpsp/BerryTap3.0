@@ -24,6 +24,7 @@ type LocationsListProps = {
 }
 
 export function LocationsList({ locations, totalLocations }: LocationsListProps) {
+  let imageCount = 0;
   return (
     <Card>
       <CardHeader>
@@ -91,6 +92,8 @@ export function LocationsList({ locations, totalLocations }: LocationsListProps)
                               <div className="text-xs text-muted-foreground">Logo</div>
                               <div className="relative h-16 w-16">
                                 <Image
+                                  loading={imageCount++ < 15 ? 'eager' : 'lazy'}
+                                  decoding="sync"
                                   src={location.logoUrl}
                                   alt={`${location.name} logo`}
                                   fill
@@ -103,11 +106,17 @@ export function LocationsList({ locations, totalLocations }: LocationsListProps)
                           {location.bannerUrl && (
                             <div className="space-y-1">
                               <div className="text-xs text-muted-foreground">Banner</div>
-                              <img
-                                src={location.bannerUrl}
-                                alt={`${location.name} banner`}
-                                className="h-16 w-32 rounded object-cover"
-                              />
+                              <div className="relative h-16 w-32">
+                                <Image
+                                  loading={imageCount++ < 15 ? 'eager' : 'lazy'}
+                                  decoding="sync"
+                                  src={location.bannerUrl}
+                                  alt={`${location.name} banner`}
+                                  fill
+                                  className="rounded object-cover"
+                                  unoptimized={location.bannerUrl.startsWith('data:')}
+                                />
+                              </div>
                             </div>
                           )}
                         </div>

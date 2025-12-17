@@ -35,6 +35,7 @@ export function MerchantTableRow({ merchant }: MerchantTableRowProps) {
             href={`/admin/merchants/${merchant.id}`}
             className="font-medium hover:underline"
             onClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
           >
             {merchant.name}
           </Link>
@@ -55,4 +56,3 @@ export function MerchantTableRow({ merchant }: MerchantTableRowProps) {
     </TableRow>
   )
 }
-

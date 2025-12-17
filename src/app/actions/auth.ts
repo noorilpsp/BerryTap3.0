@@ -29,7 +29,7 @@ export async function login(data: {
   const validation = loginSchema.safeParse(data);
   if (!validation.success) {
     return {
-      error: validation.error.errors[0]?.message || "Invalid input",
+      error: validation.error.issues[0]?.message || "Invalid input",
     };
   }
 
@@ -61,25 +61,42 @@ export async function login(data: {
     const userEmail = data.user.email ?? "";
     const fullName =
       (data.user.user_metadata as { full_name?: string } | null)?.full_name ??
-      userEmail;
+      (userEmail.split("@")[0] || "User");
     const lastLoginAt = new Date();
 
-    await db
-      .insert(users)
-      .values({
-        id: userId,
-        email: userEmail,
-        fullName,
-        lastLoginAt,
-      })
-      .onConflictDoUpdate({
-        target: users.id,
-        set: {
+    // Try to upsert user in database, but don't fail login if it fails
+    try {
+      await db
+        .insert(users)
+        .values({
+          id: userId,
           email: userEmail,
           fullName,
           lastLoginAt,
-        },
-      });
+        })
+        .onConflictDoUpdate({
+          target: users.id,
+          set: {
+            email: userEmail,
+            fullName,
+            lastLoginAt,
+          },
+        });
+    } catch (dbError) {
+      // Log database error but don't fail login - user is already authenticated in Supabase
+      console.error("Failed to upsert user in database:", dbError);
+      // In development, log more details
+      if (process.env.NODE_ENV === "development") {
+        console.error("Database error details:", {
+          userId,
+          userEmail,
+          fullName,
+          error: dbError instanceof Error ? dbError.message : String(dbError),
+        });
+      }
+      // Continue with login even if database insert fails
+      // The user is authenticated in Supabase, database sync can happen later
+    }
 
     // Pre-cache admin status and set cookie for fast middleware checks
     try {
@@ -91,6 +108,7 @@ export async function login(data: {
     }
 
     // Supabase client sets auth cookies automatically via the server client
+    // Return success even if database operations failed - user is authenticated
     return {
       success: true,
       user: data.user,
@@ -132,7 +150,7 @@ export async function signup(data: { email: string; password: string }) {
   const validation = signupSchema.safeParse(data);
   if (!validation.success) {
     return {
-      error: validation.error.errors[0]?.message || "Invalid input",
+      error: validation.error.issues[0]?.message || "Invalid input",
     };
   }
 
@@ -188,38 +206,50 @@ export async function signup(data: { email: string; password: string }) {
     // If email confirmation is required, session may be null; still upsert the user record.
     if (supabaseData.user) {
       const userMeta = supabaseData.user.user_metadata || {};
-      const fullName = userMeta.full_name || userMeta.name || "";
+      // Use email username as fallback for fullName since it's required in schema
+      const fullName = userMeta.full_name || userMeta.name || validatedEmail.split("@")[0] || "User";
       const phone = userMeta.phone || null;
       const avatarUrl = userMeta.avatar_url || null;
       const locale = userMeta.locale || "nl-BE";
 
-      await db
-        .insert(users)
-        .values({
-          id: supabaseData.user.id,
-          email: supabaseData.user.email ?? "",
-          phone,
-          fullName,
-          avatarUrl,
-          locale,
-          isActive: true,
-          createdAt: supabaseData.user.created_at
-            ? new Date(supabaseData.user.created_at)
-            : undefined,
-          updatedAt: new Date(),
-          lastLoginAt: null,
-        })
-        .onConflictDoUpdate({
-          target: users.id,
-          set: {
-            email: supabaseData.user.email ?? "",
+      try {
+        await db
+          .insert(users)
+          .values({
+            id: supabaseData.user.id,
+            email: supabaseData.user.email ?? validatedEmail,
             phone,
             fullName,
             avatarUrl,
             locale,
+            isActive: true,
+            createdAt: supabaseData.user.created_at
+              ? new Date(supabaseData.user.created_at)
+              : undefined,
             updatedAt: new Date(),
-          },
-        });
+            lastLoginAt: null,
+          })
+          .onConflictDoUpdate({
+            target: users.id,
+            set: {
+              email: supabaseData.user.email ?? validatedEmail,
+              phone,
+              fullName,
+              avatarUrl,
+              locale,
+              updatedAt: new Date(),
+            },
+          });
+      } catch (dbError) {
+        console.error("Database insert error:", dbError);
+        // In development, provide more details about the error
+        if (process.env.NODE_ENV === "development") {
+          // Re-throw to see the actual error in development
+          throw new Error(`Database error: ${dbError instanceof Error ? dbError.message : String(dbError)}`);
+        }
+        // In production, we still return success from Supabase signup
+        // The user exists in Supabase auth, database sync can happen later
+      }
     }
 
     return {
@@ -229,6 +259,38 @@ export async function signup(data: { email: string; password: string }) {
     };
   } catch (error) {
     console.error("Signup error:", error);
+    
+    // Provide more specific error messages
+    if (error instanceof Error) {
+      // Check for common database errors
+      if (error.message.includes("relation") || error.message.includes("does not exist")) {
+        return {
+          error: "Database configuration error. Please contact support.",
+        };
+      }
+      
+      // Check for connection errors
+      if (error.message.includes("connect") || error.message.includes("ECONNREFUSED")) {
+        return {
+          error: "Unable to connect to the database. Please try again later.",
+        };
+      }
+      
+      // Check for Supabase errors
+      if (error.message.includes("Supabase") || error.message.includes("SUPABASE")) {
+        return {
+          error: "Authentication service error. Please check your configuration.",
+        };
+      }
+      
+      // Return the actual error message for debugging (in development)
+      if (process.env.NODE_ENV === "development") {
+        return {
+          error: `Error: ${error.message}`,
+        };
+      }
+    }
+    
     return {
       error: "An unexpected error occurred. Please try again.",
     };
@@ -260,7 +322,7 @@ export async function forgotPassword(data: { email: string }) {
   const validation = forgotPasswordSchema.safeParse(data);
   if (!validation.success) {
     return {
-      error: validation.error.errors[0]?.message || "Invalid input",
+      error: validation.error.issues[0]?.message || "Invalid input",
     };
   }
 
@@ -301,7 +363,7 @@ export async function resetPassword(data: { password: string }) {
   const validation = resetPasswordSchema.safeParse(data);
   if (!validation.success) {
     return {
-      error: validation.error.errors[0]?.message || "Invalid input",
+      error: validation.error.issues[0]?.message || "Invalid input",
     };
   }
 

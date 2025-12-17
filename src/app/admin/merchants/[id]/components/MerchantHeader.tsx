@@ -39,7 +39,7 @@ export function MerchantHeader({ merchant }: MerchantHeaderProps) {
           <p className="text-muted-foreground mt-1">{merchant.legalName}</p>
         )}
       </div>
-      <MerchantActions merchantId={merchant.id} />
+      {merchant.id && <MerchantActions merchantId={merchant.id} />}
     </div>
   )
 }
