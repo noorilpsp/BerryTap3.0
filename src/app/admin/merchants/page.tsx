@@ -52,7 +52,7 @@ export default async function AdminMerchantsPage() {
               className="flex w-[200px] flex-col items-start rounded-lg border p-4 hover:bg-accent2 transition-colors"
               href={`/admin/merchants/${merchant.id}`}
             >
-              {/* <Image
+              <Image
                 loading={imageCount++ < 15 ? 'eager' : 'lazy'}
                 decoding="sync"
                 src={
@@ -63,7 +63,7 @@ export default async function AdminMerchantsPage() {
                 width={48}
                 height={48}
                 quality={65}
-              /> */}
+              />
               <div className="flex items-center gap-2 mb-2">
                 <span className="font-semibold text-base">{merchant.name}</span>
                 <Badge variant="outline" className="text-xs capitalize">

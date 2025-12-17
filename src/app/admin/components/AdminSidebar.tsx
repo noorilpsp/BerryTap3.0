@@ -90,8 +90,12 @@ export function AdminSidebar({ children }: { children: React.ReactNode }) {
               <SidebarMenu>
                 {navItems.map((item) => {
                   const Icon = item.icon
+                  // For the Dashboard (/admin), match exactly or with trailing slash
+                  // For other routes, match if pathname starts with the href
                   const isActive =
-                    pathname === item.href || (pathname?.startsWith(item.href) && item.href !== '/admin')
+                    item.href === '/admin'
+                      ? pathname === '/admin' || pathname === '/admin/'
+                      : pathname?.startsWith(item.href) ?? false
 
                   return (
                     <SidebarMenuItem key={item.href}>
