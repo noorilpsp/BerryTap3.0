@@ -43,6 +43,8 @@ export default function NewMerchantPage() {
         {/* Image for prefetch testing - visible in initial HTML */}
         <div className="mt-4">
           <Image
+            loading="eager"
+            decoding="sync"
             src="/BerryTapSVG.svg"
             alt="NextFaster Logo"
             width={100}

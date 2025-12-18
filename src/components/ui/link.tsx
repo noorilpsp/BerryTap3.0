@@ -86,9 +86,27 @@ export const Link: typeof NextLink = (({ children, ...props }) => {
       prefetch={false}
       onMouseEnter={() => {
         router.prefetch(String(props.href));
-        const images = imageCache.get(String(props.href)) || [];
-        for (const image of images) {
-          prefetchImage(image);
+        const href = String(props.href);
+        const cachedImages = imageCache.get(href);
+        
+        if (cachedImages && cachedImages.length > 0) {
+          // Use cached images if available
+          for (const image of cachedImages) {
+            prefetchImage(image);
+          }
+        } else {
+          // Fetch images if not cached yet (e.g., on hover before intersection)
+          void prefetchImages(href).then((images) => {
+            imageCache.set(href, images);
+            for (const image of images) {
+              prefetchImage(image);
+            }
+          }).catch((error) => {
+            // Silently handle errors - prefetch failures shouldn't break the UI
+            if (process.env.NODE_ENV === 'development') {
+              console.warn('Image prefetch error on hover for', href, error);
+            }
+          });
         }
       }}
       onMouseDown={(e) => {
@@ -118,7 +136,9 @@ function prefetchImage(image: PrefetchImage) {
   }
   const img = new Image();
   img.decoding = "async";
-  img.fetchPriority = "low";
+  if ('fetchPriority' in img) {
+    (img as HTMLImageElement & { fetchPriority: string }).fetchPriority = "low";
+  }
   img.sizes = image.sizes;
   seen.add(image.srcset);
   img.srcset = image.srcset;

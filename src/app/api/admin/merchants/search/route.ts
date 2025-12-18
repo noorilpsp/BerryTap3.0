@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server'
-import { desc, ilike } from 'drizzle-orm'
 
 import { supabaseServer } from '@/lib/supabaseServer'
 import { db } from '@/db'
-import { merchants } from '@/db/schema'
 import { isPlatformAdmin } from '@/lib/permissions'
 
 export async function GET(request: Request) {
@@ -41,32 +39,42 @@ export async function GET(request: Request) {
       )
     }
 
-    // Search all merchants in database
-    const rows = await db
-      .select({
-        id: merchants.id,
-        name: merchants.name,
-        status: merchants.status,
-        businessType: merchants.businessType,
-        createdAt: merchants.createdAt,
-      })
-      .from(merchants)
-      .where(ilike(merchants.name, `%${query}%`))
-      .orderBy(desc(merchants.createdAt))
-      .limit(100)
+    // Search all merchants in database with locations using query builder
+    const rows = await db.query.merchants.findMany({
+      where: (merchants, { ilike }) => ilike(merchants.name, `%${query}%`),
+      columns: {
+        id: true,
+        name: true,
+        status: true,
+        businessType: true,
+        createdAt: true,
+      },
+      with: {
+        locations: {
+          columns: {
+            logoUrl: true,
+            bannerUrl: true,
+          },
+          orderBy: (merchantLocations, { desc }) => [desc(merchantLocations.createdAt)],
+          limit: 1,
+        },
+      },
+      orderBy: (merchants, { desc }) => [desc(merchants.createdAt)],
+      limit: 100,
+    })
 
     // Format dates
-    const formattedMerchants = rows.map((row) => ({
-      ...row,
+    const merchantsWithLocations = rows.map((merchant) => ({
+      ...merchant,
       createdAtFormatted: new Intl.DateTimeFormat('en', {
         month: 'short',
         day: 'numeric',
         year: 'numeric',
-      }).format(row.createdAt),
+      }).format(merchant.createdAt),
     }))
 
     return NextResponse.json(
-      { merchants: formattedMerchants },
+      { merchants: merchantsWithLocations },
       {
         headers: {
           'Cache-Control': 'public, max-age=600, s-maxage=600', // 10 minutes

@@ -141,7 +141,7 @@ export function AdminSidebar({ children }: { children: React.ReactNode }) {
             <span className="text-lg font-semibold leading-none truncate">Admin Console</span>
           </div>
         </header>
-        <div className="p-4 lg:p-6">{children}</div>
+        <main className="p-4 lg:p-6">{children}</main>
       </SidebarInset>
       <Toaster />
     </SidebarProvider>

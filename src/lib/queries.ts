@@ -5,6 +5,7 @@ import {
   subcategories,
   subcollections,
   users,
+  platformPersonnel,
 } from "@/db/schema";
 import { db } from "@/db";
 import { eq, and, count, desc } from "drizzle-orm";
@@ -305,4 +306,36 @@ export const getSearchResults = unstable_cache(
   },
   ["search-results"],
   { revalidate: 60 * 60 * 2 }, // two hours
+);
+
+export const getAdminPersonnel = unstable_cache(
+  () =>
+    db.query.platformPersonnel.findMany({
+      columns: {
+        userId: true,
+        role: true,
+        department: true,
+        isActive: true,
+        lastLoginAt: true,
+        createdAt: true,
+      },
+      with: {
+        user: {
+          columns: {
+            id: true,
+            email: true,
+            fullName: true,
+            avatarUrl: true,
+            isActive: true,
+            createdAt: true,
+          },
+        },
+      },
+      orderBy: (platformPersonnel, { desc }) => [desc(platformPersonnel.createdAt)],
+      limit: 100,
+    }),
+  ["admin-personnel-list"],
+  {
+    revalidate: 60 * 60 * 2, // two hours
+  },
 );
