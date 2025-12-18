@@ -1,22 +1,13 @@
 import { unstable_noStore } from 'next/cache'
-import { redirect } from 'next/navigation'
 import Image from 'next/image'
 
-import { supabaseServer } from '@/lib/supabaseServer'
 import LoginForm from './components/LoginForm'
 import TopMenu from './components/TopMenu'
 
 export default async function LoginPage() {
   unstable_noStore()
-  // Check if user is already logged in (using getSession for faster redirect)
-  // Security: Middleware/proxy already verifies auth, Server Actions use getUser()
-  const supabase = await supabaseServer()
-  const {
-    data: { session },
-  } = await supabase.auth.getSession()
-
-  // Redirect everyone to dashboard (admins can access Payload admin via link)
-  if (session) redirect('/dashboard')
+  // Note: Authentication redirect is handled by proxy.ts
+  // Authenticated users are automatically redirected to /dashboard before this page renders
 
   return (
     <div className="min-h-screen bg-background">

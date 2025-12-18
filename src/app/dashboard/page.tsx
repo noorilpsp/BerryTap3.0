@@ -1,5 +1,4 @@
 import { unstable_noStore } from 'next/cache'
-import { redirect } from 'next/navigation'
 import { getCurrentUser } from '@/lib/currentUser'
 import { logout } from '@/app/actions/auth'
 import { Button } from '@/components/ui/button'
@@ -10,22 +9,18 @@ import { supabaseServer } from '@/lib/supabaseServer'
 export default async function DashboardPage() {
   unstable_noStore()
   
-  // Check session first (same as login page) to avoid redirect loop
+  // Note: Authentication is handled by proxy.ts
+  // User is guaranteed to be authenticated at this point
+  
+  // Get user details for display
+  const user = await getCurrentUser()
   const supabase = await supabaseServer()
   const {
     data: { session },
   } = await supabase.auth.getSession()
-
-  // Redirect to login if no session
-  if (!session) {
-    redirect('/login')
-  }
-
-  // Get user details for display
-  const user = await getCurrentUser()
   
   // Fallback to session user if getCurrentUser returns null
-  const displayEmail = user?.profile?.email ?? user?.email ?? session.user.email ?? 'User'
+  const displayEmail = user?.profile?.email ?? user?.email ?? session?.user?.email ?? 'User'
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-4xl">
