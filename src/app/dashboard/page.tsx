@@ -25,7 +25,7 @@ export default async function DashboardPage() {
   const user = await getCurrentUser()
   
   // Fallback to session user if getCurrentUser returns null
-  const displayEmail = user?.profile?.email || user?.email || session.user.email || 'User'
+  const displayEmail = user?.profile?.email ?? user?.email ?? session.user.email ?? 'User'
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-4xl">
@@ -59,7 +59,11 @@ export default async function DashboardPage() {
               <div>
                 <p className="text-sm text-muted-foreground">Member since</p>
                 <p className="font-medium">
-                  {new Date(user.profile.createdAt).toLocaleDateString()}
+                  {new Intl.DateTimeFormat('en-US', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                  }).format(new Date(user.profile.createdAt))}
                 </p>
               </div>
             )}

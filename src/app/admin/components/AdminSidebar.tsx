@@ -71,15 +71,15 @@ export function AdminSidebar({ children }: { children: React.ReactNode }) {
 
   return (
     <SidebarProvider>
-      <Sidebar className="border-r" collapsible="icon">
-        <SidebarHeader className="gap-3 px-3 py-4">
+      <Sidebar className="border-r" collapsible="offcanvas">
+        <SidebarHeader className="px-2 py-4">
           <div className="flex items-center gap-2">
-            <div className="bg-primary text-primary-foreground flex size-9 items-center justify-center rounded-lg">
+            <div className="bg-primary text-primary-foreground flex size-9 shrink-0 items-center justify-center rounded-lg">
               <ShieldCheck className="size-5" />
             </div>
-            <div className="flex flex-col">
-              <span className="font-semibold leading-none">NextFaster Admin</span>
-              <span className="text-muted-foreground text-xs">Internal tools</span>
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+              <span className="font-semibold leading-none truncate">NextFaster Admin</span>
+              <span className="text-muted-foreground text-xs truncate">Internal tools</span>
             </div>
           </div>
         </SidebarHeader>
@@ -133,12 +133,12 @@ export function AdminSidebar({ children }: { children: React.ReactNode }) {
         <SidebarRail />
       </Sidebar>
       <SidebarInset>
-        <header className="bg-background/90 sticky top-0 z-20 flex h-14 items-center gap-3 border-b px-4 backdrop-blur">
+        <header className="bg-background/95 sticky top-0 z-20 flex h-14 items-center gap-3 border-b px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60">
           <SidebarTrigger />
           <Separator orientation="vertical" className="h-6" />
-          <div className="flex flex-col">
-            <span className="text-sm font-medium text-muted-foreground">NextFaster</span>
-            <span className="text-lg font-semibold leading-none">Admin Console</span>
+          <div className="flex min-w-0 flex-1 flex-col truncate">
+            <span className="text-sm font-medium text-muted-foreground truncate">NextFaster</span>
+            <span className="text-lg font-semibold leading-none truncate">Admin Console</span>
           </div>
         </header>
         <div className="p-4 lg:p-6">{children}</div>
