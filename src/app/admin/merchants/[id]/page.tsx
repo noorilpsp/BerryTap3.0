@@ -19,11 +19,19 @@ export async function generateStaticParams() {
 export default async function MerchantDetailPage({ params }: PageProps) {
   const { id } = await params
   
-  if (!id) {
+  if (!id || id === "null" || id === "undefined") {
     return notFound()
   }
   
   const merchantId = decodeURIComponent(id)
+  
+  // Validate UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  if (!uuidRegex.test(merchantId)) {
+    console.error("[merchant-detail] Invalid merchant ID format:", merchantId)
+    return notFound()
+  }
+  
   const merchant = await getMerchantWithLocations(merchantId)
 
   if (!merchant || !merchant.id) {
