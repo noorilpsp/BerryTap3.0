@@ -1,8 +1,13 @@
 import { unstable_noStore } from 'next/cache'
+import { Suspense } from 'react'
 import Image from 'next/image'
 
 import LoginForm from './components/LoginForm'
 import TopMenu from './components/TopMenu'
+
+function LoginFormWrapper() {
+  return <LoginForm />
+}
 
 export default async function LoginPage() {
   unstable_noStore()
@@ -27,7 +32,9 @@ export default async function LoginPage() {
 
       {/* Main content */}
       <main className="flex items-center justify-center p-4 min-h-[calc(100vh-80px)]">
-        <LoginForm />
+        <Suspense fallback={<div className="w-full max-w-2xl">Loading...</div>}>
+          <LoginFormWrapper />
+        </Suspense>
       </main>
     </div>
   )

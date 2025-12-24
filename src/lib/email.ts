@@ -156,7 +156,7 @@ export async function sendInvitationEmail(
   role: string,
 ): Promise<EmailResult> {
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
-  const invitationUrl = `${siteUrl}/accept-invitation?token=${invitationToken}`;
+  const invitationUrl = `${siteUrl}/invite/${invitationToken}`;
 
   const html = `
     <!DOCTYPE html>

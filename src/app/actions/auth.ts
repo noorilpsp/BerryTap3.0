@@ -145,7 +145,7 @@ async function setAdminStatusCookieForServerAction(
   });
 }
 
-export async function signup(data: { email: string; password: string }) {
+export async function signup(data: { email: string; password: string; returnTo?: string }) {
   // Validate input
   const validation = signupSchema.safeParse(data);
   if (!validation.success) {
@@ -171,19 +171,103 @@ export async function signup(data: { email: string; password: string }) {
     }
 
     const supabase = await supabaseServer();
+    
+    // Check if this is an invitation signup
+    const isInvitationSignup = data.returnTo?.includes('/invite/');
+    let supabaseData: { user: any; session: any } | null = null;
+    let error: any = null;
+    let finalSession: any = null;
 
-    const { data: supabaseData, error } = await supabase.auth.signUp({
-      email: validatedEmail,
-      password: validatedPassword,
-      options: {
-        emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"}/login`,
-      },
-    });
+    // For invitation signups, use Admin API to create user directly with email confirmed
+    // This prevents the confirmation email from being sent
+    if (isInvitationSignup && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      try {
+        console.log('[signup] Using Admin API for invitation signup (no confirmation email)');
+        const { createClient } = await import('@supabase/supabase-js');
+        const adminClient = createClient(
+          process.env.SUPABASE_URL!,
+          process.env.SUPABASE_SERVICE_ROLE_KEY!,
+          {
+            auth: {
+              autoRefreshToken: false,
+              persistSession: false,
+            },
+          }
+        );
+
+        // Create user directly with email confirmed (no confirmation email sent)
+        const { data: adminData, error: adminError } = await adminClient.auth.admin.createUser({
+          email: validatedEmail,
+          password: validatedPassword,
+          email_confirm: true, // Email already verified via invitation
+        });
+
+        if (adminError) {
+          console.error('[signup] Admin API create user error:', adminError);
+          // If user already exists, try to sign in instead
+          if (adminError.message?.toLowerCase().includes('already registered') || 
+              adminError.message?.toLowerCase().includes('user already')) {
+            // User exists, try to sign in
+            const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+              email: validatedEmail,
+              password: validatedPassword,
+            });
+            
+            if (signInError || !signInData.session) {
+              return {
+                error: "An account with this email already exists. Please sign in instead.",
+              };
+            }
+            
+            supabaseData = { user: signInData.user, session: signInData.session };
+            finalSession = signInData.session;
+          } else {
+            error = adminError;
+          }
+        } else if (adminData.user) {
+          // User created successfully, now sign them in to get a session
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+            email: validatedEmail,
+            password: validatedPassword,
+          });
+
+          if (signInError) {
+            console.error('[signup] Failed to sign in after admin create:', signInError);
+            error = signInError;
+          } else if (signInData.session) {
+            supabaseData = { user: adminData.user, session: signInData.session };
+            finalSession = signInData.session;
+            console.log('[signup] Invitation signup successful - user created and signed in (no confirmation email sent)');
+          } else {
+            error = new Error('Failed to create session after user creation');
+          }
+        }
+      } catch (adminError) {
+        console.error('[signup] Error in Admin API flow:', adminError);
+        error = adminError;
+      }
+    }
+
+    // Fallback to normal signup flow if not invitation or Admin API failed
+    if (!supabaseData && !error) {
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email: validatedEmail,
+        password: validatedPassword,
+        options: {
+          emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"}/login`,
+        },
+      });
+
+      supabaseData = data;
+      error = signUpError;
+      finalSession = data?.session;
+    }
 
     // Log detailed signup response for debugging
     console.log("Signup response:", {
+      isInvitationSignup,
       hasUser: !!supabaseData?.user,
-      hasSession: !!supabaseData?.session,
+      hasSession: !!finalSession,
       userEmail: supabaseData?.user?.email,
       userConfirmed: supabaseData?.user?.email_confirmed_at ? "Yes" : "No",
       error: error?.message,
@@ -192,7 +276,8 @@ export async function signup(data: { email: string; password: string }) {
     if (error) {
       console.error("Supabase signup error:", error);
       // If the email already exists, return a conflict status
-      if (error.message?.toLowerCase().includes("already registered")) {
+      if (error.message?.toLowerCase().includes("already registered") || 
+          error.message?.toLowerCase().includes("user already")) {
         return {
           error: "An account with this email already exists. Please sign in instead.",
         };
@@ -202,9 +287,7 @@ export async function signup(data: { email: string; password: string }) {
         error: error.message,
       };
     }
-
-    // If email confirmation is required, session may be null; still upsert the user record.
-    if (supabaseData.user) {
+    if (supabaseData?.user) {
       const userMeta = supabaseData.user.user_metadata || {};
       // Use email username as fallback for fullName since it's required in schema
       const fullName = userMeta.full_name || userMeta.name || validatedEmail.split("@")[0] || "User";
@@ -255,7 +338,7 @@ export async function signup(data: { email: string; password: string }) {
     return {
       success: true,
       user: supabaseData.user,
-      session: supabaseData.session, // may be null if email confirmation required
+      session: finalSession, // may be null if email confirmation required
     };
   } catch (error) {
     console.error("Signup error:", error);

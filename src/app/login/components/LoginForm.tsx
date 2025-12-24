@@ -1,8 +1,8 @@
 'use client'
 
 import type React from 'react'
-import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { useState, useEffect } from 'react'
 import { Link } from '@/components/ui/link'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
@@ -21,6 +21,21 @@ export default function LoginForm() {
   const [error, setError] = useState<string | null>(null)
   const [emailError, setEmailError] = useState<string | null>(null)
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const [returnTo, setReturnTo] = useState<string | null>(null)
+
+  // Read returnTo from query params and validate
+  useEffect(() => {
+    const returnToParam = searchParams.get('returnTo')
+    if (returnToParam) {
+      // Security: Only allow internal redirects (must start with /)
+      if (returnToParam.startsWith('/')) {
+        setReturnTo(returnToParam)
+      } else {
+        console.warn('[login] Invalid returnTo URL, ignoring:', returnToParam)
+      }
+    }
+  }, [searchParams])
 
   const handleEmailChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newEmail = e.target.value
@@ -86,8 +101,10 @@ export default function LoginForm() {
         return
       }
 
-      // Success - force full page reload to ensure cookies are available
-      window.location.href = '/dashboard'
+      // Success - redirect to returnTo or default to dashboard
+      // Force full page reload to ensure cookies are available
+      const redirectUrl = returnTo || '/dashboard'
+      window.location.href = redirectUrl
     } catch (err) {
       if (err instanceof Error) {
         setError(err.message)

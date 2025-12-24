@@ -1,8 +1,8 @@
 'use client'
 
 import type React from 'react'
-import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { useState, useEffect } from 'react'
 import { Link } from '@/components/ui/link'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
@@ -20,8 +20,40 @@ export default function SignupForm() {
   const [emailError, setEmailError] = useState<string | null>(null)
   const [needsConfirmation, setNeedsConfirmation] = useState(false)
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const [returnTo, setReturnTo] = useState<string | null>(null)
+  const [invitationEmail, setInvitationEmail] = useState<string | null>(null)
+  const [isEmailLocked, setIsEmailLocked] = useState(false)
+
+  // Read returnTo and email from query params
+  useEffect(() => {
+    const returnToParam = searchParams.get('returnTo')
+    const emailParam = searchParams.get('email')
+
+    // Security: Only allow internal redirects (must start with /)
+    if (returnToParam && returnToParam.startsWith('/')) {
+      setReturnTo(returnToParam)
+    } else if (returnToParam) {
+      console.warn('[signup] Invalid returnTo URL, ignoring:', returnToParam)
+    }
+
+    // If email param exists, pre-fill and lock the email field
+    if (emailParam) {
+      const decodedEmail = decodeURIComponent(emailParam)
+      setEmail(decodedEmail)
+      setInvitationEmail(decodedEmail)
+      setIsEmailLocked(true)
+      // Auto-advance to password field since email is locked and valid
+      setShowPassword(true)
+    }
+  }, [searchParams])
 
   const handleEmailChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // If email is locked (from invitation), prevent changes
+    if (isEmailLocked) {
+      return
+    }
+
     const newEmail = e.target.value
     setEmail(newEmail)
 
@@ -60,14 +92,22 @@ export default function SignupForm() {
       return
     }
 
+    // If invitation email exists, validate it matches
+    if (invitationEmail && email.toLowerCase() !== invitationEmail.toLowerCase()) {
+      setEmailError('Email must match the invitation email address')
+      return
+    }
+
     setLoading(true)
     setError(null)
+    setEmailError(null)
 
     try {
       // Call Server Action directly - no fetch needed!
       const result = await signup({
         email,
         password,
+        returnTo: returnTo || undefined,
       })
 
       if (result.error) {
@@ -82,8 +122,9 @@ export default function SignupForm() {
         return
       }
 
-      // Session exists, redirect to dashboard
-      window.location.href = '/dashboard'
+      // Session exists, redirect to returnTo or default to dashboard
+      const redirectUrl = returnTo || '/dashboard'
+      window.location.href = redirectUrl
     } catch (err) {
       if (err instanceof Error) {
         setError(err.message)
@@ -190,11 +231,14 @@ export default function SignupForm() {
                   onFocus={() => setEmailFocused(true)}
                   onBlur={() => setEmailFocused(false)}
                   required
+                  disabled={isEmailLocked}
                   className={`w-full h-14 px-4 pr-14 pt-5 pb-1 text-base bg-background border transition-all text-foreground focus:outline-none focus:ring-0 ${
                     emailError
                       ? 'border-red-500 focus:border-red-500'
                       : 'border-border/50 focus:border-blue-500'
-                  } ${showPassword ? 'rounded-t-xl border-b-0' : 'rounded-xl'}`}
+                  } ${showPassword ? 'rounded-t-xl border-b-0' : 'rounded-xl'} ${
+                    isEmailLocked ? 'opacity-60 cursor-not-allowed' : ''
+                  }`}
                 />
                 <label
                   htmlFor="email"
@@ -223,6 +267,11 @@ export default function SignupForm() {
                   </Button>
                 )}
               </div>
+              {isEmailLocked && (
+                <p className="text-xs text-muted-foreground mt-1 px-4">
+                  This email address is from your invitation
+                </p>
+              )}
 
               {showPassword && (
                 <div className="relative animate-in fade-in slide-in-from-top-2 duration-300">

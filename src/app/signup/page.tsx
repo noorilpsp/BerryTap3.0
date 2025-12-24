@@ -1,7 +1,12 @@
+import { Suspense } from 'react'
 import Image from 'next/image'
 
 import SignupForm from './components/SignupForm'
 import TopMenu from '../login/components/TopMenu'
+
+function SignupFormWrapper() {
+  return <SignupForm />
+}
 
 export default async function SignupPage() {
   // Note: Authentication redirect is handled by proxy.ts
@@ -25,7 +30,9 @@ export default async function SignupPage() {
 
       {/* Main content */}
       <main className="flex items-center justify-center p-4 min-h-[calc(100vh-80px)]">
-        <SignupForm />
+        <Suspense fallback={<div className="w-full max-w-2xl">Loading...</div>}>
+          <SignupFormWrapper />
+        </Suspense>
       </main>
     </div>
   )
