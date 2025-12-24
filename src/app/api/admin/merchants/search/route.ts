@@ -55,17 +55,19 @@ export async function GET(request: Request) {
             logoUrl: true,
             bannerUrl: true,
           },
-          orderBy: (merchantLocations, { desc }) => [desc(merchantLocations.createdAt)],
-          limit: 1,
+          orderBy: (merchantLocations, { desc }) => [
+            desc(merchantLocations.createdAt),
+          ],
         },
       },
       orderBy: (merchants, { desc }) => [desc(merchants.createdAt)],
       limit: 100,
     })
 
-    // Format dates
+    // Format dates and add location count
     const merchantsWithLocations = rows.map((merchant) => ({
       ...merchant,
+      locationCount: merchant.locations?.length ?? 0,
       createdAtFormatted: new Intl.DateTimeFormat('en', {
         month: 'short',
         day: 'numeric',

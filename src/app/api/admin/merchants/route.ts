@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { Pool, neonConfig } from "@neondatabase/serverless";
@@ -351,6 +352,9 @@ export async function POST(request: NextRequest) {
       console.error("[admin/create-merchant] Transaction completed but missing IDs:", result);
       throw new Error("Merchant creation succeeded but IDs not returned");
     }
+
+    // Revalidate the admin merchants page cache to show the new merchant immediately
+    revalidatePath("/admin/merchants");
 
     return NextResponse.json(
       {
