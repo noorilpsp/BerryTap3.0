@@ -43,3 +43,4 @@ export const platformPersonnel = pgTable("platform_personnel", {
 export type PlatformPersonnel = typeof platformPersonnel.$inferSelect;
 export type NewPlatformPersonnel = typeof platformPersonnel.$inferInsert;
 
+

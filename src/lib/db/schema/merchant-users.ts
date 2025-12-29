@@ -87,3 +87,4 @@ export const merchantUsers = pgTable(
 export type MerchantUser = typeof merchantUsers.$inferSelect;
 export type NewMerchantUser = typeof merchantUsers.$inferInsert;
 
+

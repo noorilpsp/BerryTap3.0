@@ -141,3 +141,4 @@ export const merchants = pgTable(
 export type Merchant = typeof merchants.$inferSelect;
 export type NewMerchant = typeof merchants.$inferInsert;
 
+

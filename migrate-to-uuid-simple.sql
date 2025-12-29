@@ -31,3 +31,4 @@ ALTER TABLE staff ALTER COLUMN location_id TYPE uuid USING location_id::uuid;
 -- 6. Convert platform_personnel table
 ALTER TABLE platform_personnel ALTER COLUMN user_id TYPE uuid USING user_id::uuid;
 
+

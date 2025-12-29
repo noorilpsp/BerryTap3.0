@@ -85,3 +85,4 @@ WHERE table_name IN ('merchants', 'merchant_locations', 'merchant_users', 'invit
   AND column_name IN ('id', 'merchant_id', 'user_id', 'invited_by', 'location_id')
 ORDER BY table_name, column_name;
 
+
