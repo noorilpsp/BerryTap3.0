@@ -1,0 +1,65 @@
+export const mockApprovalsData = {
+  pendingApprovals: [
+    {
+      id: "approval_001",
+      campaignName: "Weekend Brunch Special",
+      submittedBy: { name: "Sarah Johnson", initials: "SJ" },
+      submittedAt: "2024-11-20T15:45:00Z",
+      scheduledFor: "2024-11-22T07:00:00Z",
+      approver: "Marketing Manager",
+      channels: ["sms"],
+      recipientCount: 3456,
+      estimatedCost: 691,
+      checklist: [
+        { status: "pass", message: "Budget approved (within monthly limit)" },
+        { status: "pass", message: "Compliance checked (includes opt-out, sender ID)" },
+        { status: "pass", message: "Content reviewed (no typos or broken links)" },
+        { status: "pass", message: "Segment validated (3,456 valid recipients)" },
+        { status: "warning", message: "Cost warning: High cost campaign (>€500)" },
+      ],
+      comments: [
+        {
+          author: "Sarah Johnson",
+          authorInitials: "SJ",
+          text: "Weekend promotion to drive brunch traffic. Time-sensitive.",
+        },
+      ],
+    },
+    {
+      id: "approval_002",
+      campaignName: "Holiday Kickoff Campaign",
+      submittedBy: { name: "Michael Chen", initials: "MC" },
+      submittedAt: "2024-11-20T10:30:00Z",
+      scheduledFor: "2024-11-25T10:00:00Z",
+      approver: "Marketing Director + Finance Manager",
+      channels: ["email", "sms"],
+      recipientCount: 5678,
+      estimatedCost: 1135,
+      checklist: [
+        { status: "pass", message: "Marketing Director approved (Nov 20, 11:00 AM)" },
+        { status: "warning", message: "Finance Manager approval pending" },
+        { status: "pass", message: "Budget allocated" },
+        { status: "pass", message: "Compliance checked" },
+      ],
+      comments: [],
+    },
+  ],
+  recentlyApproved: [
+    {
+      id: "approval_003",
+      campaignName: "Flash Sale - 48 Hour Promo",
+      approvedBy: "Marketing Director",
+      approvedAt: "2024-11-05T13:45:00Z",
+      sentAt: "2024-11-05T14:00:00Z",
+      revenue: 15678,
+    },
+    {
+      id: "approval_004",
+      campaignName: "Welcome Series - New Customers",
+      approvedBy: "Marketing Manager",
+      approvedAt: "2024-11-15T08:30:00Z",
+      sentAt: "2024-11-15T09:00:00Z",
+      revenue: 8900,
+    },
+  ],
+}
