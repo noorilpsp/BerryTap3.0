@@ -37,6 +37,8 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Input } from "@/components/ui/input"
+import { logout } from "@/app/actions/auth"
+import { clearUserData } from "@/lib/utils/logout"
 
 const operationsItems = [
   { title: "Home", href: "/dashboard", icon: Home },
@@ -127,6 +129,13 @@ const locations = [
 export function MobileSidebar() {
   const pathname = usePathname()
   const [selectedLocation, setSelectedLocation] = React.useState(locations[0])
+
+  const handleLogout = async () => {
+    // Clear all client-side user data before server-side logout
+    clearUserData()
+    // Server-side logout will redirect
+    await logout()
+  }
   const [open, setOpen] = React.useState(false)
   const [searchQuery, setSearchQuery] = React.useState("")
   const [searchExpanded, setSearchExpanded] = React.useState(false)
@@ -506,7 +515,9 @@ export function MobileSidebar() {
                 Account Settings
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem className="text-destructive">Log out</DropdownMenuItem>
+              <DropdownMenuItem className="text-destructive" onClick={handleLogout}>
+                Log out
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
-import { availableDatasets, type Dataset } from "@/app/restaurant/(dashboard)/exports/data"
+import { availableDatasets, type Dataset } from "@/app/dashboard/(dashboard)/exports/data"
 
 const categoryLabels: Record<string, { label: string; emoji: string }> = {
   transactions: { label: "TRANSACTIONS", emoji: "📊" },

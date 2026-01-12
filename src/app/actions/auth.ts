@@ -388,6 +388,10 @@ export async function logout(): Promise<void> {
     // Clear admin status cookie if it exists
     const cookieStore = await cookies();
     cookieStore.delete("bt_admin_status");
+    cookieStore.delete("current_merchant");
+    
+    // Note: localStorage clearing must be done client-side
+    // The client-side logout handler should call clearUserData() before this
   } catch (error) {
     console.error("Logout error:", error);
   }

@@ -19,7 +19,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import { Separator } from "@/components/ui/separator"
-import { filterableFields, type ActiveFilter } from "@/app/restaurant/(dashboard)/exports/data"
+import { filterableFields, type ActiveFilter } from "@/app/dashboard/(dashboard)/exports/data"
 
 const iconMap = {
   DollarSign,

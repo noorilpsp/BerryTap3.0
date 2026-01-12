@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/tooltip"
 import { Card } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
-import { availableDatasets } from "@/app/restaurant/(dashboard)/exports/data"
+import { availableDatasets } from "@/app/dashboard/(dashboard)/exports/data"
 
 const iconMap: Record<string, any> = {
   ShoppingCart,

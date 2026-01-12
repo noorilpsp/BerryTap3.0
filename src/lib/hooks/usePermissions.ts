@@ -51,6 +51,7 @@ export function usePermissions() {
         if (!response.ok) {
           if (response.status === 401) {
             setError('Unauthorized - Please log in')
+            setLoading(false)
             return
           }
           const errorData = await response.json().catch(() => ({}))
@@ -90,6 +91,7 @@ export function usePermissions() {
       if (!response.ok) {
         if (response.status === 401) {
           setError('Unauthorized - Please log in')
+          setLoading(false)
           return
         }
         const errorData = await response.json().catch(() => ({}))

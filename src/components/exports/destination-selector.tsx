@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
-import { destinationOptions } from "@/app/restaurant/(dashboard)/exports/data"
+import { destinationOptions } from "@/app/dashboard/(dashboard)/exports/data"
 
 const iconMap = {
   Download,

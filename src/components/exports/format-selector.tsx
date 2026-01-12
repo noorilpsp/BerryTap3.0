@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Badge } from "@/components/ui/badge"
-import { exportFormats } from "@/app/restaurant/(dashboard)/exports/data"
+import { exportFormats } from "@/app/dashboard/(dashboard)/exports/data"
 
 const iconMap = {
   FileText,

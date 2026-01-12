@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Separator } from "@/components/ui/separator"
-import { savedTemplates } from "@/app/restaurant/(dashboard)/exports/data"
+import { savedTemplates } from "@/app/dashboard/(dashboard)/exports/data"
 import { TemplateLibraryModal } from "./template-library-modal"
 
 const iconMap: Record<string, any> = {

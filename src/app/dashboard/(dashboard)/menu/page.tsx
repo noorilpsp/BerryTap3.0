@@ -7,7 +7,7 @@ export default function MenuPage() {
   const router = useRouter()
 
   useEffect(() => {
-    router.replace("/restaurant/menu/overview")
+    router.replace("/dashboard/menu/overview")
   }, [router])
 
   return null

@@ -34,6 +34,8 @@ import { MobileSidebar } from "@/components/mobile-sidebar"
 import { Logo } from "@/components/logo"
 import { ThemeToggleInline } from "@/components/theme-toggle-inline"
 import { cn } from "@/lib/utils"
+import { logout } from "@/app/actions/auth"
+import { clearUserData } from "@/lib/utils/logout"
 
 const notifications = [
   {
@@ -83,6 +85,13 @@ export function DashboardHeader() {
   const pathname = usePathname()
   const [notificationList, setNotificationList] = React.useState(notifications)
   const [searchOpen, setSearchOpen] = React.useState(false)
+
+  const handleLogout = async () => {
+    // Clear all client-side user data before server-side logout
+    clearUserData()
+    // Server-side logout will redirect
+    await logout()
+  }
   const [searchQuery, setSearchQuery] = React.useState("")
   const [selectedLocation, setSelectedLocation] = React.useState(locations[0])
   const [isMobile, setIsMobile] = React.useState(false)
@@ -266,7 +275,7 @@ export function DashboardHeader() {
               <ThemeToggleInline />
             </div>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-destructive">
+            <DropdownMenuItem className="text-destructive" onClick={handleLogout}>
               <LogOut className="h-4 w-4 mr-2" />
               Log out
             </DropdownMenuItem>

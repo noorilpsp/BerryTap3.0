@@ -36,6 +36,8 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { ThemeToggleInline } from "@/components/theme-toggle-inline"
+import { logout } from "@/app/actions/auth"
+import { clearUserData } from "@/lib/utils/logout"
 import {
   Sidebar,
   SidebarContent,
@@ -57,21 +59,21 @@ import { Separator } from "@/components/ui/separator"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 
 const operationsItems = [
-  { title: "Home", href: "/restaurant/dashboard", icon: Home },
+  { title: "Home", href: "/dashboard", icon: Home },
   {
     title: "Orders",
-    href: "/restaurant/orders",
+    href: "/dashboard/orders",
     icon: ShoppingCart,
     badge: "5",
     badgeVariant: "destructive" as const,
   },
-  { title: "Tables", href: "/restaurant/tables", icon: Grid3x3 },
-  { title: "Reservations", href: "/restaurant/reservations", icon: Calendar },
+  { title: "Tables", href: "/dashboard/tables", icon: Grid3x3 },
+  { title: "Reservations", href: "/dashboard/reservations", icon: Calendar },
 ]
 
 const businessItems = [
-  { title: "Menu", href: "/restaurant/menu/overview", icon: Menu },
-  { title: "Inventory", href: "/restaurant/inventory", icon: Package },
+  { title: "Menu", href: "/dashboard/menu/overview", icon: Menu },
+  { title: "Inventory", href: "/dashboard/inventory", icon: Package },
 ]
 
 const businessCollapsible = [
@@ -80,9 +82,9 @@ const businessCollapsible = [
     icon: Megaphone,
     defaultOpen: false,
     items: [
-      { title: "Promotions", href: "/restaurant/promotions" },
-      { title: "Loyalty / Rewards", href: "/restaurant/loyalty" },
-      { title: "Campaigns", href: "/restaurant/campaigns" },
+      { title: "Promotions", href: "/dashboard/promotions" },
+      { title: "Loyalty / Rewards", href: "/dashboard/loyalty" },
+      { title: "Campaigns", href: "/dashboard/campaigns" },
     ],
   },
   {
@@ -90,10 +92,10 @@ const businessCollapsible = [
     icon: BarChart3,
     defaultOpen: false,
     items: [
-      { title: "Reports", href: "/restaurant/reports" },
-      { title: "Performance", href: "/restaurant/performance" },
-      { title: "Customer Insights", href: "/restaurant/customer-insights" },
-      { title: "Downloads", href: "/restaurant/downloads" },
+      { title: "Reports", href: "/dashboard/reports" },
+      { title: "Performance", href: "/dashboard/performance" },
+      { title: "Customer Insights", href: "/dashboard/customer-insights" },
+      { title: "Downloads", href: "/dashboard/downloads" },
     ],
   },
 ]
@@ -104,9 +106,9 @@ const systemCollapsible = [
     icon: Store,
     defaultOpen: false,
     items: [
-      { title: "Store Info", href: "/restaurant/stores" },
-      { title: "Floorplan & Tables", href: "/restaurant/stores/floorplan" },
-      { title: "Cross-location Comparison", href: "/restaurant/stores/comparison" },
+      { title: "Store Info", href: "/dashboard/stores" },
+      { title: "Floorplan & Tables", href: "/dashboard/stores/floorplan" },
+      { title: "Cross-location Comparison", href: "/dashboard/stores/comparison" },
     ],
   },
 ]
@@ -117,18 +119,18 @@ const paymentsCollapsible = [
     icon: CreditCard,
     defaultOpen: false,
     items: [
-      { title: "Transactions", href: "/restaurant/transactions" },
-      { title: "Payouts", href: "/restaurant/payouts" },
-      { title: "Disputes", href: "/restaurant/disputes" },
-      { title: "Invoices", href: "/restaurant/payments/invoices" },
-      { title: "Banking", href: "/restaurant/banking" },
+      { title: "Transactions", href: "/dashboard/transactions" },
+      { title: "Payouts", href: "/dashboard/payouts" },
+      { title: "Disputes", href: "/dashboard/disputes" },
+      { title: "Invoices", href: "/dashboard/payments/invoices" },
+      { title: "Banking", href: "/dashboard/banking" },
     ],
   },
 ]
 
 const systemItems = [
-  { title: "Users / Staff", href: "/restaurant/staff", icon: UserCircle },
-  { title: "Demos", href: "/restaurant/demos", icon: Layers },
+  { title: "Users / Staff", href: "/dashboard/staff", icon: UserCircle },
+  { title: "Demos", href: "/dashboard/demos", icon: Layers },
 ]
 
 const systemSettingsCollapsible = [
@@ -137,11 +139,11 @@ const systemSettingsCollapsible = [
     icon: Settings,
     defaultOpen: false,
     items: [
-      { title: "Restaurant Info", href: "/restaurant/settings/restaurant" },
-      { title: "Notification Settings", href: "/restaurant/settings/notifications" },
-      { title: "Integrations", href: "/restaurant/settings/integrations" },
-      { title: "Subscription / Billing", href: "/restaurant/settings/subscription" },
-      { title: "Legal & Compliance", href: "/restaurant/settings/legal" },
+      { title: "Business Info", href: "/dashboard/settings/business" },
+      { title: "Notification Settings", href: "/dashboard/settings/notifications" },
+      { title: "Integrations", href: "/dashboard/settings/integrations" },
+      { title: "Subscription / Billing", href: "/dashboard/settings/subscription" },
+      { title: "Legal & Compliance", href: "/dashboard/settings/legal" },
     ],
   },
 ]
@@ -161,6 +163,13 @@ export function AppSidebar() {
   const isCollapsed = state === "collapsed"
 
   const [openTooltips, setOpenTooltips] = React.useState<Set<string>>(new Set())
+
+  const handleLogout = async () => {
+    // Clear all client-side user data before server-side logout
+    clearUserData()
+    // Server-side logout will redirect
+    await logout()
+  }
 
   React.useEffect(() => {
     if (isCollapsed) {
@@ -308,8 +317,8 @@ export function AppSidebar() {
               <TooltipProvider>
                 {filteredOperationsItems.map((item) => {
                   const Icon = item.icon
-                  const isActive = item.href === "/restaurant/dashboard" 
-                    ? pathname === "/restaurant/dashboard" || pathname === "/restaurant/dashboard/"
+                  const isActive = item.href === "/dashboard" 
+                    ? pathname === "/dashboard" || pathname === "/dashboard/"
                     : pathname?.startsWith(item.href) ?? false
                   return (
                     <SidebarMenuItem key={item.href}>
@@ -777,7 +786,9 @@ export function AppSidebar() {
               <ThemeToggleInline />
             </div>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-destructive">Log out</DropdownMenuItem>
+            <DropdownMenuItem className="text-destructive" onClick={handleLogout}>
+              Log out
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarFooter>

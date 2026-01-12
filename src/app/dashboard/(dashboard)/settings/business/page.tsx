@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useCallback, useState } from "react"
+import { useCallback, useState, useEffect } from "react"
 import { type FieldErrors, type FieldError, type Resolver, useForm } from "react-hook-form"
 import * as z from "zod"
 import {
@@ -28,12 +28,15 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
+import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "@/hooks/use-toast"
+import { useCurrentMerchant } from "@/lib/hooks/useCurrentMerchant"
+import { useTenant } from "@/lib/contexts/TenantContext"
+import type { Merchant } from "@/lib/db/schema/merchants"
 
 // Form validation schema
 const businessInfoSchema = z.object({
   businessName: z.string().min(1, "Business name is required").max(100),
-  publicBrandName: z.string().min(1, "Public brand name is required").max(100),
   primaryEmail: z.string().email("Invalid email address"),
   primaryPhone: z.string().optional(),
   legalEntityName: z.string().min(1, "Legal entity name is required"),
@@ -93,37 +96,46 @@ const businessInfoResolver: Resolver<BusinessInfoFormData> = async (values) => {
   }
 }
 
-export default function RestaurantSettingsPage() {
+export default function BusinessSettingsPage() {
+  const { loading: tenantLoading } = useTenant()
+  const { merchantId, merchant, loading: merchantLoading, error: merchantError } = useCurrentMerchant()
+  const [error, setError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
-  const [lastSaved, setLastSaved] = useState<Date | null>(new Date())
+  const [lastSaved, setLastSaved] = useState<Date | null>(null)
+  const [formKey, setFormKey] = useState(0) // Key to force Select remount on form reset
   const [logoFile, setLogoFile] = useState<File | null>(null)
-  const [logoPreview, setLogoPreview] = useState<string>("/restaurant-logo.png")
+  const [logoPreview, setLogoPreview] = useState<string>("/placeholder.svg")
+  const [logoUploading, setLogoUploading] = useState(false)
+  const [logoUrl, setLogoUrl] = useState<string | null | undefined>(undefined)
   const [bannerFile, setBannerFile] = useState<File | null>(null)
-  const [bannerPreview, setBannerPreview] = useState<string>("/restaurant-banner.png")
+  const [bannerPreview, setBannerPreview] = useState<string>("/placeholder.svg")
+  const [bannerUploading, setBannerUploading] = useState(false)
+  const [bannerUrl, setBannerUrl] = useState<string | null | undefined>(undefined)
+  const [currentTime, setCurrentTime] = useState<string>("")
 
   const form = useForm<BusinessInfoFormData>({
     resolver: businessInfoResolver,
+    mode: 'onChange', // Validate on change so isValid is accurate
     defaultValues: {
-      businessName: "BerryTap Restaurant",
-      publicBrandName: "BerryTap",
-      primaryEmail: "contact@berrytap.com",
-      primaryPhone: "+1 (555) 123-4567",
-      legalEntityName: "BerryTap Restaurant LLC",
+      businessName: "",
+      primaryEmail: "",
+      primaryPhone: "",
+      legalEntityName: "",
       sameAsBusinessName: false,
-      vatTaxId: "EU123456789",
-      streetAddress1: "123 Main Street",
-      streetAddress2: "Suite 100",
-      postalCode: "10001",
-      city: "New York",
-      country: "US",
-      companyRegNumber: "12345678",
+      vatTaxId: "",
+      streetAddress1: "",
+      streetAddress2: "",
+      postalCode: "",
+      city: "",
+      country: "Belgium", // Match DB default
+      companyRegNumber: "",
       primaryBrandColor: "#0F172A",
-      accentColor: "#10B981",
-      defaultCurrency: "USD",
-      defaultTimezone: "America/New_York",
-      defaultLanguage: "en",
-      dateFormat: "MM/DD/YYYY",
-      numberFormat: "1,234.56",
+      accentColor: "",
+      defaultCurrency: "EUR", // Match DB default
+      defaultTimezone: "Europe/Brussels", // Match DB default
+      defaultLanguage: "nl-BE", // Match DB default
+      dateFormat: "DD/MM/YYYY", // More common in Europe
+      numberFormat: "1.234,56", // European format
       billingEmail: "",
       criticalAlertsEmail: "",
       notifyBilling: true,
@@ -137,22 +149,259 @@ export default function RestaurantSettingsPage() {
     formState: { isDirty, isValid },
   } = form
 
-  const onSubmit = useCallback(async (data: BusinessInfoFormData) => {
-    setIsSaving(true)
+  // Update form when merchant data is loaded
+  useEffect(() => {
+    if (merchantError) {
+      setError(merchantError)
+      toast({
+        title: "Failed to load merchant data",
+        description: merchantError,
+        variant: "destructive",
+      })
+      return
+    }
 
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    if (merchantLoading || !merchant || !merchantId) return
 
-    console.log("Form data:", data)
-    setIsSaving(false)
-    setLastSaved(new Date())
-    form.reset(data)
-
-    toast({
-      title: "Business info updated successfully",
-      description: "Your changes have been saved.",
-      variant: "default",
+    // Map merchant data to form fields
+    // Use actual database values, preserving nulls where appropriate
+    const notificationPrefs = merchant.notificationPreferences || {}
+    
+    form.reset({
+      // Required fields (notNull in DB) - these should always have values
+      businessName: merchant.name ?? "",
+      primaryEmail: merchant.contactEmail ?? "",
+      primaryPhone: merchant.contactPhone ?? "", // notNull in DB
+      legalEntityName: merchant.legalName ?? "",
+      sameAsBusinessName: merchant.legalName === merchant.name,
+      
+      // Optional fields - preserve null as empty string for form
+      vatTaxId: merchant.vatNumber ?? "",
+      streetAddress1: merchant.registeredAddressLine1 ?? "",
+      streetAddress2: merchant.registeredAddressLine2 ?? "",
+      postalCode: merchant.registeredPostalCode ?? "",
+      city: merchant.registeredCity ?? "",
+      // Use DB default if null
+      country: merchant.registeredCountry ?? "Belgium",
+      companyRegNumber: merchant.kboNumber ?? "",
+      
+      // Branding - optional fields
+      primaryBrandColor: merchant.primaryBrandColor ?? "#0F172A",
+      accentColor: merchant.accentColor ?? "",
+      
+      // Localization - required fields with DB defaults
+      defaultCurrency: merchant.defaultCurrency ?? "EUR",
+      defaultTimezone: merchant.defaultTimezone ?? "Europe/Brussels",
+      defaultLanguage: merchant.defaultLanguage ?? "nl-BE",
+      
+      // Format preferences - optional, use sensible defaults
+      dateFormat: (merchant.dateFormat as "DD/MM/YYYY" | "MM/DD/YYYY" | "YYYY-MM-DD") ?? "DD/MM/YYYY",
+      numberFormat: (merchant.numberFormat as "1,234.56" | "1.234,56") ?? "1.234,56",
+      
+      // Notification emails - optional
+      billingEmail: merchant.billingEmail ?? "",
+      criticalAlertsEmail: merchant.criticalAlertsEmail ?? "",
+      
+      // Notification preferences - from JSONB
+      notifyBilling: notificationPrefs.order_notifications ?? true,
+      notifyUpdates: notificationPrefs.system_updates ?? true,
+      notifyTips: notificationPrefs.weekly_reports ?? false,
+      notifyMarketing: notificationPrefs.marketing_emails ?? false,
     })
-  }, [form])
+
+    // Force Select components to remount by updating key
+    setFormKey((prev) => prev + 1)
+
+      // Set logo and banner previews and URLs
+      // Initialize with existing values (or null if not set)
+      // We use undefined to track "no change", null to track "remove"
+      if (merchant.logoUrl) {
+        setLogoPreview(merchant.logoUrl)
+        setLogoUrl(merchant.logoUrl)
+      } else {
+        setLogoPreview("/placeholder.svg")
+        setLogoUrl(undefined) // undefined = no change, null = remove
+      }
+      if (merchant.bannerUrl) {
+        setBannerPreview(merchant.bannerUrl)
+        setBannerUrl(merchant.bannerUrl)
+      } else {
+        setBannerPreview("/placeholder.svg")
+        setBannerUrl(undefined) // undefined = no change, null = remove
+      }
+
+    // Set last saved time from updatedAt
+    if (merchant.updatedAt) {
+      setLastSaved(new Date(merchant.updatedAt))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // form.reset is stable from react-hook-form, no need to include form in deps
+  }, [merchant, merchantId, merchantLoading, merchantError])
+
+  useEffect(() => {
+    // Set current time only on client side to avoid hydration mismatch
+    setCurrentTime(new Date().toLocaleTimeString())
+    const interval = setInterval(() => {
+      setCurrentTime(new Date().toLocaleTimeString())
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const onSubmit = useCallback(async (data: BusinessInfoFormData) => {
+    if (!merchantId) {
+      toast({
+        title: "Error",
+        description: "No merchant selected",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsSaving(true)
+    setError(null)
+
+    try {
+      // Get current logoUrl/bannerUrl values directly from state at submission time
+      // This ensures we have the latest values even if the callback was created earlier
+      const currentLogoUrl = logoUrl
+      const currentBannerUrl = bannerUrl
+      
+      // Prepare data for API - handle sameAsBusinessName logic
+      // Include uploaded image URLs (null means remove, undefined means no change)
+      const submitData: any = {
+        ...data,
+        legalEntityName: data.sameAsBusinessName ? data.businessName : data.legalEntityName,
+      }
+      
+      // Only include logoUrl/bannerUrl if they've been explicitly set (uploaded or removed)
+      // If logoUrl is null, it means user clicked remove - send null to clear
+      // If logoUrl is undefined, don't include it - keep existing value
+      // If logoUrl is a string, it's a new upload - send it
+      if (currentLogoUrl !== undefined) {
+        submitData.logoUrl = currentLogoUrl
+      }
+      if (currentBannerUrl !== undefined) {
+        submitData.bannerUrl = currentBannerUrl
+      }
+      
+      // Debug: Log what we're sending
+      console.log('[BusinessSettings] Submitting data:', {
+        currentLogoUrl,
+        currentLogoUrlType: typeof currentLogoUrl,
+        currentLogoUrlUndefined: currentLogoUrl === undefined,
+        currentBannerUrl,
+        currentBannerUrlType: typeof currentBannerUrl,
+        currentBannerUrlUndefined: currentBannerUrl === undefined,
+        submitDataKeys: Object.keys(submitData),
+        submitDataLogoUrl: submitData.logoUrl,
+        submitDataBannerUrl: submitData.bannerUrl,
+        willIncludeLogoUrl: currentLogoUrl !== undefined,
+        willIncludeBannerUrl: currentBannerUrl !== undefined,
+      })
+
+      const response = await fetch(`/api/merchants/${merchantId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify(submitData),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Failed to update merchant' }))
+        
+        if (response.status === 401) {
+          throw new Error('Unauthorized - Please log in')
+        } else if (response.status === 403) {
+          throw new Error("You don't have access to update this merchant")
+        } else if (response.status === 404) {
+          throw new Error('Merchant not found')
+        } else {
+          throw new Error(errorData.error || `Failed to update merchant: ${response.status}`)
+        }
+      }
+
+      const updatedMerchant = await response.json()
+
+      // Update logo and banner URLs from response (including null if removed)
+      setLogoUrl(updatedMerchant.logoUrl ?? undefined)
+      setLogoPreview(updatedMerchant.logoUrl || "/placeholder.svg")
+      
+      setBannerUrl(updatedMerchant.bannerUrl ?? undefined)
+      setBannerPreview(updatedMerchant.bannerUrl || "/placeholder.svg")
+      
+      // Clear file states since they're now saved
+      setLogoFile(null)
+      setBannerFile(null)
+
+      setIsSaving(false)
+      setLastSaved(new Date())
+      
+      // Reset form with updated data to clear dirty state
+      // Use actual database values with proper defaults
+      const updatedNotificationPrefs = updatedMerchant.notificationPreferences || {}
+      
+      form.reset({
+        // Required fields (notNull in DB)
+        businessName: updatedMerchant.name ?? "",
+        primaryEmail: updatedMerchant.contactEmail ?? "",
+        primaryPhone: updatedMerchant.contactPhone ?? "",
+        legalEntityName: updatedMerchant.legalName ?? "",
+        sameAsBusinessName: updatedMerchant.legalName === updatedMerchant.name,
+        
+        // Optional fields
+        vatTaxId: updatedMerchant.vatNumber ?? "",
+        streetAddress1: updatedMerchant.registeredAddressLine1 ?? "",
+        streetAddress2: updatedMerchant.registeredAddressLine2 ?? "",
+        postalCode: updatedMerchant.registeredPostalCode ?? "",
+        city: updatedMerchant.registeredCity ?? "",
+        country: updatedMerchant.registeredCountry ?? "Belgium",
+        companyRegNumber: updatedMerchant.kboNumber ?? "",
+        
+        // Branding
+        primaryBrandColor: updatedMerchant.primaryBrandColor ?? "#0F172A",
+        accentColor: updatedMerchant.accentColor ?? "",
+        
+        // Localization - use DB defaults
+        defaultCurrency: updatedMerchant.defaultCurrency ?? "EUR",
+        defaultTimezone: updatedMerchant.defaultTimezone ?? "Europe/Brussels",
+        defaultLanguage: updatedMerchant.defaultLanguage ?? "nl-BE",
+        
+        // Format preferences
+        dateFormat: (updatedMerchant.dateFormat as "DD/MM/YYYY" | "MM/DD/YYYY" | "YYYY-MM-DD") ?? "DD/MM/YYYY",
+        numberFormat: (updatedMerchant.numberFormat as "1,234.56" | "1.234,56") ?? "1.234,56",
+        
+        // Notification emails
+        billingEmail: updatedMerchant.billingEmail ?? "",
+        criticalAlertsEmail: updatedMerchant.criticalAlertsEmail ?? "",
+        
+        // Notification preferences
+        notifyBilling: updatedNotificationPrefs.order_notifications ?? true,
+        notifyUpdates: updatedNotificationPrefs.system_updates ?? true,
+        notifyTips: updatedNotificationPrefs.weekly_reports ?? false,
+        notifyMarketing: updatedNotificationPrefs.marketing_emails ?? false,
+      })
+
+      // Force Select components to remount by updating key
+      setFormKey((prev) => prev + 1)
+
+      toast({
+        title: "Business info updated successfully",
+        description: "Your changes have been saved.",
+        variant: "default",
+      })
+    } catch (err) {
+      setIsSaving(false)
+      const errorMessage = err instanceof Error ? err.message : 'Failed to update merchant'
+      setError(errorMessage)
+      toast({
+        title: "Error",
+        description: errorMessage,
+        variant: "destructive",
+      })
+    }
+  }, [form, merchantId, logoUrl, bannerUrl]) // Include logoUrl and bannerUrl in dependencies
 
   const handleSaveClick = useCallback(() => {
     void form.handleSubmit(onSubmit)()
@@ -166,32 +415,174 @@ export default function RestaurantSettingsPage() {
     })
   }
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (file) {
-      setLogoFile(file)
-      const reader = new FileReader()
-      reader.onloadend = () => {
-        setLogoPreview(reader.result as string)
+    if (!file) return
+
+    if (!merchantId) {
+      toast({
+        title: "Error",
+        description: "No merchant selected",
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Validate file type
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
+    if (!allowedTypes.includes(file.type)) {
+      toast({
+        title: "Invalid file type",
+        description: "Only JPG, PNG, or WEBP images are allowed",
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Validate file size (2MB max)
+    const MAX_FILE_SIZE = 2 * 1024 * 1024
+    if (file.size > MAX_FILE_SIZE) {
+      toast({
+        title: "File too large",
+        description: "File must be 2MB or smaller",
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Show preview immediately
+    setLogoFile(file)
+    const reader = new FileReader()
+    reader.onloadend = () => {
+      setLogoPreview(reader.result as string)
+    }
+    reader.readAsDataURL(file)
+
+    // Upload to Vercel Blob
+    setLogoUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const response = await fetch(`/api/merchants/${merchantId}/upload`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData,
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Failed to upload image' }))
+        throw new Error(errorData.error || 'Failed to upload logo')
       }
-      reader.readAsDataURL(file)
+
+      const { url } = await response.json()
+      setLogoUrl(url)
+
+      toast({
+        title: "Logo uploaded",
+        description: "Logo will be saved when you click Save changes",
+        variant: "default",
+      })
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to upload logo'
+      toast({
+        title: "Upload failed",
+        description: errorMessage,
+        variant: "destructive",
+      })
+      // Reset preview on error
+      setLogoFile(null)
+      setLogoPreview(merchant?.logoUrl || "/placeholder.svg")
+    } finally {
+      setLogoUploading(false)
     }
   }
 
-  const handleBannerUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (file) {
-      setBannerFile(file)
-      const reader = new FileReader()
-      reader.onloadend = () => {
-        setBannerPreview(reader.result as string)
+    if (!file) return
+
+    if (!merchantId) {
+      toast({
+        title: "Error",
+        description: "No merchant selected",
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Validate file type
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
+    if (!allowedTypes.includes(file.type)) {
+      toast({
+        title: "Invalid file type",
+        description: "Only JPG, PNG, or WEBP images are allowed",
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Validate file size (2MB max)
+    const MAX_FILE_SIZE = 2 * 1024 * 1024
+    if (file.size > MAX_FILE_SIZE) {
+      toast({
+        title: "File too large",
+        description: "File must be 2MB or smaller",
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Show preview immediately
+    setBannerFile(file)
+    const reader = new FileReader()
+    reader.onloadend = () => {
+      setBannerPreview(reader.result as string)
+    }
+    reader.readAsDataURL(file)
+
+    // Upload to Vercel Blob
+    setBannerUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const response = await fetch(`/api/merchants/${merchantId}/upload`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData,
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Failed to upload image' }))
+        throw new Error(errorData.error || 'Failed to upload banner')
       }
-      reader.readAsDataURL(file)
+
+      const { url } = await response.json()
+      setBannerUrl(url)
+
+      toast({
+        title: "Banner uploaded",
+        description: "Banner will be saved when you click Save changes",
+        variant: "default",
+      })
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to upload banner'
+      toast({
+        title: "Upload failed",
+        description: errorMessage,
+        variant: "destructive",
+      })
+      // Reset preview on error
+      setBannerFile(null)
+      setBannerPreview(merchant?.bannerUrl || "/placeholder.svg")
+    } finally {
+      setBannerUploading(false)
     }
   }
 
   const getRelativeTime = (date: Date | null) => {
-    if (!date) return ""
+    if (!date) return "Not set"
     const now = new Date()
     const diff = Math.floor((now.getTime() - date.getTime()) / 1000 / 60)
     if (diff < 1) return "Just now"
@@ -200,6 +591,94 @@ export default function RestaurantSettingsPage() {
     if (hours < 24) return `${hours} hour${hours > 1 ? "s" : ""} ago`
     const days = Math.floor(hours / 24)
     return `${days} day${days > 1 ? "s" : ""} ago`
+  }
+
+  // Loading state - show loading while tenant is initializing or merchant is loading
+  // Only show loading if we have a merchantId and are waiting for data, or if tenant is still loading
+  const isActuallyLoading = tenantLoading || (merchantId && merchantLoading)
+  if (isActuallyLoading || (merchantId && !merchant)) {
+    return (
+      <div className="flex flex-col h-full bg-background">
+        {/* Header Skeleton */}
+        <div className="px-6 pt-8 pb-6 border-b border-border">
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+            <div className="space-y-2">
+              <Skeleton className="h-9 w-64" />
+              <Skeleton className="h-4 w-96" />
+            </div>
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-6 w-16" />
+            </div>
+          </div>
+        </div>
+
+        {/* Content Skeleton */}
+        <div className="flex-1 overflow-auto">
+          <div className="p-6 space-y-6">
+            {[1, 2, 3, 4].map((i) => (
+              <Card key={i}>
+                <CardHeader>
+                  <Skeleton className="h-6 w-48" />
+                  <Skeleton className="h-4 w-64 mt-2" />
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {[1, 2, 3].map((j) => (
+                    <div key={j} className="space-y-2">
+                      <Skeleton className="h-4 w-32" />
+                      <Skeleton className="h-10 w-full" />
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Error state - show error if we're not loading and there's an error or no merchantId
+  if (!tenantLoading && !merchantLoading && (error || merchantError || !merchantId)) {
+    return (
+      <div className="flex flex-col h-full bg-background">
+        {/* Header */}
+        <div className="px-6 pt-8 pb-6 border-b border-border">
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight text-foreground">Business Info</h1>
+              <p className="text-sm text-muted-foreground mt-2">Brand-level settings used across all stores</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Error Content */}
+        <div className="flex-1 overflow-auto">
+          <div className="p-6">
+            <Card>
+              <CardContent className="pt-6">
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <AlertCircle className="h-12 w-12 text-destructive mb-4" />
+                  <h2 className="text-xl font-semibold mb-2">Failed to Load Merchant Data</h2>
+                  <p className="text-muted-foreground mb-4 max-w-md">
+                    {error || merchantError || (!merchantId ? "No merchant found. Please ensure you have access to a merchant." : "An unexpected error occurred")}
+                  </p>
+                  <Button
+                    onClick={() => {
+                      if (merchantId) {
+                        window.location.reload()
+                      }
+                    }}
+                  >
+                    Try Again
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -252,7 +731,11 @@ export default function RestaurantSettingsPage() {
             <Button variant="outline" disabled={isSaving}>
               Preview
             </Button>
-            <Button onClick={handleSaveClick} disabled={!isDirty || !isValid || isSaving} className="gap-2">
+            <Button 
+              onClick={handleSaveClick} 
+              disabled={!isDirty || isSaving} 
+              className="gap-2"
+            >
               {isSaving ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -303,23 +786,6 @@ export default function RestaurantSettingsPage() {
                                 )}
                               </div>
                             </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-
-                      <FormField
-                        control={form.control}
-                        name="publicBrandName"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Public Brand Name *</FormLabel>
-                            <FormControl>
-                              <Input {...field} />
-                            </FormControl>
-                            <FormDescription>
-                              Customers will see: <span className="font-medium">{field.value || "..."}</span>
-                            </FormDescription>
                             <FormMessage />
                           </FormItem>
                         )}
@@ -487,6 +953,7 @@ export default function RestaurantSettingsPage() {
                         <FormField
                           control={form.control}
                           name="country"
+                          key={`country-${formKey}`}
                           render={({ field }) => (
                             <FormItem>
                               <Select onValueChange={field.onChange} defaultValue={field.value}>
@@ -496,6 +963,7 @@ export default function RestaurantSettingsPage() {
                                   </SelectTrigger>
                                 </FormControl>
                                 <SelectContent>
+                                  <SelectItem value="Belgium">🇧🇪 Belgium</SelectItem>
                                   <SelectItem value="US">🇺🇸 United States</SelectItem>
                                   <SelectItem value="GB">🇬🇧 United Kingdom</SelectItem>
                                   <SelectItem value="CA">🇨🇦 Canada</SelectItem>
@@ -556,19 +1024,31 @@ export default function RestaurantSettingsPage() {
                                 variant="outline"
                                 size="sm"
                                 onClick={() => document.getElementById("logo-upload")?.click()}
+                                disabled={logoUploading}
                               >
-                                <Upload className="h-4 w-4 mr-2" />
-                                {logoFile ? "Replace" : "Upload"}
+                                {logoUploading ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                    Uploading...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Upload className="h-4 w-4 mr-2" />
+                                    {logoFile || logoUrl ? "Replace" : "Upload"}
+                                  </>
+                                )}
                               </Button>
-                              {logoFile && (
+                              {(logoFile || logoUrl || merchant?.logoUrl) && (
                                 <Button
                                   type="button"
                                   variant="outline"
                                   size="sm"
                                   onClick={() => {
                                     setLogoFile(null)
-                                    setLogoPreview("/restaurant-logo.png")
+                                    setLogoUrl(null)
+                                    setLogoPreview("/placeholder.svg")
                                   }}
+                                  disabled={logoUploading}
                                 >
                                   <X className="h-4 w-4 mr-2" />
                                   Remove
@@ -578,9 +1058,10 @@ export default function RestaurantSettingsPage() {
                             <input
                               id="logo-upload"
                               type="file"
-                              accept="image/png,image/jpeg,image/svg+xml"
+                              accept="image/jpeg,image/png,image/webp"
                               className="hidden"
                               onChange={handleLogoUpload}
+                              disabled={logoUploading}
                             />
                           </div>
                         </div>
@@ -605,19 +1086,31 @@ export default function RestaurantSettingsPage() {
                                 variant="outline"
                                 size="sm"
                                 onClick={() => document.getElementById("banner-upload")?.click()}
+                                disabled={bannerUploading}
                               >
-                                <Upload className="h-4 w-4 mr-2" />
-                                {bannerFile ? "Replace" : "Upload"}
+                                {bannerUploading ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                    Uploading...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Upload className="h-4 w-4 mr-2" />
+                                    {bannerFile || bannerUrl ? "Replace" : "Upload"}
+                                  </>
+                                )}
                               </Button>
-                              {bannerFile && (
+                              {(bannerFile || bannerUrl || merchant?.bannerUrl) && (
                                 <Button
                                   type="button"
                                   variant="outline"
                                   size="sm"
                                   onClick={() => {
                                     setBannerFile(null)
-                                    setBannerPreview("/restaurant-banner.png")
+                                    setBannerUrl(null)
+                                    setBannerPreview("/placeholder.svg")
                                   }}
+                                  disabled={bannerUploading}
                                 >
                                   <X className="h-4 w-4 mr-2" />
                                   Remove
@@ -628,9 +1121,10 @@ export default function RestaurantSettingsPage() {
                           <input
                             id="banner-upload"
                             type="file"
-                            accept="image/png,image/jpeg"
+                            accept="image/jpeg,image/png,image/webp"
                             className="hidden"
                             onChange={handleBannerUpload}
+                            disabled={bannerUploading}
                           />
                         </div>
                       </div>
@@ -713,6 +1207,7 @@ export default function RestaurantSettingsPage() {
                       <FormField
                         control={form.control}
                         name="defaultCurrency"
+                        key={`currency-${formKey}`}
                         render={({ field }) => (
                           <FormItem>
                             <FormLabel>Default Currency *</FormLabel>
@@ -737,6 +1232,7 @@ export default function RestaurantSettingsPage() {
                       <FormField
                         control={form.control}
                         name="defaultTimezone"
+                        key={`timezone-${formKey}`}
                         render={({ field }) => (
                           <FormItem>
                             <FormLabel>Default Timezone *</FormLabel>
@@ -753,9 +1249,12 @@ export default function RestaurantSettingsPage() {
                                 <SelectItem value="America/Los_Angeles">Pacific Time (PT)</SelectItem>
                                 <SelectItem value="Europe/London">London (GMT)</SelectItem>
                                 <SelectItem value="Europe/Paris">Paris (CET)</SelectItem>
+                                <SelectItem value="Europe/Brussels">Brussels (CET)</SelectItem>
                               </SelectContent>
                             </Select>
-                            <FormDescription>Current time: {new Date().toLocaleTimeString()}</FormDescription>
+                            <FormDescription>
+                              {currentTime ? `Current time: ${currentTime}` : "Current time: --:--:--"}
+                            </FormDescription>
                             <FormMessage />
                           </FormItem>
                         )}
@@ -764,6 +1263,7 @@ export default function RestaurantSettingsPage() {
                       <FormField
                         control={form.control}
                         name="defaultLanguage"
+                        key={`language-${formKey}`}
                         render={({ field }) => (
                           <FormItem>
                             <FormLabel>Default Language *</FormLabel>
@@ -775,6 +1275,7 @@ export default function RestaurantSettingsPage() {
                               </FormControl>
                               <SelectContent>
                                 <SelectItem value="en">🇬🇧 English</SelectItem>
+                                <SelectItem value="nl-BE">🇳🇱 Dutch (Belgium)</SelectItem>
                                 <SelectItem value="nl">🇳🇱 Dutch</SelectItem>
                                 <SelectItem value="fr">🇫🇷 French</SelectItem>
                                 <SelectItem value="de">🇩🇪 German</SelectItem>
@@ -789,6 +1290,7 @@ export default function RestaurantSettingsPage() {
                       <FormField
                         control={form.control}
                         name="dateFormat"
+                        key={`dateFormat-${formKey}`}
                         render={({ field }) => (
                           <FormItem className="space-y-3">
                             <FormLabel>Date Format *</FormLabel>
@@ -826,6 +1328,7 @@ export default function RestaurantSettingsPage() {
                       <FormField
                         control={form.control}
                         name="numberFormat"
+                        key={`numberFormat-${formKey}`}
                         render={({ field }) => (
                           <FormItem className="space-y-3">
                             <FormLabel>Number Format *</FormLabel>
@@ -1029,7 +1532,7 @@ export default function RestaurantSettingsPage() {
                             />
                             <div className="flex-1 min-w-0">
                               <p className="font-medium text-sm truncate">
-                                {form.watch("publicBrandName") || "Brand Name"}
+                                {form.watch("businessName") || "Business Name"}
                               </p>
                               <p className="text-xs text-muted-foreground truncate">{form.watch("primaryEmail")}</p>
                             </div>

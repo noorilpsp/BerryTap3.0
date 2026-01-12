@@ -385,15 +385,15 @@
   }
 
   /* Added motion utilities for BerryTap animations */
-  @media (prefers-reduced-motion: no-preference) {
+  /* @media (prefers-reduced-motion: no-preference) {
     .fade-in {
       @apply transition-opacity;
       transition-duration: var(--transition-medium);
       opacity: 0;
-    }
+}
 
     .fade-in.show {
       opacity: 1;
     }
-  }
+  } */
 }

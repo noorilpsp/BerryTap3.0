@@ -8,7 +8,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { availableDatasets } from "@/app/restaurant/(dashboard)/exports/data"
+import { availableDatasets } from "@/app/dashboard/(dashboard)/exports/data"
 
 export function ColumnChooser() {
   const dataset = availableDatasets[0] // Orders dataset

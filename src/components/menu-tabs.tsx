@@ -14,11 +14,11 @@ interface Tab {
 }
 
 const tabs: Tab[] = [
-  { name: "Overview", href: "/restaurant/menu/overview", icon: LayoutGrid },
-  { name: "Menus", href: "/restaurant/menu/menus", icon: Clock },
-  { name: "Categories", href: "/restaurant/menu/categories", icon: FolderOpen },
-  { name: "Items", href: "/restaurant/menu/items", icon: Package },
-  { name: "Customizations", href: "/restaurant/menu/customizations", icon: Settings2 },
+  { name: "Overview", href: "/dashboard/menu/overview", icon: LayoutGrid },
+  { name: "Menus", href: "/dashboard/menu/menus", icon: Clock },
+  { name: "Categories", href: "/dashboard/menu/categories", icon: FolderOpen },
+  { name: "Items", href: "/dashboard/menu/items", icon: Package },
+  { name: "Customizations", href: "/dashboard/menu/customizations", icon: Settings2 },
 ]
 
 interface MenuTabsProps {

@@ -16,6 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AlertCircle, CheckCircle2, Loader2, LogOut } from "lucide-react";
 import { logout } from "@/app/actions/auth";
 import { supabase } from "@/lib/supabaseClient";
+import { clearUserData } from "@/lib/utils/logout";
 
 type RouteParams = {
   params: Promise<{ token: string }>;
@@ -163,6 +164,8 @@ export default function InvitePage({ params }: RouteParams) {
   };
 
   const handleLogout = async () => {
+    // Clear all client-side user data before server-side logout
+    clearUserData()
     await logout();
     window.location.href = `/invite/${token}`;
   };

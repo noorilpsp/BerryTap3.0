@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import * as z from "zod"
@@ -27,6 +27,7 @@ import {
   Phone,
   Mail,
   Menu,
+  Loader2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -40,8 +41,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
+import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
+import { useTenant } from "@/lib/contexts/TenantContext"
+import { useLocations } from "@/lib/hooks/useLocations"
+import type { MerchantLocation, OpeningHours, OrderModes } from "@/lib/db/schema/merchant-locations"
 
 // Zod Schema
 const storeInfoSchema = z.object({
@@ -119,12 +124,13 @@ const timeSlots = Array.from({ length: 48 }, (_, i) => {
 })
 
 const timezones = [
+  { value: "Europe/Brussels", label: "Brussels (CET)" },
+  { value: "Europe/London", label: "London (GMT)" },
+  { value: "Europe/Paris", label: "Paris (CET)" },
   { value: "America/New_York", label: "Eastern Time (ET)" },
   { value: "America/Chicago", label: "Central Time (CT)" },
   { value: "America/Denver", label: "Mountain Time (MT)" },
   { value: "America/Los_Angeles", label: "Pacific Time (PT)" },
-  { value: "Europe/London", label: "London (GMT)" },
-  { value: "Europe/Paris", label: "Paris (CET)" },
   { value: "Asia/Tokyo", label: "Tokyo (JST)" },
 ]
 
@@ -146,42 +152,168 @@ const commonPresets = [
   { name: "24/7 convenience store", open: "00:00", close: "23:59" },
 ]
 
+// Day name mapping for opening hours conversion
+const dayNameMap: Record<number, keyof OpeningHours> = {
+  0: "monday",
+  1: "tuesday",
+  2: "wednesday",
+  3: "thursday",
+  4: "friday",
+  5: "saturday",
+  6: "sunday",
+}
+
+const dayIndexMap: Record<string, number> = {
+  monday: 0,
+  tuesday: 1,
+  wednesday: 2,
+  thursday: 3,
+  friday: 4,
+  saturday: 5,
+  sunday: 6,
+}
+
+// Helper: Convert form opening hours array to database JSONB format
+function formOpeningHoursToDb(
+  formHours: Array<{ day: number; closed: boolean; shifts: Array<{ open: string; close: string }> }>
+): OpeningHours {
+  const dbHours: OpeningHours = {}
+  for (const item of formHours) {
+    const dayName = dayNameMap[item.day]
+    if (dayName) {
+      // If closed, set empty array; otherwise use shifts
+      dbHours[dayName] = item.closed ? [] : item.shifts
+    }
+  }
+  return dbHours
+}
+
+// Helper: Convert database JSONB opening hours to form array format
+function dbOpeningHoursToForm(
+  dbHours: OpeningHours | null | undefined
+): Array<{ day: number; closed: boolean; shifts: Array<{ open: string; close: string }> }> {
+  return dayNames.map((_, index) => {
+    const dayName = dayNameMap[index]
+    const shifts = dbHours?.[dayName] ?? []
+    return {
+      day: index,
+      closed: shifts.length === 0,
+      shifts: shifts.length > 0 ? shifts : [{ open: "11:00", close: "23:00" }],
+    }
+  })
+}
+
+// Helper: Convert form order modes to database JSONB format
+function formOrderModesToDb(formModes: { dineIn: boolean; pickup: boolean; delivery: boolean }, deliverySettings?: { radius?: number; fee?: number; minimumOrder?: number }): OrderModes {
+  return {
+    dine_in: { enabled: formModes.dineIn },
+    pickup: { enabled: formModes.pickup },
+    delivery: {
+      enabled: formModes.delivery,
+      radius_km: deliverySettings?.radius,
+      delivery_fee: deliverySettings?.fee,
+      minimum_order: deliverySettings?.minimumOrder,
+    },
+  }
+}
+
+// Helper: Convert database JSONB order modes to form format
+function dbOrderModesToForm(dbModes: OrderModes | null | undefined): { dineIn: boolean; pickup: boolean; delivery: boolean } {
+  return {
+    dineIn: dbModes?.dine_in?.enabled ?? true,
+    pickup: dbModes?.pickup?.enabled ?? true,
+    delivery: dbModes?.delivery?.enabled ?? false,
+  }
+}
+
+// Helper: Map database status to form status
+function dbStatusToForm(dbStatus: string | null | undefined): "active" | "inactive" | "coming-soon" {
+  switch (dbStatus) {
+    case "active":
+      return "active"
+    case "inactive":
+      return "inactive"
+    case "coming_soon":
+      return "coming-soon"
+    case "temporarily_closed":
+      return "inactive"
+    default:
+      return "active"
+  }
+}
+
+// Helper: Map form status to database status
+function formStatusToDb(formStatus: "active" | "inactive" | "coming-soon"): "active" | "inactive" | "coming_soon" {
+  switch (formStatus) {
+    case "active":
+      return "active"
+    case "inactive":
+      return "inactive"
+    case "coming-soon":
+      return "coming_soon"
+    default:
+      return "active"
+  }
+}
+
 export default function StoresPage() {
+  // Tenant and locations hooks
+  const { currentMerchantId, loading: tenantLoading } = useTenant()
+  const { locations, loading: locationsLoading, error: locationsError } = useLocations()
+  
+  // Current location state (for editing)
+  const [currentLocationId, setCurrentLocationId] = useState<string | null>(null)
+  const [currentLocation, setCurrentLocation] = useState<MerchantLocation | null>(null)
+  
+  // UI state
   const [lastSaved, setLastSaved] = useState<Date | null>(null)
   const [urlCopied, setUrlCopied] = useState(false)
   const [showSocialMedia, setShowSocialMedia] = useState(false)
   const [selectedPreset, setSelectedPreset] = useState<string>("")
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [formKey, setFormKey] = useState(0) // Key to force Select remount on form reset
+  const [error, setError] = useState<string | null>(null)
+  
+  // Image upload state
+  const [logoFile, setLogoFile] = useState<File | null>(null)
+  const [logoPreview, setLogoPreview] = useState<string>("/placeholder.svg")
+  const [logoUploading, setLogoUploading] = useState(false)
+  const [logoUrl, setLogoUrl] = useState<string | null | undefined>(undefined)
+  const [bannerFile, setBannerFile] = useState<File | null>(null)
+  const [bannerPreview, setBannerPreview] = useState<string>("/placeholder.svg")
+  const [bannerUploading, setBannerUploading] = useState(false)
+  const [bannerUrl, setBannerUrl] = useState<string | null | undefined>(undefined)
 
   const form = useForm<StoreInfoFormData>({
     resolver: zodResolver(storeInfoSchema),
     defaultValues: {
-      storeName: "Sunrise Bar – Center",
-      storeType: "bar",
-      shortDescription: "Cozy bar in the city center with craft cocktails and local beers",
-      storeSlug: "sunrise-center",
+      storeName: "",
+      storeType: "restaurant",
+      shortDescription: "",
+      storeSlug: "",
       address: {
-        street: "123 Main Street",
+        street: "",
         apartment: "",
-        postalCode: "10001",
-        city: "New York",
-        country: "US",
+        postalCode: "",
+        city: "",
+        country: "Belgium",
       },
-      phoneNumber: "+1 (555) 123-4567",
-      publicEmail: "hello@sunrise-bar.com",
+      phoneNumber: "",
+      publicEmail: "",
       useBusinessEmail: false,
-      website: "https://sunrise-bar.com",
-      instagram: "@sunrisebar",
+      website: "",
+      instagram: "",
       facebook: "",
       openingHours: dayNames.map((_, index) => ({
         day: index,
         closed: false,
         shifts: [{ open: "11:00", close: "23:00" }],
       })),
-      enableTables: true,
-      enableReservations: true,
+      enableTables: false,
+      enableReservations: false,
       requirePrepayment: false,
-      maxPartySize: 12,
+      maxPartySize: 8,
       bookingWindow: 30,
       enableOnlineOrders: true,
       orderModes: {
@@ -194,7 +326,7 @@ export default function StoresPage() {
       minimumOrder: 15,
       storeStatus: "active",
       publicListing: true,
-      timezone: "America/New_York",
+      timezone: "Europe/Brussels",
       useBusinessTimezone: true,
       useCustomLogo: false,
       useCustomBanner: false,
@@ -225,6 +357,102 @@ export default function StoresPage() {
   const useCustomLogo = watch("useCustomLogo")
   const useCustomBanner = watch("useCustomBanner")
   const useCustomAccentColor = watch("useCustomAccentColor")
+  const deliveryRadius = watch("deliveryRadius")
+  const deliveryFee = watch("deliveryFee")
+  const minimumOrder = watch("minimumOrder")
+
+  // Select first location when locations are loaded
+  useEffect(() => {
+    if (locations.length > 0 && !currentLocationId) {
+      setCurrentLocationId(locations[0].id)
+    }
+  }, [locations, currentLocationId])
+
+  // Load location data into form when current location changes
+  useEffect(() => {
+    if (!currentLocationId) {
+      setCurrentLocation(null)
+      return
+    }
+
+    const location = locations.find((l) => l.id === currentLocationId)
+    if (!location) {
+      setCurrentLocation(null)
+      return
+    }
+
+    setCurrentLocation(location)
+
+    // Map location data to form fields
+    const orderModesData = dbOrderModesToForm(location.orderModes)
+    const openingHoursData = dbOpeningHoursToForm(location.openingHours)
+
+    form.reset({
+      storeName: location.name ?? "",
+      storeType: (location.storeType as "restaurant" | "bar" | "cafe" | "grocery" | "other") ?? "restaurant",
+      shortDescription: location.description ?? "",
+      storeSlug: location.storeSlug ?? "",
+      address: {
+        street: location.address ?? "",
+        apartment: location.addressLine2 ?? "",
+        postalCode: location.postalCode ?? "",
+        city: location.city ?? "",
+        country: location.country ?? "Belgium",
+      },
+      phoneNumber: location.phone ?? "",
+      publicEmail: location.email ?? "",
+      useBusinessEmail: false,
+      website: location.websiteUrl ?? "",
+      instagram: location.instagramHandle ?? "",
+      facebook: location.facebookUrl ?? "",
+      openingHours: openingHoursData,
+      enableTables: location.enableTables ?? false,
+      enableReservations: location.enableReservations ?? false,
+      requirePrepayment: false, // Not in DB schema
+      maxPartySize: location.maxPartySize ?? 8,
+      bookingWindow: location.bookingWindowDays ?? 30,
+      enableOnlineOrders: location.enableOnlineOrders ?? true,
+      orderModes: orderModesData,
+      deliveryRadius: location.orderModes?.delivery?.radius_km ?? 5,
+      deliveryFee: location.orderModes?.delivery?.delivery_fee ?? 5.99,
+      minimumOrder: location.orderModes?.delivery?.minimum_order ?? 15,
+      storeStatus: dbStatusToForm(location.status),
+      publicListing: location.visibleInDirectory ?? true,
+      timezone: location.timezone ?? "Europe/Brussels",
+      useBusinessTimezone: !location.timezone,
+      useCustomLogo: !!location.logoUrl,
+      useCustomBanner: !!location.bannerUrl,
+      useCustomAccentColor: !!location.accentColor,
+      accentColor: location.accentColor ?? "#f97316",
+    })
+
+    // Force Select components to remount by updating key
+    setFormKey((prev) => prev + 1)
+
+    // Set last saved from updatedAt
+    if (location.updatedAt) {
+      setLastSaved(new Date(location.updatedAt))
+    }
+
+    // Set image previews and URLs from database
+    if (location.logoUrl) {
+      setLogoUrl(location.logoUrl)
+      setLogoPreview(location.logoUrl)
+    } else {
+      setLogoUrl(undefined)
+      setLogoPreview("/placeholder.svg")
+    }
+    setLogoFile(null)
+
+    if (location.bannerUrl) {
+      setBannerUrl(location.bannerUrl)
+      setBannerPreview(location.bannerUrl)
+    } else {
+      setBannerUrl(undefined)
+      setBannerPreview("/placeholder.svg")
+    }
+    setBannerFile(null)
+  }, [currentLocationId, locations, form])
 
   // Auto-generate slug from name
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -245,15 +473,372 @@ export default function StoresPage() {
     setTimeout(() => setUrlCopied(false), 2000)
   }
 
-  const onSubmit = (data: StoreInfoFormData) => {
-    console.log("[v0] Saving store info:", data)
-    setLastSaved(new Date())
-    toast.success("Store information saved successfully!")
+  const onSubmit = useCallback(async (data: StoreInfoFormData) => {
+    if (!currentMerchantId) {
+      toast.error("No merchant selected")
+      return
+    }
+
+    setIsSaving(true)
+    setError(null)
+
+    try {
+      // Get current image URLs
+      const currentLogoUrl = logoUrl
+      const currentBannerUrl = bannerUrl
+
+      // Convert form data to API format
+      const apiData: Record<string, unknown> = {
+        merchantId: currentMerchantId,
+        storeName: data.storeName,
+        storeType: data.storeType,
+        shortDescription: data.shortDescription,
+        storeSlug: data.storeSlug,
+        address: data.address,
+        phoneNumber: data.phoneNumber,
+        publicEmail: data.publicEmail,
+        website: data.website,
+        instagram: data.instagram,
+        facebook: data.facebook,
+        openingHours: formOpeningHoursToDb(data.openingHours),
+        enableTables: data.enableTables,
+        enableReservations: data.enableReservations,
+        maxPartySize: data.maxPartySize,
+        bookingWindow: data.bookingWindow,
+        enableOnlineOrders: data.enableOnlineOrders,
+        orderModes: formOrderModesToDb(data.orderModes, {
+          radius: data.deliveryRadius,
+          fee: data.deliveryFee,
+          minimumOrder: data.minimumOrder,
+        }),
+        storeStatus: formStatusToDb(data.storeStatus),
+        publicListing: data.publicListing,
+        timezone: data.useBusinessTimezone ? null : data.timezone,
+        accentColor: data.useCustomAccentColor ? data.accentColor : null,
+      }
+
+      // Include image URLs if they've been set (including null to clear them)
+      if (data.useCustomLogo) {
+        if (currentLogoUrl !== undefined) {
+          apiData.logoUrl = currentLogoUrl
+        }
+      } else {
+        // Clear logo when not using custom logo
+        apiData.logoUrl = null
+      }
+
+      if (data.useCustomBanner) {
+        if (currentBannerUrl !== undefined) {
+          apiData.bannerUrl = currentBannerUrl
+        }
+      } else {
+        // Clear banner when not using custom banner
+        apiData.bannerUrl = null
+      }
+
+      let response: Response
+      let method: string
+
+      if (currentLocationId) {
+        // Update existing location
+        method = "PUT"
+        response = await fetch(`/api/locations/${encodeURIComponent(currentLocationId)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(apiData),
+        })
+      } else {
+        // Create new location
+        method = "POST"
+        response = await fetch("/api/locations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(apiData),
+        })
+      }
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || `Failed to save location: ${response.status}`)
+      }
+
+      const savedLocation: MerchantLocation = await response.json()
+      console.log("[StoresPage] Saved location:", savedLocation)
+
+      // Update current location ID if this was a new location
+      if (!currentLocationId) {
+        setCurrentLocationId(savedLocation.id)
+      }
+
+      // Reset form with saved data to clear isDirty state
+      const savedOrderModes = dbOrderModesToForm(savedLocation.orderModes)
+      const savedOpeningHours = dbOpeningHoursToForm(savedLocation.openingHours)
+
+      form.reset({
+        storeName: savedLocation.name ?? "",
+        storeType: (savedLocation.storeType as "restaurant" | "bar" | "cafe" | "grocery" | "other") ?? "restaurant",
+        shortDescription: savedLocation.description ?? "",
+        storeSlug: savedLocation.storeSlug ?? "",
+        address: {
+          street: savedLocation.address ?? "",
+          apartment: savedLocation.addressLine2 ?? "",
+          postalCode: savedLocation.postalCode ?? "",
+          city: savedLocation.city ?? "",
+          country: savedLocation.country ?? "Belgium",
+        },
+        phoneNumber: savedLocation.phone ?? "",
+        publicEmail: savedLocation.email ?? "",
+        useBusinessEmail: false,
+        website: savedLocation.websiteUrl ?? "",
+        instagram: savedLocation.instagramHandle ?? "",
+        facebook: savedLocation.facebookUrl ?? "",
+        openingHours: savedOpeningHours,
+        enableTables: savedLocation.enableTables ?? false,
+        enableReservations: savedLocation.enableReservations ?? false,
+        requirePrepayment: false,
+        maxPartySize: savedLocation.maxPartySize ?? 8,
+        bookingWindow: savedLocation.bookingWindowDays ?? 30,
+        enableOnlineOrders: savedLocation.enableOnlineOrders ?? true,
+        orderModes: savedOrderModes,
+        deliveryRadius: savedLocation.orderModes?.delivery?.radius_km ?? 5,
+        deliveryFee: savedLocation.orderModes?.delivery?.delivery_fee ?? 5.99,
+        minimumOrder: savedLocation.orderModes?.delivery?.minimum_order ?? 15,
+        storeStatus: dbStatusToForm(savedLocation.status),
+        publicListing: savedLocation.visibleInDirectory ?? true,
+        timezone: savedLocation.timezone ?? "Europe/Brussels",
+        useBusinessTimezone: !savedLocation.timezone,
+        useCustomLogo: !!savedLocation.logoUrl,
+        useCustomBanner: !!savedLocation.bannerUrl,
+        useCustomAccentColor: !!savedLocation.accentColor,
+        accentColor: savedLocation.accentColor ?? "#f97316",
+      })
+
+      // Update image states with saved values
+      if (savedLocation.logoUrl) {
+        setLogoUrl(savedLocation.logoUrl)
+        setLogoPreview(savedLocation.logoUrl)
+      }
+      if (savedLocation.bannerUrl) {
+        setBannerUrl(savedLocation.bannerUrl)
+        setBannerPreview(savedLocation.bannerUrl)
+      }
+
+      // Update currentLocation with saved data so discard works correctly
+      setCurrentLocation(savedLocation)
+
+      setLastSaved(new Date())
+      setFormKey((prev) => prev + 1)
+      toast.success("Store information saved successfully!")
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Failed to save location"
+      setError(errorMessage)
+      toast.error(errorMessage)
+      console.error("[StoresPage] Error saving location:", err)
+    } finally {
+      setIsSaving(false)
+    }
+  }, [currentMerchantId, currentLocationId, logoUrl, bannerUrl, form])
+
+  const handleDiscard = useCallback(() => {
+    // Re-load current location data
+    if (currentLocation) {
+      const orderModesData = dbOrderModesToForm(currentLocation.orderModes)
+      const openingHoursData = dbOpeningHoursToForm(currentLocation.openingHours)
+
+      form.reset({
+        storeName: currentLocation.name ?? "",
+        storeType: (currentLocation.storeType as "restaurant" | "bar" | "cafe" | "grocery" | "other") ?? "restaurant",
+        shortDescription: currentLocation.description ?? "",
+        storeSlug: currentLocation.storeSlug ?? "",
+        address: {
+          street: currentLocation.address ?? "",
+          apartment: currentLocation.addressLine2 ?? "",
+          postalCode: currentLocation.postalCode ?? "",
+          city: currentLocation.city ?? "",
+          country: currentLocation.country ?? "Belgium",
+        },
+        phoneNumber: currentLocation.phone ?? "",
+        publicEmail: currentLocation.email ?? "",
+        useBusinessEmail: false,
+        website: currentLocation.websiteUrl ?? "",
+        instagram: currentLocation.instagramHandle ?? "",
+        facebook: currentLocation.facebookUrl ?? "",
+        openingHours: openingHoursData,
+        enableTables: currentLocation.enableTables ?? false,
+        enableReservations: currentLocation.enableReservations ?? false,
+        requirePrepayment: false,
+        maxPartySize: currentLocation.maxPartySize ?? 8,
+        bookingWindow: currentLocation.bookingWindowDays ?? 30,
+        enableOnlineOrders: currentLocation.enableOnlineOrders ?? true,
+        orderModes: orderModesData,
+        deliveryRadius: currentLocation.orderModes?.delivery?.radius_km ?? 5,
+        deliveryFee: currentLocation.orderModes?.delivery?.delivery_fee ?? 5.99,
+        minimumOrder: currentLocation.orderModes?.delivery?.minimum_order ?? 15,
+        storeStatus: dbStatusToForm(currentLocation.status),
+        publicListing: currentLocation.visibleInDirectory ?? true,
+        timezone: currentLocation.timezone ?? "Europe/Brussels",
+        useBusinessTimezone: !currentLocation.timezone,
+        useCustomLogo: !!currentLocation.logoUrl,
+        useCustomBanner: !!currentLocation.bannerUrl,
+        useCustomAccentColor: !!currentLocation.accentColor,
+        accentColor: currentLocation.accentColor ?? "#f97316",
+      })
+      setFormKey((prev) => prev + 1)
+
+      // Reset image states
+      if (currentLocation.logoUrl) {
+        setLogoUrl(currentLocation.logoUrl)
+        setLogoPreview(currentLocation.logoUrl)
+      } else {
+        setLogoUrl(undefined)
+        setLogoPreview("/placeholder.svg")
+      }
+      setLogoFile(null)
+
+      if (currentLocation.bannerUrl) {
+        setBannerUrl(currentLocation.bannerUrl)
+        setBannerPreview(currentLocation.bannerUrl)
+      } else {
+        setBannerUrl(undefined)
+        setBannerPreview("/placeholder.svg")
+      }
+      setBannerFile(null)
+    } else {
+      form.reset()
+      // Reset image states
+      setLogoFile(null)
+      setLogoPreview("/placeholder.svg")
+      setLogoUrl(undefined)
+      setBannerFile(null)
+      setBannerPreview("/placeholder.svg")
+      setBannerUrl(undefined)
+    }
+    toast.info("Changes discarded")
+  }, [currentLocation, form])
+
+  // Image upload handlers
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    if (!currentLocationId) {
+      toast.error("No location selected")
+      return
+    }
+
+    // Validate file type
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
+    if (!allowedTypes.includes(file.type)) {
+      toast.error("Only JPG, PNG, or WEBP images are allowed")
+      return
+    }
+
+    // Validate file size (2MB max)
+    const MAX_FILE_SIZE = 2 * 1024 * 1024
+    if (file.size > MAX_FILE_SIZE) {
+      toast.error("File must be 2MB or smaller")
+      return
+    }
+
+    // Show preview immediately
+    setLogoFile(file)
+    const reader = new FileReader()
+    reader.onloadend = () => {
+      setLogoPreview(reader.result as string)
+    }
+    reader.readAsDataURL(file)
+
+    // Upload to server
+    setLogoUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const response = await fetch(`/api/locations/${encodeURIComponent(currentLocationId)}/upload`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || 'Failed to upload logo')
+      }
+
+      const data = await response.json()
+      setLogoUrl(data.url)
+      toast.success("Logo uploaded successfully")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to upload logo")
+      // Reset preview on error
+      setLogoPreview(currentLocation?.logoUrl || "/placeholder.svg")
+      setLogoFile(null)
+    } finally {
+      setLogoUploading(false)
+    }
   }
 
-  const handleDiscard = () => {
-    form.reset()
-    toast.info("Changes discarded")
+  const handleBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    if (!currentLocationId) {
+      toast.error("No location selected")
+      return
+    }
+
+    // Validate file type
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
+    if (!allowedTypes.includes(file.type)) {
+      toast.error("Only JPG, PNG, or WEBP images are allowed")
+      return
+    }
+
+    // Validate file size (2MB max)
+    const MAX_FILE_SIZE = 2 * 1024 * 1024
+    if (file.size > MAX_FILE_SIZE) {
+      toast.error("File must be 2MB or smaller")
+      return
+    }
+
+    // Show preview immediately
+    setBannerFile(file)
+    const reader = new FileReader()
+    reader.onloadend = () => {
+      setBannerPreview(reader.result as string)
+    }
+    reader.readAsDataURL(file)
+
+    // Upload to server
+    setBannerUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const response = await fetch(`/api/locations/${encodeURIComponent(currentLocationId)}/upload`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || 'Failed to upload banner')
+      }
+
+      const data = await response.json()
+      setBannerUrl(data.url)
+      toast.success("Banner uploaded successfully")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to upload banner")
+      // Reset preview on error
+      setBannerPreview(currentLocation?.bannerUrl || "/placeholder.svg")
+      setBannerFile(null)
+    } finally {
+      setBannerUploading(false)
+    }
   }
 
   const toggleDayClosed = (dayIndex: number) => {
@@ -346,6 +931,44 @@ export default function StoresPage() {
     window.addEventListener("keydown", handleKeyDown as any)
     return () => window.removeEventListener("keydown", handleKeyDown as any)
   })
+
+  // Loading state
+  if (tenantLoading || locationsLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          <p className="text-muted-foreground">Loading store information...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Error state
+  if (locationsError) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4 p-8 bg-destructive/10 rounded-lg border border-destructive/20">
+          <AlertCircle className="h-8 w-8 text-destructive" />
+          <p className="text-destructive font-medium">Error loading stores</p>
+          <p className="text-sm text-muted-foreground">{locationsError}</p>
+        </div>
+      </div>
+    )
+  }
+
+  // No merchant state
+  if (!currentMerchantId) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4 p-8">
+          <AlertCircle className="h-8 w-8 text-muted-foreground" />
+          <p className="text-muted-foreground font-medium">No merchant selected</p>
+          <p className="text-sm text-muted-foreground">Please select a merchant to manage stores.</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -449,18 +1072,45 @@ export default function StoresPage() {
                         <div>
                           <h3 className="font-semibold mb-3">Store Preview</h3>
                           <div className="space-y-3">
-                            <div className="aspect-video bg-muted rounded-lg flex items-center justify-center">
-                              <StoreIcon className="w-12 h-12 text-muted-foreground" />
+                            {/* Banner */}
+                            <div className="aspect-video bg-muted rounded-lg overflow-hidden">
+                              {bannerPreview && bannerPreview !== "/placeholder.svg" ? (
+                                <img
+                                  src={bannerPreview}
+                                  alt="Store banner"
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center">
+                                  <StoreIcon className="w-12 h-12 text-muted-foreground" />
+                                </div>
+                              )}
                             </div>
-                            <div className="space-y-2">
-                              <h4 className="font-semibold">{storeName}</h4>
-                              <p className="text-sm text-muted-foreground">{shortDescription}</p>
-                              <Badge
-                                variant={storeStatus === "active" ? "default" : "secondary"}
-                                className="capitalize text-xs"
-                              >
-                                {storeStatus}
-                              </Badge>
+                            <div className="flex items-start gap-3">
+                              {/* Logo */}
+                              <div className="h-12 w-12 rounded-lg bg-muted overflow-hidden flex-shrink-0">
+                                {logoPreview && logoPreview !== "/placeholder.svg" ? (
+                                  <img
+                                    src={logoPreview}
+                                    alt="Store logo"
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center">
+                                    <StoreIcon className="w-6 h-6 text-muted-foreground" />
+                                  </div>
+                                )}
+                              </div>
+                              <div className="space-y-1 flex-1 min-w-0">
+                                <h4 className="font-semibold truncate">{storeName || "Store Name"}</h4>
+                                <p className="text-sm text-muted-foreground line-clamp-2">{shortDescription || "Store description"}</p>
+                                <Badge
+                                  variant={storeStatus === "active" ? "default" : "secondary"}
+                                  className="capitalize text-xs"
+                                >
+                                  {storeStatus}
+                                </Badge>
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -502,29 +1152,60 @@ export default function StoresPage() {
           </div>
         </div>
 
-        {/* Sticky Action Bar */}
-        {isDirty && (
-          <div className="border-t bg-amber-50">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-amber-900">
-                  <AlertCircle className="w-4 h-4" />
-                  <span className="text-sm font-medium">You have unsaved changes</span>
-                </div>
-                <div className="flex gap-2">
-                  <Button variant="ghost" size="sm" onClick={handleDiscard}>
-                    <X className="w-4 h-4 mr-2" />
-                    Discard
-                  </Button>
-                  <Button size="sm" onClick={handleSubmit(onSubmit)} className="bg-orange-600 hover:bg-orange-700">
-                    <Save className="w-4 h-4 mr-2" />
-                    Save changes
-                  </Button>
-                </div>
-              </div>
+      </div>
+
+      {/* Sticky Action Bar */}
+      <div className="sticky top-0 z-10 px-4 sm:px-6 lg:px-8 py-4 bg-background/95 backdrop-blur border-b border-border">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 text-sm">
+              {isDirty ? (
+                <>
+                  <div className="h-2 w-2 rounded-full bg-amber-500" />
+                  <span className="text-muted-foreground">Unsaved changes</span>
+                </>
+              ) : (
+                <>
+                  <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                  <span className="text-muted-foreground">All changes saved</span>
+                </>
+              )}
             </div>
+
+            {lastSaved && (
+              <span className="text-xs text-muted-foreground hidden sm:inline">
+                Last saved {lastSaved.toLocaleTimeString()}
+              </span>
+            )}
           </div>
-        )}
+
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={handleDiscard} disabled={!isDirty || isSaving}>
+              Discard
+            </Button>
+            <Button variant="outline" disabled={isSaving}>
+              <Eye className="w-4 h-4 mr-2" />
+              Preview
+            </Button>
+            <Button 
+              onClick={handleSubmit(onSubmit)} 
+              disabled={!isDirty || isSaving} 
+              className="gap-2"
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Check className="h-4 w-4" />
+                  Save changes
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
       </div>
 
       {/* Main Content */}
@@ -570,6 +1251,7 @@ export default function StoresPage() {
                     Store Type <span className="text-red-500">*</span>
                   </Label>
                   <RadioGroup
+                    key={`storeType-${formKey}`}
                     value={storeType}
                     onValueChange={(value) => setValue("storeType", value as any, { shouldDirty: true })}
                     className="grid grid-cols-3 sm:grid-cols-5 gap-2"
@@ -701,7 +1383,7 @@ export default function StoresPage() {
                     <Label htmlFor="country">
                       Country <span className="text-red-500">*</span>
                     </Label>
-                    <Select value={watch("address.country")} onValueChange={(val) => setValue("address.country", val)}>
+                    <Select key={`country-${formKey}`} value={watch("address.country")} onValueChange={(val) => setValue("address.country", val)}>
                       <SelectTrigger className={cn(errors.address?.country && "border-red-500")}>
                         <SelectValue />
                       </SelectTrigger>
@@ -878,7 +1560,7 @@ export default function StoresPage() {
                 <div className="space-y-2">
                   {openingHours.map((day, dayIndex) => (
                     <div
-                      key={dayIndex}
+                      key={`day-${dayIndex}-${formKey}`}
                       className={cn(
                         "border rounded-lg p-3 sm:p-4 space-y-3",
                         (new Date().getDay() + 6) % 7 === dayIndex &&
@@ -890,6 +1572,7 @@ export default function StoresPage() {
                           <span className="font-medium w-20 sm:w-24">{dayNames[dayIndex]}</span>
                           <div className="flex items-center gap-2">
                             <Checkbox
+                              key={`closed-${dayIndex}-${formKey}`}
                               id={`closed-${dayIndex}`}
                               checked={day.closed}
                               onCheckedChange={() => toggleDayClosed(dayIndex)}
@@ -937,8 +1620,9 @@ export default function StoresPage() {
                       {!day.closed && (
                         <div className="space-y-2 sm:pl-28">
                           {day.shifts.map((shift, shiftIndex) => (
-                            <div key={shiftIndex} className="flex items-center gap-2">
+                            <div key={`${dayIndex}-${shiftIndex}-${formKey}`} className="flex items-center gap-2">
                               <Select
+                                key={`open-${dayIndex}-${shiftIndex}-${formKey}`}
                                 value={shift.open}
                                 onValueChange={(val) =>
                                   setValue(`openingHours.${dayIndex}.shifts.${shiftIndex}.open`, val, {
@@ -959,6 +1643,7 @@ export default function StoresPage() {
                               </Select>
                               <span className="text-muted-foreground">–</span>
                               <Select
+                                key={`close-${dayIndex}-${shiftIndex}-${formKey}`}
                                 value={shift.close}
                                 onValueChange={(val) =>
                                   setValue(`openingHours.${dayIndex}.shifts.${shiftIndex}.close`, val, {
@@ -1036,12 +1721,60 @@ export default function StoresPage() {
                   </div>
 
                   {useCustomLogo && (
-                    <div className="border-2 border-dashed rounded-lg p-8 text-center bg-muted">
-                      <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
-                      <p className="text-sm text-muted-foreground mb-2">Upload custom logo</p>
-                      <Button type="button" variant="outline" size="sm">
-                        Choose File
-                      </Button>
+                    <div className="space-y-3">
+                      <div className="relative h-24 w-24 rounded-lg border-2 border-dashed border-border overflow-hidden bg-muted">
+                        <img
+                          src={logoPreview || "/placeholder.svg"}
+                          alt="Logo preview"
+                          className="h-full w-full object-cover"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => document.getElementById("store-logo-upload")?.click()}
+                          disabled={logoUploading}
+                        >
+                          {logoUploading ? (
+                            <>
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              Uploading...
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="h-4 w-4 mr-2" />
+                              {logoFile || logoUrl ? "Replace" : "Upload"}
+                            </>
+                          )}
+                        </Button>
+                        {(logoFile || logoUrl || currentLocation?.logoUrl) && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setLogoFile(null)
+                              setLogoPreview("/placeholder.svg")
+                              setLogoUrl(null)
+                            }}
+                            disabled={logoUploading}
+                          >
+                            <X className="h-4 w-4 mr-1" />
+                            Remove
+                          </Button>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">Recommended: 200x200px, square format</p>
+                      <input
+                        id="store-logo-upload"
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        className="hidden"
+                        onChange={handleLogoUpload}
+                        disabled={logoUploading}
+                      />
                     </div>
                   )}
                 </div>
@@ -1064,12 +1797,60 @@ export default function StoresPage() {
                   </div>
 
                   {useCustomBanner && (
-                    <div className="border-2 border-dashed rounded-lg p-12 text-center bg-muted">
-                      <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
-                      <p className="text-sm text-muted-foreground mb-2">Upload banner image (16:9 recommended)</p>
-                      <Button type="button" variant="outline" size="sm">
-                        Choose File
-                      </Button>
+                    <div className="space-y-3">
+                      <div className="relative h-32 w-full rounded-lg border-2 border-dashed border-border overflow-hidden bg-muted">
+                        <img
+                          src={bannerPreview || "/placeholder.svg"}
+                          alt="Banner preview"
+                          className="h-full w-full object-cover"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => document.getElementById("store-banner-upload")?.click()}
+                          disabled={bannerUploading}
+                        >
+                          {bannerUploading ? (
+                            <>
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              Uploading...
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="h-4 w-4 mr-2" />
+                              {bannerFile || bannerUrl ? "Replace" : "Upload"}
+                            </>
+                          )}
+                        </Button>
+                        {(bannerFile || bannerUrl || currentLocation?.bannerUrl) && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setBannerFile(null)
+                              setBannerPreview("/placeholder.svg")
+                              setBannerUrl(null)
+                            }}
+                            disabled={bannerUploading}
+                          >
+                            <X className="h-4 w-4 mr-1" />
+                            Remove
+                          </Button>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">Recommended: 1920x1080px, 16:9 aspect ratio</p>
+                      <input
+                        id="store-banner-upload"
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        className="hidden"
+                        onChange={handleBannerUpload}
+                        disabled={bannerUploading}
+                      />
                     </div>
                   )}
                 </div>
@@ -1336,6 +2117,7 @@ export default function StoresPage() {
                 <div className="space-y-3">
                   <Label>Store Status</Label>
                   <RadioGroup
+                    key={`storeStatus-${formKey}`}
                     value={storeStatus}
                     onValueChange={(value) => setValue("storeStatus", value as any, { shouldDirty: true })}
                     className="space-y-3"
@@ -1411,7 +2193,7 @@ export default function StoresPage() {
                   </div>
 
                   {!useBusinessTimezone && (
-                    <Select value={watch("timezone")} onValueChange={(val) => setValue("timezone", val)}>
+                    <Select key={`timezone-${formKey}`} value={watch("timezone")} onValueChange={(val) => setValue("timezone", val)}>
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
@@ -1479,15 +2261,42 @@ export default function StoresPage() {
                   <CardTitle className="text-base">Store Preview</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <div className="aspect-video bg-muted rounded-lg flex items-center justify-center">
-                    <StoreIcon className="w-12 h-12 text-muted-foreground" />
+                  {/* Banner */}
+                  <div className="aspect-video bg-muted rounded-lg overflow-hidden">
+                    {bannerPreview && bannerPreview !== "/placeholder.svg" ? (
+                      <img
+                        src={bannerPreview}
+                        alt="Store banner"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <StoreIcon className="w-12 h-12 text-muted-foreground" />
+                      </div>
+                    )}
                   </div>
-                  <div className="space-y-2">
-                    <h3 className="font-semibold">{storeName}</h3>
-                    <p className="text-sm text-muted-foreground">{shortDescription}</p>
-                    <Badge variant={storeStatus === "active" ? "default" : "secondary"} className="capitalize text-xs">
-                      {storeStatus}
-                    </Badge>
+                  <div className="flex items-start gap-3">
+                    {/* Logo */}
+                    <div className="h-12 w-12 rounded-lg bg-muted overflow-hidden flex-shrink-0">
+                      {logoPreview && logoPreview !== "/placeholder.svg" ? (
+                        <img
+                          src={logoPreview}
+                          alt="Store logo"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <StoreIcon className="w-6 h-6 text-muted-foreground" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-1 flex-1 min-w-0">
+                      <h3 className="font-semibold truncate">{storeName || "Store Name"}</h3>
+                      <p className="text-sm text-muted-foreground line-clamp-2">{shortDescription || "Store description"}</p>
+                      <Badge variant={storeStatus === "active" ? "default" : "secondary"} className="capitalize text-xs">
+                        {storeStatus}
+                      </Badge>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
