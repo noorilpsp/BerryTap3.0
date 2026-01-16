@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import slugify from "slugify";
 import { db } from "../src/db";
 import {
-  categories,
+  fastCategories,
   collections,
   subcategories,
   subcollections,
@@ -66,13 +66,13 @@ const generateCategories = async () => {
   });
 
   await Promise.all(promises);
-  await db.insert(categories).values(data).onConflictDoNothing();
+  await db.insert(fastCategories).values(data).onConflictDoNothing();
 };
 
 // generateCategories();
 
 const getCategories = async () => {
-  return await db.select().from(categories);
+  return await db.select().from(fastCategories);
 };
 
 // generate 10 subcollections per each category

@@ -13,7 +13,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { AlertTriangle, AlertCircle } from "lucide-react"
-import { toast } from "sonner"
 
 interface DeleteConfirmationDialogProps {
   open: boolean
@@ -53,11 +52,9 @@ export function DeleteConfirmationDialog({
     setIsDeleting(true)
     try {
       await onConfirm()
-      const entityTypeText = entityType ? entityType.charAt(0).toUpperCase() + entityType.slice(1) : "Item"
-      toast.success(`${entityTypeText} deleted successfully`)
       handleClose()
     } catch (error) {
-      toast.error("Failed to delete")
+      // Error toast is handled by the calling function
     } finally {
       setIsDeleting(false)
     }

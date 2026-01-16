@@ -25,8 +25,8 @@ export const collections = pgTable("collections", {
 
 export type Collection = typeof collections.$inferSelect;
 
-export const categories = pgTable(
-  "categories",
+export const fastCategories = pgTable(
+  "fast_categories",
   {
     slug: text("slug").notNull().primaryKey(),
     name: text("name").notNull(),
@@ -36,13 +36,13 @@ export const categories = pgTable(
     image_url: text("image_url"),
   },
   (table) => ({
-    collectionIdIdx: index("categories_collection_id_idx").on(
+    collectionIdIdx: index("fast_categories_collection_id_idx").on(
       table.collection_id,
     ),
   }),
 );
 
-export type Category = typeof categories.$inferSelect;
+export type FastCategory = typeof fastCategories.$inferSelect;
 
 export const subcollections = pgTable(
   "subcollections",
@@ -51,7 +51,7 @@ export const subcollections = pgTable(
     name: text("name").notNull(),
     category_slug: text("category_slug")
       .notNull()
-      .references(() => categories.slug, { onDelete: "cascade" }),
+      .references(() => fastCategories.slug, { onDelete: "cascade" }),
   },
   (table) => ({
     categorySlugIdx: index("subcollections_category_slug_idx").on(
@@ -110,12 +110,12 @@ export const products = pgTable(
 export type Product = typeof products.$inferSelect;
 
 export const collectionsRelations = relations(collections, ({ many }) => ({
-  categories: many(categories),
+  categories: many(fastCategories),
 }));
 
-export const categoriesRelations = relations(categories, ({ one, many }) => ({
+export const fastCategoriesRelations = relations(fastCategories, ({ one, many }) => ({
   collection: one(collections, {
-    fields: [categories.collection_id],
+    fields: [fastCategories.collection_id],
     references: [collections.id],
   }),
   subcollections: many(subcollections),
@@ -124,9 +124,9 @@ export const categoriesRelations = relations(categories, ({ one, many }) => ({
 export const subcollectionRelations = relations(
   subcollections,
   ({ one, many }) => ({
-    category: one(categories, {
+    category: one(fastCategories, {
       fields: [subcollections.category_slug],
-      references: [categories.slug],
+      references: [fastCategories.slug],
     }),
     subcategories: many(subcategories),
   }),
@@ -206,10 +206,14 @@ import {
   merchantUsers,
   platformPersonnel,
   invitations,
+  customers,
+  orderTimeline,
 } from "../lib/db/schema";
 
 export const usersRelations = relations(users, ({ one, many }) => ({
   merchantUsers: many(merchantUsers),
   platformPersonnel: one(platformPersonnel),
   invitations: many(invitations),
+  customers: many(customers),
+  orderTimelineChanges: many(orderTimeline),
 }));

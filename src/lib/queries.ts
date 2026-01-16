@@ -1,5 +1,5 @@
 import {
-  categories,
+  fastCategories,
   merchants,
   products,
   subcategories,
@@ -167,8 +167,8 @@ export const getSubcategory = unstable_cache(
 
 export const getCategory = unstable_cache(
   (categorySlug: string) =>
-    db.query.categories.findFirst({
-      where: (categories, { eq }) => eq(categories.slug, categorySlug),
+    db.query.fastCategories.findFirst({
+      where: (fastCategories, { eq }) => eq(fastCategories.slug, categorySlug),
       with: {
         subcollections: {
           with: {
@@ -219,17 +219,17 @@ export const getCategoryProductCount = unstable_cache(
   (categorySlug: string) =>
     db
       .select({ count: count() })
-      .from(categories)
+      .from(fastCategories)
       .leftJoin(
         subcollections,
-        eq(categories.slug, subcollections.category_slug),
+        eq(fastCategories.slug, subcollections.category_slug),
       )
       .leftJoin(
         subcategories,
         eq(subcollections.id, subcategories.subcollection_id),
       )
       .leftJoin(products, eq(subcategories.slug, products.subcategory_slug))
-      .where(eq(categories.slug, categorySlug)),
+      .where(eq(fastCategories.slug, categorySlug)),
   ["category-product-count"],
   {
     revalidate: 60 * 60 * 2, // two hours,
@@ -270,8 +270,8 @@ export const getSearchResults = unstable_cache(
           sql`${subcategories.subcollection_id} = ${subcollections.id}`,
         )
         .innerJoin(
-          categories,
-          sql`${subcollections.category_slug} = ${categories.slug}`,
+          fastCategories,
+          sql`${subcollections.category_slug} = ${fastCategories.slug}`,
         );
     } else {
       // For longer search terms, use full-text search with tsquery
@@ -297,8 +297,8 @@ export const getSearchResults = unstable_cache(
           sql`${subcategories.subcollection_id} = ${subcollections.id}`,
         )
         .innerJoin(
-          categories,
-          sql`${subcollections.category_slug} = ${categories.slug}`,
+          fastCategories,
+          sql`${subcollections.category_slug} = ${fastCategories.slug}`,
         );
     }
 

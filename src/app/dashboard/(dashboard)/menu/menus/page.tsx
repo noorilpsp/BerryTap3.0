@@ -85,16 +85,10 @@ export default function MenuMenusPage() {
 
   const handleDeleteMenu = useCallback(
     (id: string) => {
-      const menu = menus.find((m) => m.id === id)
-      if (!menu) return
-
-      const confirmDelete = confirm(`Are you sure you want to delete "${menu.name}"? This action cannot be undone.`)
-      if (!confirmDelete) return
-
+      // Confirmation is already handled by DeleteConfirmationDialog in MenusContent
       deleteMenu(id)
-      toast.success(`${menu.name} deleted`)
     },
-    [menus, deleteMenu],
+    [deleteMenu],
   )
 
   const handleToggleActive = useCallback(
@@ -211,6 +205,7 @@ export default function MenuMenusPage() {
         />
 
         <EditMenuDrawer
+          key={editingMenu?.id || "new"}
           menu={editingMenu}
           isOpen={editDrawerOpen}
           onClose={() => {

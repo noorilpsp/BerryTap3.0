@@ -1,0 +1,402 @@
+import { NextRequest, NextResponse } from "next/server";
+import { eq, and } from "drizzle-orm";
+import { supabaseServer } from "@/lib/supabaseServer";
+import { db } from "@/db";
+import { items, categoryItems, itemTags, itemAllergens, itemCustomizations } from "@/db/schema";
+import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { unstable_cache } from "@/lib/unstable-cache";
+
+export const runtime = "nodejs";
+
+/**
+ * GET /api/items/[id]
+ * Get a single item with all relations
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id: itemId } = await params;
+
+    const supabase = await supabaseServer();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      return NextResponse.json(
+        { error: "Unauthorized - Please log in" },
+        { status: 401 }
+      );
+    }
+
+    if (!itemId || itemId.trim() === "") {
+      return NextResponse.json(
+        { error: "Item ID is required" },
+        { status: 400 }
+      );
+    }
+
+    // Fetch item with all relations
+    const getCachedItem = unstable_cache(
+      async () => {
+        const item = await db.query.items.findFirst({
+          where: eq(items.id, itemId),
+          with: {
+            categoryItems: {
+              with: {
+                category: true,
+              },
+            },
+            itemTags: {
+              with: {
+                tag: true,
+              },
+            },
+            itemAllergens: {
+              with: {
+                allergen: true,
+              },
+            },
+            itemCustomizations: {
+              with: {
+                group: {
+                  with: {
+                    options: true,
+                  },
+                },
+              },
+            },
+            location: {
+              columns: {
+                id: true,
+                merchantId: true,
+              },
+            },
+          },
+        });
+        return item;
+      },
+      ["item-data", itemId],
+      { revalidate: 300 } // 5 minutes
+    );
+
+    const item = await getCachedItem();
+
+    if (!item) {
+      return NextResponse.json(
+        { error: "Item not found" },
+        { status: 404 }
+      );
+    }
+
+    // Check user has access to this location
+    const membership = await db.query.merchantUsers.findFirst({
+      where: and(
+        eq(merchantUsers.merchantId, item.location.merchantId),
+        eq(merchantUsers.userId, user.id),
+        eq(merchantUsers.isActive, true)
+      ),
+      columns: {
+        id: true,
+      },
+    });
+
+    if (!membership) {
+      return NextResponse.json(
+        { error: "Forbidden - You don't have access to this item" },
+        { status: 403 }
+      );
+    }
+
+    return NextResponse.json(item, {
+      headers: {
+        "Cache-Control": "no-store, must-revalidate",
+      },
+    });
+  } catch (error) {
+    console.error("[GET /api/items/[id]] Error:", error);
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Internal server error - Failed to fetch item",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * PUT /api/items/[id]
+ * Update an item
+ */
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id: itemId } = await params;
+
+    const supabase = await supabaseServer();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      return NextResponse.json(
+        { error: "Unauthorized - Please log in" },
+        { status: 401 }
+      );
+    }
+
+    if (!itemId || itemId.trim() === "") {
+      return NextResponse.json(
+        { error: "Item ID is required" },
+        { status: 400 }
+      );
+    }
+
+    // Get existing item to verify access
+    const existingItem = await db.query.items.findFirst({
+      where: eq(items.id, itemId),
+      with: {
+        location: {
+          columns: {
+            id: true,
+            merchantId: true,
+          },
+        },
+      },
+    });
+
+    if (!existingItem) {
+      return NextResponse.json(
+        { error: "Item not found" },
+        { status: 404 }
+      );
+    }
+
+    // Check user has access
+    const membership = await db.query.merchantUsers.findFirst({
+      where: and(
+        eq(merchantUsers.merchantId, existingItem.location.merchantId),
+        eq(merchantUsers.userId, user.id),
+        eq(merchantUsers.isActive, true)
+      ),
+      columns: {
+        id: true,
+      },
+    });
+
+    if (!membership) {
+      return NextResponse.json(
+        { error: "Forbidden - You don't have access to this item" },
+        { status: 403 }
+      );
+    }
+
+    const body = await request.json().catch(() => ({}));
+    const updateData: Partial<typeof items.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+
+    if (body.name !== undefined) updateData.name = body.name;
+    if (body.description !== undefined) updateData.description = body.description;
+    if (body.price !== undefined) updateData.price = body.price.toString();
+    if (body.photoUrl !== undefined) updateData.photoUrl = body.photoUrl;
+    if (body.calories !== undefined) updateData.calories = body.calories;
+    if (body.status !== undefined) updateData.status = body.status;
+    if (body.useCustomHours !== undefined) updateData.useCustomHours = body.useCustomHours;
+    if (body.customSchedule !== undefined) updateData.customSchedule = body.customSchedule;
+    if (body.displayOrder !== undefined) updateData.displayOrder = body.displayOrder;
+
+    // Update item
+    await db.update(items).set(updateData).where(eq(items.id, itemId));
+
+    // Update relations if provided
+    if (body.categoryIds !== undefined && Array.isArray(body.categoryIds)) {
+      // Delete existing category items
+      await db.delete(categoryItems).where(eq(categoryItems.itemId, itemId));
+      // Insert new ones
+      if (body.categoryIds.length > 0) {
+        await db.insert(categoryItems).values(
+          body.categoryIds.map((categoryId: string, index: number) => ({
+            categoryId,
+            itemId,
+            displayOrder: index,
+          }))
+        );
+      }
+    }
+
+    if (body.tagIds !== undefined && Array.isArray(body.tagIds)) {
+      await db.delete(itemTags).where(eq(itemTags.itemId, itemId));
+      if (body.tagIds.length > 0) {
+        await db.insert(itemTags).values(
+          body.tagIds.map((tagId: string) => ({
+            tagId,
+            itemId,
+          }))
+        );
+      }
+    }
+
+    if (body.allergenIds !== undefined && Array.isArray(body.allergenIds)) {
+      await db.delete(itemAllergens).where(eq(itemAllergens.itemId, itemId));
+      if (body.allergenIds.length > 0) {
+        await db.insert(itemAllergens).values(
+          body.allergenIds.map((allergenId: string) => ({
+            allergenId,
+            itemId,
+          }))
+        );
+      }
+    }
+
+    if (body.customizationGroupIds !== undefined && Array.isArray(body.customizationGroupIds)) {
+      await db.delete(itemCustomizations).where(eq(itemCustomizations.itemId, itemId));
+      if (body.customizationGroupIds.length > 0) {
+        await db.insert(itemCustomizations).values(
+          body.customizationGroupIds.map((groupId: string, index: number) => ({
+            groupId,
+            itemId,
+            displayOrder: index,
+          }))
+        );
+      }
+    }
+
+    // Fetch updated item with relations
+    const updatedItem = await db.query.items.findFirst({
+      where: eq(items.id, itemId),
+      with: {
+        categoryItems: {
+          with: {
+            category: true,
+          },
+        },
+        itemTags: {
+          with: {
+            tag: true,
+          },
+        },
+        itemAllergens: {
+          with: {
+            allergen: true,
+          },
+        },
+        itemCustomizations: {
+          with: {
+            group: true,
+          },
+        },
+      },
+    });
+
+    return NextResponse.json(updatedItem);
+  } catch (error) {
+    console.error("[PUT /api/items/[id]] Error:", error);
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Internal server error - Failed to update item",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * DELETE /api/items/[id]
+ * Delete an item
+ */
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id: itemId } = await params;
+
+    const supabase = await supabaseServer();
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      return NextResponse.json(
+        { error: "Unauthorized - Please log in" },
+        { status: 401 }
+      );
+    }
+
+    if (!itemId || itemId.trim() === "") {
+      return NextResponse.json(
+        { error: "Item ID is required" },
+        { status: 400 }
+      );
+    }
+
+    // Get existing item to verify access
+    const existingItem = await db.query.items.findFirst({
+      where: eq(items.id, itemId),
+      with: {
+        location: {
+          columns: {
+            id: true,
+            merchantId: true,
+          },
+        },
+      },
+    });
+
+    if (!existingItem) {
+      return NextResponse.json(
+        { error: "Item not found" },
+        { status: 404 }
+      );
+    }
+
+    // Check user has access
+    const membership = await db.query.merchantUsers.findFirst({
+      where: and(
+        eq(merchantUsers.merchantId, existingItem.location.merchantId),
+        eq(merchantUsers.userId, user.id),
+        eq(merchantUsers.isActive, true)
+      ),
+      columns: {
+        id: true,
+      },
+    });
+
+    if (!membership) {
+      return NextResponse.json(
+        { error: "Forbidden - You don't have access to this item" },
+        { status: 403 }
+      );
+    }
+
+    // Delete item (cascade will handle related records)
+    await db.delete(items).where(eq(items.id, itemId));
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("[DELETE /api/items/[id]] Error:", error);
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Internal server error - Failed to delete item",
+      },
+      { status: 500 }
+    );
+  }
+}

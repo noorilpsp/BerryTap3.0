@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import * as z from "zod"
@@ -15,7 +15,7 @@ import { toast } from "sonner"
 import { EmojiInputField } from "@/components/emoji-input-field"
 import { MenuSelector } from "@/components/menu-selector"
 import { UnsavedChangesModal } from "@/components/modals/unsaved-changes-modal"
-import { mockMenus } from "@/lib/mockData"
+import type { Menu } from "@/types/menu"
 
 const categorySchema = z.object({
   name: z.string().min(1, "Category name is required"),
@@ -29,6 +29,7 @@ type CategoryFormData = z.infer<typeof categorySchema>
 interface CreateCategoryDrawerProps {
   isOpen: boolean
   onClose: () => void
+  menus?: Menu[]
   onSave: (data: {
     name: string
     description?: string
@@ -37,10 +38,15 @@ interface CreateCategoryDrawerProps {
   }) => void
 }
 
-export function CreateCategoryDrawer({ isOpen, onClose, onSave }: CreateCategoryDrawerProps) {
+export function CreateCategoryDrawer({ isOpen, onClose, menus = [], onSave }: CreateCategoryDrawerProps) {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showUnsavedModal, setShowUnsavedModal] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
+
+  // Ensure menus is always an array and updates when menus prop changes
+  const safeMenus = useMemo(() => {
+    return Array.isArray(menus) ? menus : []
+  }, [menus])
 
   const form = useForm<CategoryFormData>({
     resolver: zodResolver(categorySchema),
@@ -203,17 +209,23 @@ export function CreateCategoryDrawer({ isOpen, onClose, onSave }: CreateCategory
               {/* Add to Menus */}
               <div className="space-y-2">
                 <Label>Add to Menus (optional)</Label>
-                <MenuSelector
-                  menus={mockMenus.map((menu) => ({
-                    id: menu.id,
-                    label: menu.name,
-                  }))}
-                  selected={selectedMenuIds}
-                  onChange={(selectedIds) =>
-                    setValue("menuIds", selectedIds, { shouldDirty: true, shouldValidate: true })
-                  }
-                  placeholder="Search menus..."
-                />
+                {safeMenus.length > 0 ? (
+                  <MenuSelector
+                    menus={safeMenus.map((menu) => ({
+                      id: menu.id,
+                      label: menu.name,
+                    }))}
+                    selected={selectedMenuIds}
+                    onChange={(selectedIds) =>
+                      setValue("menuIds", selectedIds, { shouldDirty: true, shouldValidate: true })
+                    }
+                    placeholder="Search menus..."
+                  />
+                ) : (
+                  <div className="text-sm text-muted-foreground p-4 border rounded-md">
+                    No menus available. Please create a menu first.
+                  </div>
+                )}
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   Select which menus this category should appear in
                 </p>

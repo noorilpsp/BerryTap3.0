@@ -27,38 +27,42 @@ import { CategorySelector } from "@/components/category-selector"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { CustomizationDrawer } from "@/components/customization-drawer"
 import { UnsavedChangesModal } from "@/components/modals/unsaved-changes-modal"
+import { DeleteConfirmationDialog } from "@/components/modals/delete-confirmation-dialog"
 import { PhotoUpload } from "@/components/photo-upload"
 import type { Photo } from "@/types/photo"
+import { useMenu } from "@/app/dashboard/(dashboard)/menu/menu-context"
 
 const menuItemSchema = z.object({
   id: z.string().optional(),
   name: z.string().min(1, "Name is required").max(50),
-  description: z.string().max(260).optional(),
+  description: z.string().max(260).optional().nullable(),
   price: z.number().min(0),
   currency: z.string(),
-  image: z.string().optional(),
+  image: z.string().optional().nullable(),
   status: z.enum(["live", "draft", "hidden", "soldout"]),
   categories: z.array(z.string()).min(1, "At least one category is required"),
-  tags: z.array(z.string()),
-  dietaryTags: z.array(z.enum(["vegetarian", "vegan", "gluten-free"])),
-  customizationGroups: z.array(z.string()),
+  tags: z.array(z.string()).optional().default([]),
+  dietaryTags: z.array(z.enum(["vegetarian", "vegan", "gluten-free"])).optional().default([]),
+  customizationGroups: z.array(z.string()).optional().default([]),
   availabilityMode: z.enum(["menu-hours", "custom"]),
   customSchedule: z
     .array(
       z.object({
-        days: z.array(z.number()).min(1, "Select at least one day"),
-        startTime: z.string().min(1, "Start time is required"),
-        endTime: z.string().min(1, "End time is required"),
+        days: z.array(z.number()),
+        startTime: z.string(),
+        endTime: z.string(),
       }),
     )
-    .optional(),
+    .optional()
+    .nullable(),
   soldOutUntil: z.date().nullable().optional(),
   nutrition: z
     .object({
-      calories: z.number().optional(),
-      allergens: z.array(z.string()).optional(),
+      calories: z.number().optional().nullable(),
+      allergens: z.array(z.string()).optional().default([]),
     })
-    .optional(),
+    .optional()
+    .nullable(),
 })
 
 interface ItemDrawerProps {
@@ -92,8 +96,10 @@ const getOrderedTimeSlots = (selectedTime: string) => {
 }
 
 export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories }: ItemDrawerProps) {
+  const { locationId, customizationGroups, updateCustomizationGroup, deleteCustomizationGroup } = useMenu()
   const [activeTab, setActiveTab] = React.useState("basic")
   const [isSaving, setIsSaving] = React.useState(false)
+  const [isUploading, setIsUploading] = React.useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = React.useState(false)
   const [showUnsavedModal, setShowUnsavedModal] = React.useState(false)
   const [isClosing, setIsClosing] = React.useState(false)
@@ -148,13 +154,15 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
     return () => clearInterval(interval)
   }, [isDirty, item])
 
-  // Reset form when item changes (but not when closing)
+  // Reset form when drawer opens
   React.useEffect(() => {
-    if (isClosing) return // Don't reset form when drawer is closing
+    if (!isOpen) return // Only reset when drawer is open
 
-    console.log("Form reset effect triggered, item:", item)
+    console.log("=== ITEM DRAWER OPENED ===")
+    console.log("Item:", item)
+    
     if (item) {
-      console.log("Resetting form with item data:", item)
+      console.log("Resetting form with item data")
       form.reset(item)
 
       // Initialize photo state if item has an image
@@ -177,7 +185,7 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
         setCurrentPhoto(undefined)
       }
     } else {
-      console.log("Resetting form with default values")
+      console.log("Resetting form for NEW item")
       // Reset to default values for new item
       form.reset({
         id: "",
@@ -192,7 +200,7 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
         dietaryTags: [],
         customizationGroups: [],
         availabilityMode: "menu-hours",
-        customSchedule: [{ days: [], startTime: "7:00 AM", endTime: "11:00 AM" }],
+        customSchedule: [{ days: [], startTime: "7:00 AM", endTime: "11:00 PM" }],
         soldOutUntil: null,
         nutrition: {
           calories: undefined,
@@ -201,7 +209,8 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
       })
       setCurrentPhoto(undefined)
     }
-  }, [item, form, isClosing])
+    setIsClosing(false)
+  }, [isOpen, item?.id])
 
   // Reset closing state and store original item when drawer opens
   React.useEffect(() => {
@@ -239,7 +248,7 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
 
   const handleSaveAndClose = async () => {
     setShowUnsavedModal(false)
-    await handleSave("draft")
+    await handleSave(false)
     setIsClosing(true)
     onClose()
   }
@@ -248,55 +257,51 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
     setShowUnsavedModal(false)
   }
 
-  const handleSave = async (status: "draft" | "live") => {
-    console.log("handleSave called with status:", status)
-    console.log("Current item:", item)
-    console.log("Form state:", form.formState)
-
-    setIsSaving(true)
+  const handleSave = async (publishNow: boolean = false) => {
     try {
-      console.log("Triggering form validation...")
+      setIsSaving(true)
+      
+      // Get current form values
+      const formData = form.getValues()
+      
+      // Trigger validation
       const isValid = await form.trigger()
-      console.log("Form validation result:", isValid)
-
+      
       if (!isValid) {
         const errors = form.formState.errors
-        console.log("Form validation errors:", errors)
-
-        // Show specific error messages
-        if (errors.categories) {
-          toast.error("Please select at least one category")
-        } else if (errors.name) {
-          toast.error("Please enter a valid name")
-        } else if (errors.price) {
-          toast.error("Please enter a valid price")
-        } else {
-          toast.error("Please fix form errors before saving")
-        }
+        
+        // Show ALL errors
+        const allErrors = Object.entries(errors).map(([key, value]) => {
+          return `${key}: ${(value as any)?.message || 'invalid'}`
+        }).join("\n")
+        
+        toast.error("Please fix form errors: " + allErrors)
+        setIsSaving(false)
         return
       }
 
-      const formData = form.getValues()
-      const itemData = {
-        ...formData,
-        status,
-        id: item?.id || Date.now().toString(),
+      // Determine final status based on which button was clicked
+      let finalStatus: typeof formData.status
+      if (publishNow) {
+        // "Save & Publish" - use form status, but if draft, change to live
+        finalStatus = formData.status === "draft" ? "live" : formData.status
+      } else {
+        // "Save Draft" - always save as draft
+        finalStatus = "draft"
       }
 
-      console.log("Form is dirty:", isDirty)
-      console.log("Form data:", formData)
-      console.log("Saving item data:", itemData)
-
-      // Call onSave and wait for it to complete
-      console.log("Calling onSave with:", itemData)
+      const itemData = {
+        ...formData,
+        status: finalStatus,
+        id: item?.id || `new-${Date.now()}`,
+      }
+      
       await onSave(itemData)
-      console.log("onSave completed successfully")
-
-      // Reset form to clean state after successful save
+      
+      toast.success(item ? "Item updated!" : "Item created!")
       form.reset()
-      toast.success("Item saved successfully!")
-    } catch (error) {
-      console.error("Save error:", error)
+    } catch (error: any) {
+      console.error("Error saving item:", error)
       toast.error("Failed to save item")
     } finally {
       setIsSaving(false)
@@ -312,34 +317,54 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
 
   // Photo upload handlers
   const handlePhotoUpload = async (file: File) => {
-    try {
-      // Convert file to data URL for preview
-      const reader = new FileReader()
-      reader.onload = (e) => {
-        const imageUrl = e.target?.result as string
-        form.setValue("image", imageUrl, { shouldDirty: true, shouldValidate: true })
+    if (!locationId) {
+      toast.error("No location selected")
+      return
+    }
 
-        // Update photo state for PhotoUpload component
-        setCurrentPhoto({
-          id: Date.now().toString(),
-          url: imageUrl,
-          thumbnailUrl: imageUrl,
-          status: "approved",
-          uploadedAt: new Date(),
-          approvedAt: new Date(),
-          metadata: {
-            size: file.size,
-            width: 800,
-            height: 800,
-            format: file.type.split("/")[1] as "jpg" | "png" | "webp",
-          },
-        })
+    setIsUploading(true)
+    try {
+      // Upload to Vercel Blob via API
+      const formData = new FormData()
+      formData.append("file", file)
+
+      const response = await fetch(`/api/items/upload?locationId=${locationId}`, {
+        method: "POST",
+        body: formData,
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || "Failed to upload image")
       }
-      reader.readAsDataURL(file)
+
+      const { url } = await response.json()
+
+      // Set the URL in the form
+      form.setValue("image", url, { shouldDirty: true, shouldValidate: true })
+
+      // Update photo state for PhotoUpload component
+      setCurrentPhoto({
+        id: Date.now().toString(),
+        url: url,
+        thumbnailUrl: url,
+        status: "approved",
+        uploadedAt: new Date(),
+        approvedAt: new Date(),
+        metadata: {
+          size: file.size,
+          width: 800,
+          height: 800,
+          format: file.type.split("/")[1] as "jpg" | "png" | "webp",
+        },
+      })
 
       toast.success("Photo uploaded successfully")
     } catch (error) {
-      toast.error("Failed to upload photo")
+      console.error("Photo upload error:", error)
+      toast.error(error instanceof Error ? error.message : "Failed to upload photo")
+    } finally {
+      setIsUploading(false)
     }
   }
 
@@ -460,7 +485,7 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
                 <Button variant="ghost" size="sm" onClick={() => form.reset()}>
                   Discard
                 </Button>
-                <Button size="sm" onClick={() => handleSave("draft")} disabled={isSaving}>
+                <Button size="sm" onClick={() => handleSave(false)} disabled={isSaving}>
                   Save
                 </Button>
               </div>
@@ -610,7 +635,8 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
                             dietaryTagsValue?.includes(tag) && "border-green-500 bg-green-100 text-green-700",
                           )}
                           onClick={() => {
-                            const current = dietaryTagsValue || []
+                            // Get fresh value from form to avoid stale closure
+                            const current = form.getValues("dietaryTags") || []
                             if (current.includes(tag)) {
                               form.setValue(
                                 "dietaryTags",
@@ -651,7 +677,8 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
                             tagsValue?.includes(tag.value) && "border-orange-500 bg-orange-100 text-orange-700",
                           )}
                           onClick={() => {
-                            const current = tagsValue || []
+                            // Get fresh value from form to avoid stale closure
+                            const current = form.getValues("tags") || []
                             if (current.includes(tag.value)) {
                               form.setValue(
                                 "tags",
@@ -712,14 +739,17 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
                             size="sm"
                             className={cn(isSelected && "border-red-500 bg-red-50 text-red-700")}
                             onClick={() => {
-                              if (isSelected) {
+                              // Get fresh value from form to avoid stale closure
+                              const currentAllergens = form.getValues("nutrition.allergens") || []
+                              const allergenLower = allergen.toLowerCase()
+                              if (currentAllergens.includes(allergenLower)) {
                                 form.setValue(
                                   "nutrition.allergens",
-                                  allergens.filter((a) => a !== allergen.toLowerCase()),
+                                  currentAllergens.filter((a) => a !== allergenLower),
                                   { shouldDirty: true, shouldValidate: true },
                                 )
                               } else {
-                                form.setValue("nutrition.allergens", [...allergens, allergen.toLowerCase()], {
+                                form.setValue("nutrition.allergens", [...currentAllergens, allergenLower], {
                                   shouldDirty: true,
                                   shouldValidate: true,
                                 })
@@ -872,9 +902,19 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
 
                   <RadioGroup
                     value={availabilityModeValue}
-                    onValueChange={(value: "menu-hours" | "custom") =>
+                    onValueChange={(value: "menu-hours" | "custom") => {
                       form.setValue("availabilityMode", value, { shouldDirty: true, shouldValidate: true })
-                    }
+                      // When switching to custom mode, ensure there's at least one schedule block
+                      if (value === "custom") {
+                        const currentSchedule = form.getValues("customSchedule")
+                        if (!currentSchedule || currentSchedule.length === 0) {
+                          form.setValue("customSchedule", [{ days: [], startTime: "7:00 AM", endTime: "11:00 PM" }], {
+                            shouldDirty: true,
+                            shouldValidate: true,
+                          })
+                        }
+                      }
+                    }}
                     className="space-y-3"
                   >
                     {/* Menu Hours Option */}
@@ -1275,18 +1315,25 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
         </Tabs>
 
         {/* Footer */}
-        <SheetFooter className="sticky bottom-0 border-t bg-white dark:bg-slate-950 p-4">
+        <SheetFooter className="sticky bottom-0 border-t bg-white dark:bg-slate-950 p-4 z-50">
           <div className="flex w-full gap-2">
             <Button variant="ghost" onClick={handleClose}>
               Cancel
             </Button>
-            <Button variant="outline" onClick={() => handleSave("draft")} disabled={isSaving}>
-              Save Draft
+            <Button 
+              type="button"
+              variant="outline" 
+              onClick={() => handleSave(false)} 
+              disabled={isSaving}
+            >
+              {isSaving ? "Saving..." : "Save Draft"}
             </Button>
             <Button
-              className="bg-orange-600 hover:bg-orange-700"
-              onClick={() => handleSave("live")}
-              disabled={isSaving}
+              type="button"
+              className="bg-orange-600 hover:bg-orange-700 relative z-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={() => handleSave(true)}
+              disabled={isSaving || statusValue === "draft"}
+              title={statusValue === "draft" ? "Cannot publish a draft item. Change status to Live first, or use Save Draft." : undefined}
             >
               {isSaving ? "Saving..." : "Save & Publish"}
             </Button>
@@ -1307,9 +1354,9 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
       <CustomizationDrawer
         group={
           editingCustomizationGroup
-            ? {
+            ? customizationGroups.find(g => g.id === editingCustomizationGroup) || {
                 id: editingCustomizationGroup,
-                name: editingCustomizationGroup,
+                name: "",
                 customerInstructions: "",
                 internalNotes: "",
                 rules: { min: 0, max: 1, required: false },
@@ -1324,16 +1371,33 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
           setShowCustomizationDrawer(false)
           setEditingCustomizationGroup(null)
         }}
-        onSave={(customization) => {
-          console.log("[v0] Saved customization:", customization)
-          setShowCustomizationDrawer(false)
-          setEditingCustomizationGroup(null)
+        onSave={async (customization) => {
+          try {
+            await updateCustomizationGroup(customization.id, customization)
+            setShowCustomizationDrawer(false)
+            setEditingCustomizationGroup(null)
+          } catch (error) {
+            console.error("Failed to save customization:", error)
+          }
         }}
-        onDelete={(id) => {
-          console.log("[v0] Deleted customization:", id)
-          setShowCustomizationDrawer(false)
-          setEditingCustomizationGroup(null)
+        onDelete={async (id) => {
+          try {
+            await deleteCustomizationGroup(id)
+            setShowCustomizationDrawer(false)
+            setEditingCustomizationGroup(null)
+          } catch (error) {
+            console.error("Failed to delete customization:", error)
+          }
         }}
+      />
+
+      {/* Delete Confirmation Dialog */}
+      <DeleteConfirmationDialog
+        open={showDeleteConfirm}
+        onOpenChange={setShowDeleteConfirm}
+        onConfirm={handleDelete}
+        entityType="item"
+        entityName={item?.name || "this item"}
       />
     </Sheet>
   )

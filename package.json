@@ -12,7 +12,9 @@
     "format:check": "prettier --check .",
     "format": "prettier --write . --list-different",
     "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "seed:menu": "npx tsx scripts/seed-menu-data.ts",
+    "seed:orders": "npx tsx scripts/seed-orders-data.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.88",

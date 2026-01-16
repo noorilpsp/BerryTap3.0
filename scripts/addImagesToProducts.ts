@@ -1,6 +1,6 @@
 import { eq, isNotNull, isNull } from "drizzle-orm";
 import { db } from "../src/db";
-import { categories, products, subcategories } from "../src/db/schema";
+import { fastCategories, products, subcategories } from "../src/db/schema";
 import {
   Effect,
   Schedule,
@@ -15,9 +15,9 @@ import { NodeRuntime } from "@effect/platform-node";
 const main = Effect.gen(function* () {
   const categoryUrls = yield* Effect.tryPromise(() =>
     db
-      .select({ imageUrl: categories.image_url })
-      .from(categories)
-      .where(isNotNull(categories.image_url)),
+      .select({ imageUrl: fastCategories.image_url })
+      .from(fastCategories)
+      .where(isNotNull(fastCategories.image_url)),
   );
 
   const subcategoryUrls = yield* Effect.tryPromise(() =>

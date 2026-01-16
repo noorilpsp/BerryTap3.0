@@ -144,79 +144,82 @@ export function CustomizationDrawer({
 
   React.useEffect(() => {
     if (isClosing) return // Don't reset form when drawer is closing
-
     if (!isOpen) {
-      form.reset({
-        name: "",
-        customerInstructions: "",
-        internalNotes: "",
-        rules: {
-          min: 0,
-          max: 1,
-          required: false,
-        },
-        options: [
-          {
-            id: `opt-${Date.now()}`,
-            name: "",
-            priceDelta: 0,
-            isDefault: false,
-            order: 0,
-          },
-        ],
-      })
       setShowDeleteConfirm(false)
     }
-  }, [isOpen, form, isClosing])
-
-  React.useEffect(() => {
-    if (group) {
-      form.reset({
-        name: group.name,
-        customerInstructions: group.customerInstructions,
-        internalNotes: group.internalNotes || "",
-        rules: group.rules,
-        options: group.options,
-      })
-
-      // Initialize advanced features if they exist
-      const advancedGroup = group as AdvancedCustomizationGroup
-      if (advancedGroup.conditionalPricing) {
-        setConditionalPricing(advancedGroup.conditionalPricing)
-      }
-      if (advancedGroup.conditionalQuantities) {
-        setConditionalQuantities(advancedGroup.conditionalQuantities)
-      }
-      if (advancedGroup.secondaryGroups) {
-        setSecondaryGroups(advancedGroup.secondaryGroups)
-      }
-      if (advancedGroup.defaultSelections) {
-        setDefaultSelections(advancedGroup.defaultSelections)
-      }
-    }
-  }, [group, form])
+  }, [isOpen, isClosing])
 
   React.useEffect(() => {
     if (isOpen) {
       setActiveTab("basic")
       setIsClosing(false)
       setShowDeleteConfirm(false)
-      setConditionalPricing({
-        enabled: false,
-        basedOnGroupId: "",
-        priceMatrix: {},
-      })
-      setConditionalQuantities({
-        enabled: false,
-        basedOnGroupId: "",
-        rulesMatrix: {},
-      })
-      setSecondaryGroups({
-        rules: [],
-      })
-      setDefaultSelections({})
+      
+      // Initialize form and advanced features based on whether we have a group
+      if (group) {
+        // Editing existing group - load data from group
+        form.reset({
+          name: group.name,
+          customerInstructions: group.customerInstructions,
+          internalNotes: group.internalNotes || "",
+          rules: group.rules,
+          options: group.options,
+        })
+
+        // Initialize advanced features from group
+        const advancedGroup = group as AdvancedCustomizationGroup
+        setConditionalPricing(advancedGroup.conditionalPricing || {
+          enabled: false,
+          basedOnGroupId: "",
+          priceMatrix: {},
+        })
+        setConditionalQuantities(advancedGroup.conditionalQuantities || {
+          enabled: false,
+          basedOnGroupId: "",
+          rulesMatrix: {},
+        })
+        setSecondaryGroups(advancedGroup.secondaryGroups || {
+          rules: [],
+        })
+        setDefaultSelections(advancedGroup.defaultSelections || {})
+      } else {
+        // Creating new group - reset to defaults
+        form.reset({
+          name: "",
+          customerInstructions: "",
+          internalNotes: "",
+          rules: {
+            min: 0,
+            max: 1,
+            required: false,
+          },
+          options: [
+            {
+              id: `opt-${Date.now()}`,
+              name: "",
+              priceDelta: 0,
+              isDefault: false,
+              order: 0,
+            },
+          ],
+        })
+        setConditionalPricing({
+          enabled: false,
+          basedOnGroupId: "",
+          priceMatrix: {},
+        })
+        setConditionalQuantities({
+          enabled: false,
+          basedOnGroupId: "",
+          rulesMatrix: {},
+        })
+        setSecondaryGroups({
+          rules: [],
+        })
+        setDefaultSelections({})
+      }
     }
-  }, [isOpen])
+  }, [isOpen, group, form])
 
   const handleClose = () => {
     if (isDirty) {
@@ -268,8 +271,10 @@ export function CustomizationDrawer({
         // Include advanced features
         conditionalPricing: conditionalPricing.enabled ? conditionalPricing : undefined,
         conditionalQuantities: conditionalQuantities.enabled ? conditionalQuantities : undefined,
-        secondaryGroups: secondaryGroups.rules.length > 0 ? secondaryGroups : undefined,
-        defaultSelections: Object.keys(defaultSelections).length > 0 ? defaultSelections : undefined,
+        // Always send secondaryGroups if it exists (even if empty array) to ensure old rules are cleared
+        secondaryGroups: secondaryGroups,
+        // Always send defaultSelections (even if empty object) to ensure old defaults are cleared
+        defaultSelections: defaultSelections,
       }
       await onSave(groupData)
       form.reset(values)
@@ -336,11 +341,20 @@ export function CustomizationDrawer({
     setDragOverIndex(null)
   }
 
+  // Determine if drawer should be wider (when conditional pricing is enabled)
+  const needsWiderDrawer = conditionalPricing.enabled && activeTab === "advanced"
+
   return (
     <Sheet open={isOpen} onOpenChange={handleClose}>
       <SheetContent
         side="right"
-        className={cn("w-full p-0 sm:max-w-[480px]", "md:w-[480px]", "max-md:h-[85vh] max-md:rounded-t-3xl")}
+        className={cn(
+          "w-full p-0",
+          needsWiderDrawer 
+            ? "sm:max-w-[800px] md:w-[800px]" 
+            : "sm:max-w-[480px] md:w-[480px]",
+          "max-md:h-[85vh] max-md:rounded-t-3xl"
+        )}
       >
         {/* Header */}
         <div className="sticky top-0 z-10 border-b bg-white dark:bg-slate-950">

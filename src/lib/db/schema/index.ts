@@ -21,6 +21,8 @@ export * from "./merchant-users";
 export * from "./staff";
 export * from "./invitations";
 export * from "./platform-personnel";
+export * from "./menus";
+export * from "./orders";
 
 // Import tables for relations
 import { merchants } from "./merchants";
@@ -29,6 +31,21 @@ import { merchantUsers } from "./merchant-users";
 import { staff } from "./staff";
 import { invitations } from "./invitations";
 import { platformPersonnel } from "./platform-personnel";
+import {
+  menus,
+  categories,
+  items,
+  tags,
+  allergens,
+  customizationGroups,
+} from "./menus";
+import {
+  tables,
+  customers,
+  reservations,
+  orders,
+  orderTimeline,
+} from "./orders";
 
 // ============================================================================
 // Relations
@@ -50,6 +67,16 @@ export const merchantsRelations = relations(merchants, ({ many }) => ({
  * Merchant locations relations
  * - Many locations belong to one merchant
  * - One location has many staff members
+ * - One location has many menus
+ * - One location has many categories
+ * - One location has many items
+ * - One location has many tags
+ * - One location has many allergens
+ * - One location has many customization groups
+ * - One location has many tables
+ * - One location has many customers
+ * - One location has many reservations
+ * - One location has many orders
  */
 export const merchantLocationsRelations = relations(
   merchantLocations,
@@ -59,6 +86,16 @@ export const merchantLocationsRelations = relations(
       references: [merchants.id],
     }),
     staff: many(staff),
+    menus: many(menus),
+    categories: many(categories),
+    items: many(items),
+    tags: many(tags),
+    allergens: many(allergens),
+    customizationGroups: many(customizationGroups),
+    tables: many(tables),
+    customers: many(customers),
+    reservations: many(reservations),
+    orders: many(orders),
   }),
 );
 
@@ -82,12 +119,16 @@ export const merchantUsersRelations = relations(merchantUsers, ({ one }) => ({
 /**
  * Staff relations
  * - Many staff members belong to one location
+ * - One staff member can be assigned to many orders
+ * - One staff member can change many order timeline entries
  */
-export const staffRelations = relations(staff, ({ one }) => ({
+export const staffRelations = relations(staff, ({ one, many }) => ({
   location: one(merchantLocations, {
     fields: [staff.locationId],
     references: [merchantLocations.id],
   }),
+  assignedOrders: many(orders),
+  orderTimelineChanges: many(orderTimeline),
 }));
 
 /**
@@ -119,5 +160,18 @@ export const platformPersonnelRelations = relations(
     // This is documented but not implemented as auth.users is managed by Supabase
   }),
 );
+
+// Re-export relations from orders schema
+export {
+  tablesRelations,
+  customersRelations,
+  reservationsRelations,
+  ordersRelations,
+  orderItemsRelations,
+  orderItemCustomizationsRelations,
+  orderTimelineRelations,
+  paymentsRelations,
+  orderDeliveryRelations,
+} from "./orders";
 
 

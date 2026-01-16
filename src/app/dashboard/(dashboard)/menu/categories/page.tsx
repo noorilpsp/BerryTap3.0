@@ -11,7 +11,7 @@ import { toast } from "sonner"
 import type { Category } from "@/types/category"
 
 export default function MenuCategoriesPage() {
-  const { categories, items, menus, createCategory, updateCategory, deleteCategory, reorderCategories } = useMenu()
+  const { categories, items, menus = [], createCategory, updateCategory, deleteCategory, reorderCategories } = useMenu()
   const [isLoading, setIsLoading] = useState(false)
   const [createDrawerOpen, setCreateDrawerOpen] = useState(false)
   const [editDrawerOpen, setEditDrawerOpen] = useState(false)
@@ -82,7 +82,7 @@ export default function MenuCategoriesPage() {
   )
 
   const handleSaveCategory = useCallback(
-    (
+    async (
       id: string,
       updates: {
         name: string
@@ -91,14 +91,22 @@ export default function MenuCategoriesPage() {
         emoji?: string
       },
     ) => {
-      updateCategory(id, {
-        ...updates,
-        menuNames: mapMenuIdsToNames(updates.menuIds),
-      })
-      setEditDrawerOpen(false)
-      setEditingCategory(null)
+      try {
+        // Find the current category to preserve displayOrder
+        const currentCategory = categories.find((c) => c.id === id)
+        await updateCategory(id, {
+          ...updates,
+          displayOrder: currentCategory?.displayOrder, // Preserve existing order
+          menuNames: mapMenuIdsToNames(updates.menuIds),
+        })
+        setEditDrawerOpen(false)
+        setEditingCategory(null)
+      } catch (error) {
+        // Error is already handled in updateCategory, just re-throw so drawer can handle it
+        throw error
+      }
     },
-    [mapMenuIdsToNames, updateCategory],
+    [categories, mapMenuIdsToNames, updateCategory],
   )
 
   const handleDeleteCategory = useCallback(
@@ -117,19 +125,12 @@ export default function MenuCategoriesPage() {
 
   const handleReorder = useCallback(
     (reorderedCategories: Category[]) => {
-      setIsLoading(true)
-      try {
-        const normalizedCategories = reorderedCategories.map((category: Category) => ({
-          ...category,
-          menuNames: mapMenuIdsToNames(category.menuIds),
-        }))
-        reorderCategories(normalizedCategories)
-        toast.success("Categories reordered")
-      } catch (error) {
-        toast.error("Failed to reorder categories")
-      } finally {
-        setIsLoading(false)
-      }
+      // Normalize categories and let the context handle optimistic updates
+      const normalizedCategories = reorderedCategories.map((category: Category) => ({
+        ...category,
+        menuNames: mapMenuIdsToNames(category.menuIds),
+      }))
+      reorderCategories(normalizedCategories)
     },
     [mapMenuIdsToNames, reorderCategories],
   )
@@ -175,12 +176,14 @@ export default function MenuCategoriesPage() {
       <CreateCategoryDrawer
         isOpen={createDrawerOpen}
         onClose={() => setCreateDrawerOpen(false)}
+        menus={menus || []}
         onSave={handleCreateCategory}
       />
 
       <EditCategoryDrawer
         category={editingCategory}
         isOpen={editDrawerOpen}
+        menus={menus || []}
         onClose={() => {
           setEditDrawerOpen(false)
           setEditingCategory(null)

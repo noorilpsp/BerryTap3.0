@@ -309,20 +309,20 @@ export function MenusContent({
 
       {/* Delete Menu Dialog */}
       <DeleteConfirmationDialog
-        isOpen={deleteDialog.isOpen}
-        onClose={() => setDeleteDialog({ isOpen: false, menuId: "", menuName: "" })}
+        open={deleteDialog.isOpen}
+        onOpenChange={(open) => !open && setDeleteDialog({ isOpen: false, menuId: "", menuName: "" })}
         onConfirm={confirmDeleteMenu}
-        itemType="menu"
-        itemName={deleteDialog.menuName}
+        entityType="menu"
+        entityName={deleteDialog.menuName}
       />
 
       {/* Delete Holiday Dialog */}
       <DeleteConfirmationDialog
-        isOpen={deleteHolidayDialog.isOpen}
-        onClose={() => setDeleteHolidayDialog({ isOpen: false, holidayId: "", holidayDate: "" })}
+        open={deleteHolidayDialog.isOpen}
+        onOpenChange={(open) => !open && setDeleteHolidayDialog({ isOpen: false, holidayId: "", holidayDate: "" })}
         onConfirm={confirmDeleteHoliday}
-        itemType="menu"
-        itemName={formatDate(deleteHolidayDialog.holidayDate)}
+        entityType="menu"
+        entityName={formatDate(deleteHolidayDialog.holidayDate)}
       />
     </>
   )

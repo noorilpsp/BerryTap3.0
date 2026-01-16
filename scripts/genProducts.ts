@@ -2,7 +2,7 @@ import { db } from "../src/db";
 import { Effect, Schedule, Console, Cause } from "effect";
 import {
   products as products_table,
-  categories,
+  fastCategories,
   subcategories as subcategories_table,
   subcategories,
   products,

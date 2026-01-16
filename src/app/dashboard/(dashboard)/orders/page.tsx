@@ -25,6 +25,10 @@ import {
   ChevronRight,
   Eye,
   XCircle,
+  FileText,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -59,23 +63,110 @@ import {
 import ConnectedRecords from "@/components/connected/ConnectedRecords"
 import { motion, AnimatePresence } from "framer-motion"
 
-import { mockDetailedOrders, mockStaffWorkload, mockRecentOrderActivity, mockOrdersPerformance } from "@/lib/mockData"
+import { mockStaffWorkload, mockRecentOrderActivity, mockOrdersPerformance } from "@/lib/mockData"
 import { LineChart, Line, ResponsiveContainer } from "recharts"
 import { useSearchParams } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
 import { StaffFilterProvider, useStaffFilter } from "./context/StaffFilterContext"
 import { cn } from "@/lib/utils"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { useLocations } from "@/lib/hooks/useLocations"
 
 const fullColumns = ["orderNumber", "table", "customer", "items", "total", "time", "status", "staff", "actions"]
 const compactDesktopColumns = ["orderNumber", "table", "total", "time", "status"]
 const compactMobileColumns = ["orderNumber", "table", "total", "status"]
 
+// Type for order data from API
+type OrderData = {
+  id: string
+  orderNumber: string
+  orderType: string
+  table: { id: string; tableNumber: string } | null
+  customer: { id: string; name: string } | null
+  itemsCount: number
+  total: number
+  createdAt: string
+  status: string
+  assignedStaff: { id: string; fullName: string } | null
+  paymentStatus: string
+  notes: string | null
+  hasItemNotes: boolean
+}
+
+// Type for detailed order from API
+type DetailedOrderData = {
+  id: string
+  orderNumber: string
+  orderType: string
+  status: string
+  paymentStatus: string
+  reservation: { id: string; reservationDate: string; reservationTime: string } | null
+  table: { id: string; tableNumber: string } | null
+  customer: { id: string; name: string; email: string | null; phone: string | null } | null
+  assignedStaff: { id: string; fullName: string } | null
+  items: Array<{
+    id: string
+    itemName: string
+    itemPrice: number
+    quantity: number
+    customizations: Array<{
+      groupName: string
+      optionName: string
+      optionPrice: number
+      quantity: number
+    }>
+    customizationsTotal: number
+    lineTotal: number
+    notes: string | null
+    status: string
+  }>
+  subtotal: number
+  taxAmount: number
+  serviceCharge: number
+  tipAmount: number
+  discountAmount: number
+  total: number
+  timeline: Array<{
+    status: string
+    createdAt: string
+    changedBy: string
+    note: string | null
+  }>
+  payments: Array<{
+    id: string
+    amount: number
+    tipAmount: number
+    method: string
+    status: string
+    paidAt: string | null
+  }>
+  delivery: {
+    addressLine1: string
+    addressLine2: string | null
+    city: string
+    postalCode: string
+    deliveryInstructions: string | null
+    deliveryFee: number
+    estimatedDeliveryAt: string | null
+    deliveredAt: string | null
+  } | null
+  notes: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 function OrdersPageContent() {
+  const { locations, loading: locationsLoading } = useLocations()
+  const [locationId, setLocationId] = React.useState<string | null>(null)
+  const [orders, setOrders] = React.useState<OrderData[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
+  const [error, setError] = React.useState<string | null>(null)
   const [viewMode, setViewMode] = React.useState<"table" | "card">("table")
-  const [statusFilter, setStatusFilter] = React.useState("All")
+  const [statusFilter, setStatusFilter] = React.useState<string[]>([])
+  const [activeFilter, setActiveFilter] = React.useState(false)
   const [needsAttention, setNeedsAttention] = React.useState(false)
+  const [sortColumn, setSortColumn] = React.useState<string | null>(null)
+  const [sortDirection, setSortDirection] = React.useState<"asc" | "desc">("desc")
 
   const [windowWidth, setWindowWidth] = React.useState(typeof window !== "undefined" ? window.innerWidth : 1024)
 
@@ -84,6 +175,68 @@ function OrdersPageContent() {
   const mainColumnRef = React.useRef<HTMLDivElement>(null)
   const sidebarRef = React.useRef<HTMLDivElement>(null)
   const [sidebarHeight, setSidebarHeight] = React.useState<number | null>(null)
+
+  // Set locationId from first available location
+  React.useEffect(() => {
+    if (!locationsLoading && locations.length > 0 && !locationId) {
+      setLocationId(locations[0].id)
+    }
+  }, [locations, locationsLoading, locationId])
+
+  // Fetch orders when locationId changes
+  React.useEffect(() => {
+    if (!locationId) {
+      setIsLoading(false)
+      return
+    }
+
+    let cancelled = false
+
+    async function fetchOrders() {
+      try {
+        setIsLoading(true)
+        setError(null)
+
+        const params = new URLSearchParams({ locationId })
+        // Note: API currently only supports single status, so we'll filter client-side for multiple
+        // If you want to support multiple statuses in API, you'd need to update the API route
+
+        const response = await fetch(`/api/orders?${params.toString()}`, {
+          credentials: "include",
+          cache: "no-store",
+        })
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}))
+          throw new Error(errorData.error || "Failed to fetch orders")
+        }
+
+        const data = await response.json()
+        if (!cancelled) {
+          setOrders(data.orders || [])
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to fetch orders")
+          toast({
+            title: "Error",
+            description: err instanceof Error ? err.message : "Failed to fetch orders",
+            variant: "destructive",
+          })
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false)
+        }
+      }
+    }
+
+    fetchOrders()
+
+    return () => {
+      cancelled = true
+    }
+  }, [locationId, statusFilter])
 
   React.useEffect(() => {
     if (!controlsContainerRef.current) return
@@ -119,8 +272,49 @@ function OrdersPageContent() {
   })
 
   const [searchQuery, setSearchQuery] = React.useState("")
-  const [selectedOrder, setSelectedOrder] = React.useState<(typeof mockDetailedOrders)[0] | null>(null)
+  const [selectedOrder, setSelectedOrder] = React.useState<DetailedOrderData | null>(null)
+  const [selectedOrderId, setSelectedOrderId] = React.useState<string | null>(null)
   const [drawerOpen, setDrawerOpen] = React.useState(false)
+
+  // Fetch detailed order when selected
+  React.useEffect(() => {
+    if (!selectedOrderId || !locationId) return
+
+    let cancelled = false
+
+    async function fetchOrderDetails() {
+      try {
+        const response = await fetch(`/api/orders/${selectedOrderId}`, {
+          credentials: "include",
+          cache: "no-store",
+        })
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}))
+          throw new Error(errorData.error || "Failed to fetch order details")
+        }
+
+        const data = await response.json()
+        if (!cancelled) {
+          setSelectedOrder(data.order)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          toast({
+            title: "Error",
+            description: err instanceof Error ? err.message : "Failed to fetch order details",
+            variant: "destructive",
+          })
+        }
+      }
+    }
+
+    fetchOrderDetails()
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedOrderId, locationId])
   const [newOrderModalOpen, setNewOrderModalOpen] = React.useState(false)
   const [rightSidebarOpen, setRightSidebarOpen] = React.useState(
     () => (typeof window !== "undefined" ? window.innerWidth >= 1024 : true),
@@ -137,14 +331,26 @@ function OrdersPageContent() {
   const { toast } = useToast()
 
   const hasActiveFilters = React.useMemo(() => {
-    return searchQuery !== "" || statusFilter !== "All" || needsAttention || selectedStaff !== "all"
-  }, [searchQuery, statusFilter, needsAttention, selectedStaff])
+    return searchQuery !== "" || statusFilter.length > 0 || activeFilter || needsAttention || selectedStaff !== "all"
+  }, [searchQuery, statusFilter, activeFilter, needsAttention, selectedStaff])
 
   const handleResetFilters = () => {
     setSearchQuery("")
-    setStatusFilter("All")
+    setStatusFilter([])
+    setActiveFilter(false)
     setNeedsAttention(false)
     setSelectedStaff("all")
+  }
+
+
+  const toggleStatusFilter = (status: string) => {
+    setStatusFilter((prev) => {
+      if (prev.includes(status)) {
+        return prev.filter((s) => s !== status)
+      } else {
+        return [...prev, status]
+      }
+    })
   }
 
   React.useEffect(() => {
@@ -195,8 +401,8 @@ function OrdersPageContent() {
     localStorage.setItem("ordersViewMode", mode)
   }
 
-  const handleOrderClick = (order: (typeof mockDetailedOrders)[0]) => {
-    setSelectedOrder(order)
+  const handleOrderClick = (order: OrderData) => {
+    setSelectedOrderId(order.id)
     setDrawerOpen(true)
   }
 
@@ -231,31 +437,105 @@ function OrdersPageContent() {
   }
 
   const filteredOrders = React.useMemo(() => {
-    return mockDetailedOrders.filter((order) => {
-      if (statusFilter !== "All" && order.status !== statusFilter) return false
-      if (needsAttention && order.urgency !== "delayed" && order.urgency !== "warning") return false
+    let filtered = orders.filter((order) => {
+      // If activeFilter is on, show preparing OR any status in statusFilter
+      // If activeFilter is off, only use statusFilter
+      if (activeFilter && statusFilter.length > 0) {
+        // Show orders that are either preparing (from active) OR match any status in statusFilter
+        if (order.status !== "preparing" && !statusFilter.includes(order.status)) {
+          return false
+        }
+      } else if (activeFilter) {
+        // Only active filter is on, show only preparing
+        if (order.status !== "preparing") {
+          return false
+        }
+      } else if (statusFilter.length > 0) {
+        // Only status filters are on, show matching statuses
+        if (!statusFilter.includes(order.status)) {
+          return false
+        }
+      }
 
+      // Staff filter
       if (selectedStaff === "all") {
         // Show all orders
       } else if (selectedStaff === "me") {
-        // Show only orders assigned to "You" (staffId S1)
-        if (order.staffId !== "S1") return false
+        // TODO: Get current user's staff ID and filter
+        // For now, show all orders
       } else {
         // Show orders for specific staff member
-        if (order.staff !== selectedStaff) return false
+        if (order.assignedStaff?.fullName !== selectedStaff) return false
       }
 
+      // Needs attention filter - only show orders with urgency (yellow or red)
+      if (needsAttention && !hasUrgency(order)) {
+        return false
+      }
+
+      // Search filter
       if (searchQuery) {
         const query = searchQuery.toLowerCase()
         return (
-          order.id.toLowerCase().includes(query) ||
-          order.customer.toLowerCase().includes(query) ||
-          order.table.toLowerCase().includes(query)
+          order.orderNumber.toLowerCase().includes(query) ||
+          order.customer?.name.toLowerCase().includes(query) ||
+          order.table?.tableNumber.toLowerCase().includes(query)
         )
       }
       return true
     })
-  }, [statusFilter, needsAttention, selectedStaff, searchQuery])
+
+    // Apply sorting
+    if (sortColumn) {
+      filtered = [...filtered].sort((a, b) => {
+        let aValue: any
+        let bValue: any
+
+        switch (sortColumn) {
+          case "orderNumber":
+            aValue = a.orderNumber
+            bValue = b.orderNumber
+            break
+          case "table":
+            aValue = a.table?.tableNumber || (a.orderType === "pickup" ? "Pickup" : a.orderType === "delivery" ? "Delivery" : "")
+            bValue = b.table?.tableNumber || (b.orderType === "pickup" ? "Pickup" : b.orderType === "delivery" ? "Delivery" : "")
+            break
+          case "customer":
+            aValue = a.customer?.name || "Guest"
+            bValue = b.customer?.name || "Guest"
+            break
+          case "items":
+            aValue = a.itemsCount
+            bValue = b.itemsCount
+            break
+          case "total":
+            aValue = a.total
+            bValue = b.total
+            break
+          case "time":
+            aValue = new Date(a.createdAt).getTime()
+            bValue = new Date(b.createdAt).getTime()
+            break
+          case "status":
+            aValue = a.status
+            bValue = b.status
+            break
+          case "staff":
+            aValue = a.assignedStaff?.fullName || ""
+            bValue = b.assignedStaff?.fullName || ""
+            break
+          default:
+            return 0
+        }
+
+        if (aValue < bValue) return sortDirection === "asc" ? -1 : 1
+        if (aValue > bValue) return sortDirection === "asc" ? 1 : -1
+        return 0
+      })
+    }
+
+    return filtered
+  }, [orders, selectedStaff, searchQuery, sortColumn, sortDirection, statusFilter, activeFilter, needsAttention])
 
   React.useEffect(() => {
     if (!rightSidebarOpen || isMobileViewport) {
@@ -291,25 +571,76 @@ function OrdersPageContent() {
     }
   }, [rightSidebarOpen, isMobileViewport, filteredOrders, viewMode, isCompact, isLoading])
 
-  const stats = {
-    active: mockDetailedOrders.filter((o) => o.status === "In Progress" || o.status === "Ready").length,
-    pending: mockDetailedOrders.filter((o) => o.status === "Pending").length,
-    ready: mockDetailedOrders.filter((o) => o.status === "Ready").length,
-    completed: mockDetailedOrders.filter((o) => o.status === "Completed").length,
-    cancelled: mockDetailedOrders.filter((o) => o.status === "Cancelled").length,
+  const handleSort = (column: string) => {
+    if (sortColumn === column) {
+      // Toggle direction if clicking the same column
+      setSortDirection(sortDirection === "asc" ? "desc" : "asc")
+    } else {
+      // Set new column and default to descending
+      setSortColumn(column)
+      setSortDirection("desc")
+    }
   }
 
-  const getUrgencyColor = (urgency: string) => {
-    switch (urgency) {
-      case "on-time":
-        return "bg-green-500"
-      case "warning":
-        return "bg-yellow-500"
-      case "delayed":
-        return "bg-red-500"
-      default:
-        return "bg-gray-500"
+  const getSortIcon = (column: string) => {
+    if (sortColumn !== column) {
+      return <ArrowUpDown className="h-4 w-4 text-muted-foreground" />
     }
+    return sortDirection === "asc" ? (
+      <ArrowUp className="h-4 w-4" />
+    ) : (
+      <ArrowDown className="h-4 w-4" />
+    )
+  }
+
+  const stats = React.useMemo(() => {
+    return {
+      active: orders.filter((o) => o.status === "preparing" || o.status === "ready").length,
+      pending: orders.filter((o) => o.status === "pending").length,
+      ready: orders.filter((o) => o.status === "ready").length,
+      completed: orders.filter((o) => o.status === "completed").length,
+      cancelled: orders.filter((o) => o.status === "cancelled").length,
+    }
+  }, [orders])
+
+  const hasUrgency = (order: OrderData) => {
+    // Calculate urgency based on order age and status
+    const createdAt = new Date(order.createdAt)
+    const now = new Date()
+    const minutesAgo = (now.getTime() - createdAt.getTime()) / (1000 * 60)
+
+    // Highly urgent (red): pending > 30 min, preparing > 45 min, or cancelled
+    if (order.status === "cancelled") return true
+    if (order.status === "pending" && minutesAgo > 30) return true
+    if (order.status === "preparing" && minutesAgo > 45) return true
+    
+    // Urgent (yellow): pending > 15 min, preparing > 30 min, or ready > 20 min
+    if (order.status === "pending" && minutesAgo > 15) return true
+    if (order.status === "preparing" && minutesAgo > 30) return true
+    if (order.status === "ready" && minutesAgo > 20) return true
+    
+    // Not urgent (green): everything else
+    return false
+  }
+
+  const getUrgencyColor = (order: OrderData) => {
+    // Calculate urgency based on order age and status
+    const createdAt = new Date(order.createdAt)
+    const now = new Date()
+    const minutesAgo = (now.getTime() - createdAt.getTime()) / (1000 * 60)
+
+    // Highly urgent (red): pending > 30 min, preparing > 45 min, or cancelled
+    if (order.status === "cancelled") return "bg-red-500"
+    if (order.status === "pending" && minutesAgo > 30) return "bg-red-500"
+    if (order.status === "preparing" && minutesAgo > 45) return "bg-red-500"
+    
+    // Urgent (yellow): pending > 15 min, preparing > 30 min, or ready > 20 min
+    if (order.status === "pending" && minutesAgo > 15) return "bg-yellow-500"
+    if (order.status === "preparing" && minutesAgo > 30) return "bg-yellow-500"
+    if (order.status === "ready" && minutesAgo > 20) return "bg-yellow-500"
+    
+    // Not urgent (green): everything else
+    return "bg-green-500"
   }
 
   const getPaymentStatusColor = (status: string) => {
@@ -539,11 +870,17 @@ function OrdersPageContent() {
             variant="secondary"
             className={cn(
               "cursor-pointer px-3 py-1 lg:px-2.5 lg:py-0.5 text-sm rounded-full",
-              statusFilter === "In Progress"
+              activeFilter
                 ? "bg-blue-500 text-white border-blue-500 dark:bg-blue-500 dark:text-white dark:border-blue-500"
                 : "hover:bg-blue-100 dark:hover:bg-blue-900",
             )}
-            onClick={() => setStatusFilter(statusFilter === "In Progress" ? "All" : "In Progress")}
+            onClick={() => {
+              setActiveFilter(!activeFilter)
+              // Remove preparing from individual filters when toggling active
+              if (!activeFilter) {
+                setStatusFilter(statusFilter.filter(s => s !== "preparing"))
+              }
+            }}
           >
             {stats.active} Active
           </Badge>
@@ -551,11 +888,11 @@ function OrdersPageContent() {
             variant="secondary"
             className={cn(
               "cursor-pointer px-3 py-1 lg:px-2.5 lg:py-0.5 text-sm rounded-full",
-              statusFilter === "Pending"
+              statusFilter.includes("pending")
                 ? "bg-gray-300 text-gray-900 border-gray-400 dark:bg-gray-600 dark:text-white dark:border-gray-600"
                 : "hover:bg-gray-200 dark:hover:bg-gray-700",
             )}
-            onClick={() => setStatusFilter(statusFilter === "Pending" ? "All" : "Pending")}
+            onClick={() => toggleStatusFilter("pending")}
           >
             {stats.pending} Pending
           </Badge>
@@ -563,11 +900,11 @@ function OrdersPageContent() {
             variant="secondary"
             className={cn(
               "cursor-pointer px-3 py-1 lg:px-2.5 lg:py-0.5 text-sm rounded-full",
-              statusFilter === "Ready"
+              statusFilter.includes("ready")
                 ? "bg-green-500 text-white border-green-500 dark:bg-green-500 dark:text-white dark:border-green-500"
                 : "hover:bg-green-100 dark:hover:bg-green-900",
             )}
-            onClick={() => setStatusFilter(statusFilter === "Ready" ? "All" : "Ready")}
+            onClick={() => toggleStatusFilter("ready")}
           >
             {stats.ready} Ready
           </Badge>
@@ -575,11 +912,11 @@ function OrdersPageContent() {
             variant="secondary"
             className={cn(
               "cursor-pointer px-3 py-1 lg:px-2.5 lg:py-0.5 text-sm rounded-full",
-              statusFilter === "Completed"
+              statusFilter.includes("completed")
                 ? "bg-slate-500 text-white border-slate-500 dark:bg-slate-500 dark:text-white dark:border-slate-500"
                 : "hover:bg-slate-200 dark:hover:bg-slate-700",
             )}
-            onClick={() => setStatusFilter(statusFilter === "Completed" ? "All" : "Completed")}
+            onClick={() => toggleStatusFilter("completed")}
           >
             {stats.completed} Completed Today
           </Badge>
@@ -587,11 +924,11 @@ function OrdersPageContent() {
             variant="secondary"
             className={cn(
               "cursor-pointer px-3 py-1 lg:px-2.5 lg:py-0.5 text-sm rounded-full",
-              statusFilter === "Cancelled"
+              statusFilter.includes("cancelled")
                 ? "bg-red-600 text-white border-red-600 dark:bg-red-600 dark:text-white dark:border-red-600"
                 : "hover:bg-red-100 dark:hover:bg-red-900",
             )}
-            onClick={() => setStatusFilter(statusFilter === "Cancelled" ? "All" : "Cancelled")}
+            onClick={() => toggleStatusFilter("cancelled")}
           >
             {stats.cancelled} Cancelled
           </Badge>
@@ -631,19 +968,29 @@ function OrdersPageContent() {
           </div>
 
           {/* Status dropdown - flexible on mobile, fixed on desktop */}
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="flex-1 md:w-[120px] md:flex-none shrink-0">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent className="z-50">
-              <SelectItem value="All">All Status</SelectItem>
-              <SelectItem value="Pending">Pending</SelectItem>
-              <SelectItem value="In Progress">In Progress</SelectItem>
-              <SelectItem value="Ready">Ready</SelectItem>
-              <SelectItem value="Completed">Completed</SelectItem>
-              <SelectItem value="Cancelled">Cancelled</SelectItem>
-            </SelectContent>
-          </Select>
+            <Select 
+              value={statusFilter.length === 0 ? "all" : statusFilter[0]} 
+              onValueChange={(value) => {
+                if (value === "all") {
+                  setStatusFilter([])
+                } else {
+                  setStatusFilter([value])
+                }
+              }}
+            >
+              <SelectTrigger className="flex-1 md:w-[120px] md:flex-none shrink-0">
+                <SelectValue placeholder="Status" />
+              </SelectTrigger>
+              <SelectContent className="z-50">
+                <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="confirmed">Confirmed</SelectItem>
+                <SelectItem value="preparing">Preparing</SelectItem>
+                <SelectItem value="ready">Ready</SelectItem>
+                <SelectItem value="completed">Completed</SelectItem>
+                <SelectItem value="cancelled">Cancelled</SelectItem>
+              </SelectContent>
+            </Select>
 
           {/* Staff dropdown - flexible on mobile, fixed on desktop */}
           <Select value={selectedStaff} onValueChange={setSelectedStaff}>
@@ -743,6 +1090,27 @@ function OrdersPageContent() {
                 </Button>
               </CardContent>
             </Card>
+          ) : error ? (
+            <Card>
+              <CardContent className="flex flex-col items-center justify-center py-12">
+                <AlertCircle className="h-12 w-12 text-destructive mb-4" />
+                <h3 className="text-lg font-semibold mb-2">Error loading orders</h3>
+                <p className="text-sm text-muted-foreground mb-4">{error}</p>
+                <Button onClick={() => window.location.reload()}>
+                  Retry
+                </Button>
+              </CardContent>
+            </Card>
+          ) : !locationId ? (
+            <Card>
+              <CardContent className="flex flex-col items-center justify-center py-12">
+                <ClipboardList className="h-12 w-12 text-muted-foreground mb-4" />
+                <h3 className="text-lg font-semibold mb-2">No location selected</h3>
+                <p className="text-sm text-muted-foreground">
+                  Please select a location to view orders
+                </p>
+              </CardContent>
+            </Card>
           ) : (
             <div>
               {viewMode === "table" ? (
@@ -762,12 +1130,12 @@ function OrdersPageContent() {
                         >
                           <div className="flex justify-between items-start font-medium">
                             <div className="flex items-center gap-2">
-                              <div className={`w-1.5 h-8 rounded-full ${getUrgencyColor(order.urgency)}`} />
-                              <span className="font-semibold">#{order.id}</span>
+                              <div className={`w-1 h-8 rounded-full shrink-0 ${getUrgencyColor(order)}`} />
+                              <span className="font-semibold">#{order.orderNumber}</span>
                             </div>
-                            <div className="flex items-center gap-2">
-                              <StatusBadge status={order.status} />
-                              <DropdownMenu>
+                          <div className="flex items-center gap-2">
+                            <StatusBadge status={order.status} />
+                            <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                   <Button
                                     variant="ghost"
@@ -809,12 +1177,20 @@ function OrdersPageContent() {
                             </div>
                           </div>
                           <div className="flex justify-between items-center">
-                            <span className="font-semibold text-base">Table {order.table}</span>
+                            <span className="font-semibold text-base">
+                              {order.table 
+                                ? `Table ${order.table.tableNumber}` 
+                                : order.orderType === "pickup" 
+                                  ? "Pickup" 
+                                  : order.orderType === "delivery" 
+                                    ? "Delivery" 
+                                    : "No table"}
+                            </span>
                             <span className="font-bold text-base">${order.total.toFixed(2)}</span>
                           </div>
                           <div className="flex justify-between items-center text-xs text-muted-foreground">
-                            <span>{order.customer}</span>
-                            <span>{order.time}</span>
+                            <span>{order.customer?.name || "Guest"}</span>
+                            <span>{new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                           </div>
                         </motion.div>
                       ))}
@@ -840,28 +1216,92 @@ function OrdersPageContent() {
                         <TableHeader className="bg-muted/50">
                           <TableRow className="[&>th:first-child]:rounded-tl-lg [&>th:last-child]:rounded-tr-lg">
                             {visibleColumns.includes("orderNumber") && (
-                              <TableHead className="align-middle text-center">Order #</TableHead>
+                              <TableHead 
+                                className="align-middle text-center cursor-pointer hover:bg-muted/70 transition-colors select-none"
+                                onClick={() => handleSort("orderNumber")}
+                              >
+                                <div className="flex items-center justify-center gap-1">
+                                  Order #
+                                  {getSortIcon("orderNumber")}
+                                </div>
+                              </TableHead>
                             )}
                             {visibleColumns.includes("table") && (
-                              <TableHead className="align-middle text-center">Table</TableHead>
+                              <TableHead 
+                                className="align-middle text-center cursor-pointer hover:bg-muted/70 transition-colors select-none"
+                                onClick={() => handleSort("table")}
+                              >
+                                <div className="flex items-center justify-center gap-1">
+                                  Table
+                                  {getSortIcon("table")}
+                                </div>
+                              </TableHead>
                             )}
                             {visibleColumns.includes("customer") && (
-                              <TableHead className="align-middle text-center">Customer</TableHead>
+                              <TableHead 
+                                className="align-middle text-center cursor-pointer hover:bg-muted/70 transition-colors select-none"
+                                onClick={() => handleSort("customer")}
+                              >
+                                <div className="flex items-center justify-center gap-1">
+                                  Customer
+                                  {getSortIcon("customer")}
+                                </div>
+                              </TableHead>
                             )}
                             {visibleColumns.includes("items") && (
-                              <TableHead className="align-middle text-center">Items</TableHead>
+                              <TableHead 
+                                className="align-middle text-center cursor-pointer hover:bg-muted/70 transition-colors select-none"
+                                onClick={() => handleSort("items")}
+                              >
+                                <div className="flex items-center justify-center gap-1">
+                                  Items
+                                  {getSortIcon("items")}
+                                </div>
+                              </TableHead>
                             )}
                             {visibleColumns.includes("total") && (
-                              <TableHead className="align-middle text-center">Total</TableHead>
+                              <TableHead 
+                                className="align-middle text-center cursor-pointer hover:bg-muted/70 transition-colors select-none"
+                                onClick={() => handleSort("total")}
+                              >
+                                <div className="flex items-center justify-center gap-1">
+                                  Total
+                                  {getSortIcon("total")}
+                                </div>
+                              </TableHead>
                             )}
                             {visibleColumns.includes("time") && (
-                              <TableHead className="align-middle text-center">Time</TableHead>
+                              <TableHead 
+                                className="align-middle text-center cursor-pointer hover:bg-muted/70 transition-colors select-none"
+                                onClick={() => handleSort("time")}
+                              >
+                                <div className="flex items-center justify-center gap-1">
+                                  Time
+                                  {getSortIcon("time")}
+                                </div>
+                              </TableHead>
                             )}
                             {visibleColumns.includes("status") && (
-                              <TableHead className="align-middle text-center">Status</TableHead>
+                              <TableHead 
+                                className="align-middle text-center cursor-pointer hover:bg-muted/70 transition-colors select-none"
+                                onClick={() => handleSort("status")}
+                              >
+                                <div className="flex items-center justify-center gap-1">
+                                  Status
+                                  {getSortIcon("status")}
+                                </div>
+                              </TableHead>
                             )}
                             {visibleColumns.includes("staff") && (
-                              <TableHead className="align-middle text-center">Staff</TableHead>
+                              <TableHead 
+                                className="align-middle text-center cursor-pointer hover:bg-muted/70 transition-colors select-none"
+                                onClick={() => handleSort("staff")}
+                              >
+                                <div className="flex items-center justify-center gap-1">
+                                  Staff
+                                  {getSortIcon("staff")}
+                                </div>
+                              </TableHead>
                             )}
                             {visibleColumns.includes("actions") && (
                               <TableHead className="text-center align-middle">Actions</TableHead>
@@ -878,36 +1318,36 @@ function OrdersPageContent() {
                               {visibleColumns.includes("orderNumber") && (
                                 <TableCell className="font-medium align-middle">
                                   <div className="flex items-center gap-2 justify-center">
-                                    <div className={`w-1 h-8 rounded-full ${getUrgencyColor(order.urgency)}`} />
-                                    <span className="whitespace-normal break-words">{order.id}</span>
+                                    <div className={`w-1 h-8 rounded-full shrink-0 ${getUrgencyColor(order)}`} />
+                                    <span className="whitespace-normal break-words">{order.orderNumber}</span>
+                                    {order.notes && (
+                                      <FileText className="h-4 w-4 text-muted-foreground shrink-0" title={`Order Notes: ${order.notes}`} />
+                                    )}
                                   </div>
                                 </TableCell>
                               )}
                               {visibleColumns.includes("table") && (
                                 <TableCell className="whitespace-normal break-words align-middle text-center">
-                                  Table {order.table}
+                                  {order.table 
+                                    ? `Table ${order.table.tableNumber}` 
+                                    : order.orderType === "pickup" 
+                                      ? "Pickup" 
+                                      : order.orderType === "delivery" 
+                                        ? "Delivery" 
+                                        : "-"}
                                 </TableCell>
                               )}
                               {visibleColumns.includes("customer") && (
                                 <TableCell className="whitespace-normal break-words align-middle text-center">
-                                  {order.customer}
+                                  {order.customer?.name || "Guest"}
                                 </TableCell>
                               )}
                               {visibleColumns.includes("items") && (
-                                <TableCell
-                                  className={cn("align-middle", order.specialNotes ? "text-right" : "text-center")}
-                                >
-                                  <div
-                                    className={cn(
-                                      "flex items-center gap-2",
-                                      order.specialNotes ? "justify-end" : "justify-center",
-                                    )}
-                                  >
-                                    {order.items.length}
-                                    {order.specialNotes && (
-                                      <Badge variant="outline" className="text-xs">
-                                        Note
-                                      </Badge>
+                                <TableCell className="align-middle text-center">
+                                  <div className="flex items-center gap-2 justify-center">
+                                    {order.itemsCount}
+                                    {order.hasItemNotes && (
+                                      <FileText className="h-4 w-4 text-muted-foreground shrink-0" title="One or more items have notes" />
                                     )}
                                   </div>
                                 </TableCell>
@@ -919,7 +1359,7 @@ function OrdersPageContent() {
                               )}
                               {visibleColumns.includes("time") && (
                                 <TableCell className="text-muted-foreground whitespace-normal break-words align-middle text-center">
-                                  {order.time}
+                                  {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                 </TableCell>
                               )}
                               {visibleColumns.includes("status") && (
@@ -929,26 +1369,30 @@ function OrdersPageContent() {
                               )}
                               {visibleColumns.includes("staff") && (
                                 <TableCell className="align-middle text-center">
-                                  <div className="flex items-center gap-2 justify-center">
-                                    <Avatar className="h-6 w-6">
-                                      <AvatarFallback className="text-xs">
-                                        {order.staff
-                                          .split(" ")
-                                          .map((n) => n[0])
-                                          .join("")}
-                                      </AvatarFallback>
-                                    </Avatar>
-                                    <span className="text-sm whitespace-normal break-words">
-                                      {order.staff.split(" ")[0]}
-                                    </span>
-                                  </div>
+                                  {order.assignedStaff ? (
+                                    <div className="flex items-center gap-2 justify-center">
+                                      <Avatar className="h-6 w-6">
+                                        <AvatarFallback className="text-xs">
+                                          {order.assignedStaff.fullName
+                                            .split(" ")
+                                            .map((n) => n[0])
+                                            .join("")}
+                                        </AvatarFallback>
+                                      </Avatar>
+                                      <span className="text-sm whitespace-normal break-words">
+                                        {order.assignedStaff.fullName.split(" ")[0]}
+                                      </span>
+                                    </div>
+                                  ) : (
+                                    <span className="text-muted-foreground">-</span>
+                                  )}
                                 </TableCell>
                               )}
                               {visibleColumns.includes("actions") && (
                                 <TableCell className="text-center align-middle">
                                   <div className="flex justify-center">
                                     <div className="flex items-center gap-2">
-                                      <CreditCard className={`h-4 w-4 ${getPaymentStatusColor(order.paymentStatus)}`} />
+                                      <CreditCard className={`h-4 w-4 ${getPaymentStatusColor(order.paymentStatus === "paid" ? "Paid" : order.paymentStatus === "partial" ? "Pending" : "Unpaid")}`} />
                                       <DropdownMenu>
                                         <DropdownMenuTrigger asChild>
                                           <Button
@@ -1011,13 +1455,24 @@ function OrdersPageContent() {
                         <div className="flex items-start justify-between">
                           <div className="space-y-1">
                             <div className="flex items-center gap-2">
-                              <div className={`w-2 h-2 rounded-full ${getUrgencyColor(order.urgency)}`} />
-                              <CardTitle className="text-lg">{order.id}</CardTitle>
+                              <div className={`w-1 h-8 rounded-full shrink-0 ${getUrgencyColor(order)}`} />
+                              <CardTitle className="text-lg">{order.orderNumber}</CardTitle>
+                              {order.notes && (
+                                <FileText className="h-4 w-4 text-muted-foreground shrink-0" title={`Order Notes: ${order.notes}`} />
+                              )}
                             </div>
                             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                              <span>Table {order.table}</span>
+                              <span>
+                                {order.table 
+                                  ? `Table ${order.table.tableNumber}` 
+                                  : order.orderType === "pickup" 
+                                    ? "Pickup" 
+                                    : order.orderType === "delivery" 
+                                      ? "Delivery" 
+                                      : "No table"}
+                              </span>
                               <span>•</span>
-                              <span>{order.time}</span>
+                              <span>{new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
@@ -1066,29 +1521,30 @@ function OrdersPageContent() {
                       </CardHeader>
                       <CardContent className="space-y-3">
                         <div className="flex items-center justify-between">
-                          <span className="text-sm text-muted-foreground">{order.customer}</span>
+                          <span className="text-sm text-muted-foreground">{order.customer?.name || "Guest"}</span>
                           <span className="font-semibold">${order.total.toFixed(2)}</span>
                         </div>
                         <div className="flex items-center justify-between text-sm">
-                          <span className="text-muted-foreground">{order.items.length} items</span>
                           <div className="flex items-center gap-2">
-                            <Avatar className="h-6 w-6">
-                              <AvatarFallback className="text-xs">
-                                {order.staff
-                                  .split(" ")
-                                  .map((n) => n[0])
-                                  .join("")}
-                              </AvatarFallback>
-                            </Avatar>
-                            <span>{order.staff.split(" ")[0]}</span>
+                            <span className="text-muted-foreground">{order.itemsCount} items</span>
+                            {order.hasItemNotes && (
+                              <FileText className="h-4 w-4 text-muted-foreground shrink-0" title="One or more items have notes" />
+                            )}
                           </div>
+                          {order.assignedStaff && (
+                            <div className="flex items-center gap-2">
+                              <Avatar className="h-6 w-6">
+                                <AvatarFallback className="text-xs">
+                                  {order.assignedStaff.fullName
+                                    .split(" ")
+                                    .map((n) => n[0])
+                                    .join("")}
+                                </AvatarFallback>
+                              </Avatar>
+                              <span>{order.assignedStaff.fullName.split(" ")[0]}</span>
+                            </div>
+                          )}
                         </div>
-                        {order.specialNotes && (
-                          <Badge variant="outline" className="text-xs">
-                            <AlertCircle className="h-3 w-3 mr-1" />
-                            Special request
-                          </Badge>
-                        )}
                       </CardContent>
                     </Card>
                   ))}
@@ -1157,9 +1613,13 @@ function OrdersPageContent() {
       {selectedOrder && (
         <Drawer
           open={drawerOpen}
-          onClose={() => setDrawerOpen(false)}
-          title={selectedOrder.id}
-          subtitle={`Placed: ${selectedOrder.timestamp} • ${selectedOrder.time}`}
+          onClose={() => {
+            setDrawerOpen(false)
+            setSelectedOrderId(null)
+            setSelectedOrder(null)
+          }}
+          title={selectedOrder.orderNumber}
+          subtitle={`Placed: ${new Date(selectedOrder.createdAt).toLocaleString()}`}
         >
           <div className="space-y-6 px-4">
             <Select value={selectedOrder.status} disabled>
@@ -1167,20 +1627,22 @@ function OrdersPageContent() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="Pending">Pending</SelectItem>
-                <SelectItem value="In Progress">In Progress</SelectItem>
-                <SelectItem value="Ready">Ready</SelectItem>
-                <SelectItem value="Completed">Completed</SelectItem>
+                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="confirmed">Confirmed</SelectItem>
+                <SelectItem value="preparing">Preparing</SelectItem>
+                <SelectItem value="ready">Ready</SelectItem>
+                <SelectItem value="completed">Completed</SelectItem>
+                <SelectItem value="cancelled">Cancelled</SelectItem>
               </SelectContent>
             </Select>
 
             {/* Connected Records */}
             <ConnectedRecords
               order={{ id: selectedOrder.id, total: selectedOrder.total }}
-              table={{ id: selectedOrder.table, label: `Table ${selectedOrder.table}` }}
+              table={selectedOrder.table ? { id: selectedOrder.table.id, label: `Table ${selectedOrder.table.tableNumber}` } : undefined}
               reservation={
-                selectedOrder.customer !== "Walk-in"
-                  ? { id: "RSV-2847", name: selectedOrder.customer, time: selectedOrder.time }
+                selectedOrder.reservation
+                  ? { id: selectedOrder.reservation.id, name: selectedOrder.customer?.name || "Guest", time: selectedOrder.reservation.reservationTime }
                   : undefined
               }
               sessionId={sessionId}
@@ -1192,28 +1654,28 @@ function OrdersPageContent() {
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <div>
                   <p className="text-muted-foreground">Table</p>
-                  <p className="font-medium">Table {selectedOrder.table}</p>
+                  <p className="font-medium">{selectedOrder.table ? `Table ${selectedOrder.table.tableNumber}` : "No table"}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Customer</p>
-                  <p className="font-medium">{selectedOrder.customer}</p>
+                  <p className="font-medium">{selectedOrder.customer?.name || "Guest"}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Order Type</p>
-                  <p className="font-medium">{selectedOrder.orderType}</p>
+                  <p className="font-medium">{selectedOrder.orderType.replace("_", " ")}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Assigned Staff</p>
-                  <p className="font-medium">{selectedOrder.staff}</p>
+                  <p className="font-medium">{selectedOrder.assignedStaff?.fullName || "Not assigned"}</p>
                 </div>
               </div>
-              {selectedOrder.specialNotes && (
+              {selectedOrder.notes && (
                 <div className="p-3 bg-yellow-50 dark:bg-yellow-900/20 rounded-md">
                   <p className="text-sm font-medium flex items-center gap-2">
-                    <AlertCircle className="h-4 w-4" />
-                    Special Notes
+                    <FileText className="h-4 w-4" />
+                    Order Notes
                   </p>
-                  <p className="text-sm mt-1">{selectedOrder.specialNotes}</p>
+                  <p className="text-sm mt-1">{selectedOrder.notes}</p>
                 </div>
               )}
             </div>
@@ -1228,17 +1690,35 @@ function OrdersPageContent() {
                 </Button>
               </div>
               <div className="space-y-2">
-                {selectedOrder.items.map((item, index) => (
-                  <div key={index} className="flex items-start justify-between p-3 border rounded-md">
+                {selectedOrder.items.map((item) => (
+                  <div key={item.id} className="flex items-start justify-between p-3 border rounded-md">
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="font-medium">{item.name}</span>
-                        <span className="text-muted-foreground">x{item.qty}</span>
+                        <span className="font-medium">{item.itemName}</span>
+                        <span className="text-muted-foreground">x{item.quantity}</span>
                       </div>
-                      {item.mods && <p className="text-sm text-muted-foreground mt-1">{item.mods}</p>}
+                      {item.customizations.length > 0 && (
+                        <p className="text-sm text-muted-foreground mt-1">
+                          {item.customizations.map((c, i) => (
+                            <span key={i}>
+                              {c.groupName}: {c.optionName} {c.quantity > 1 && `(x${c.quantity})`}
+                              {i < item.customizations.length - 1 && ", "}
+                            </span>
+                          ))}
+                        </p>
+                      )}
+                      {item.notes && (
+                        <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded-md">
+                          <p className="text-xs font-medium flex items-center gap-1 text-blue-700 dark:text-blue-400">
+                            <FileText className="h-3 w-3" />
+                            Item Note
+                          </p>
+                          <p className="text-sm mt-1">{item.notes}</p>
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="font-medium">${(item.price * item.qty).toFixed(2)}</span>
+                      <span className="font-medium">${item.lineTotal.toFixed(2)}</span>
                       <Button variant="ghost" size="icon" className="h-8 w-8" disabled>
                         <Edit className="h-4 w-4" />
                       </Button>
@@ -1256,18 +1736,24 @@ function OrdersPageContent() {
               </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Tax</span>
-                <span>${selectedOrder.tax.toFixed(2)}</span>
+                <span>${selectedOrder.taxAmount.toFixed(2)}</span>
               </div>
-              {selectedOrder.service > 0 && (
+              {selectedOrder.serviceCharge > 0 && (
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">Service Charge</span>
-                  <span>${selectedOrder.service.toFixed(2)}</span>
+                  <span>${selectedOrder.serviceCharge.toFixed(2)}</span>
                 </div>
               )}
-              {selectedOrder.tip > 0 && (
+              {selectedOrder.tipAmount > 0 && (
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">Tip</span>
-                  <span>${selectedOrder.tip.toFixed(2)}</span>
+                  <span>${selectedOrder.tipAmount.toFixed(2)}</span>
+                </div>
+              )}
+              {selectedOrder.discountAmount > 0 && (
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Discount</span>
+                  <span>-${selectedOrder.discountAmount.toFixed(2)}</span>
                 </div>
               )}
               <div className="flex items-center justify-between text-lg font-bold pt-2 border-t">
@@ -1282,21 +1768,35 @@ function OrdersPageContent() {
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <div>
                   <p className="text-muted-foreground">Status</p>
-                  <p className={`font-medium ${getPaymentStatusColor(selectedOrder.paymentStatus)}`}>
-                    {selectedOrder.paymentStatus}
+                  <p className={`font-medium ${getPaymentStatusColor(selectedOrder.paymentStatus === "paid" ? "Paid" : selectedOrder.paymentStatus === "partial" ? "Pending" : "Unpaid")}`}>
+                    {selectedOrder.paymentStatus.charAt(0).toUpperCase() + selectedOrder.paymentStatus.slice(1)}
                   </p>
                 </div>
-                {selectedOrder.paymentMethod && (
+                {selectedOrder.payments.length > 0 && (
                   <div>
                     <p className="text-muted-foreground">Method</p>
-                    <p className="font-medium">{selectedOrder.paymentMethod}</p>
+                    <p className="font-medium">{selectedOrder.payments[0].method}</p>
                   </div>
                 )}
               </div>
-              {selectedOrder.transactionId && (
+              {selectedOrder.payments.length > 0 && (
                 <div>
-                  <p className="text-sm text-muted-foreground text-sm">Transaction ID</p>
-                  <p className="font-mono text-sm">{selectedOrder.transactionId}</p>
+                  <p className="text-sm text-muted-foreground mb-2">Payments</p>
+                  <div className="space-y-2">
+                    {selectedOrder.payments.map((payment) => (
+                      <div key={payment.id} className="p-2 border rounded text-sm">
+                        <div className="flex justify-between">
+                          <span>${payment.amount.toFixed(2)}</span>
+                          <span className="text-muted-foreground">{payment.method}</span>
+                        </div>
+                        {payment.paidAt && (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Paid: {new Date(payment.paidAt).toLocaleString()}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
               <div className="flex flex-wrap gap-2">
@@ -1322,15 +1822,26 @@ function OrdersPageContent() {
                 {selectedOrder.timeline.map((event, index) => (
                   <div key={index} className="flex items-start gap-3">
                     <Avatar className="h-8 w-8">
-                      <AvatarFallback className="text-xs">{event.avatar}</AvatarFallback>
+                      <AvatarFallback className="text-xs">
+                        {event.changedBy
+                          .split(" ")
+                          .map((n) => n[0])
+                          .join("")
+                          .toUpperCase()}
+                      </AvatarFallback>
                     </Avatar>
                     <div className="flex-1">
-                      <p className="text-sm font-medium">{event.event}</p>
+                      <p className="text-sm font-medium">
+                        Status changed to: {event.status.charAt(0).toUpperCase() + event.status.slice(1)}
+                      </p>
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span>{event.user}</span>
+                        <span>{event.changedBy}</span>
                         <span>•</span>
-                        <span>{event.time}</span>
+                        <span>{new Date(event.createdAt).toLocaleString()}</span>
                       </div>
+                      {event.note && (
+                        <p className="text-xs text-muted-foreground mt-1">{event.note}</p>
+                      )}
                     </div>
                   </div>
                 ))}

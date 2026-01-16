@@ -7,6 +7,7 @@ import { Toolbar } from "@/components/toolbar"
 import { SelectionToolbar } from "@/components/selection-toolbar"
 import { ItemDrawer } from "@/components/item-drawer"
 import { BulkActionModal } from "@/components/bulk-action-modal"
+import { DeleteConfirmationDialog } from "@/components/modals/delete-confirmation-dialog"
 import { useMenu } from "../menu-context"
 import type { MenuItem } from "@/types/menu-item"
 import { toast } from "sonner"
@@ -35,6 +36,13 @@ export default function MenuItemsPage() {
   }>({
     open: false,
     action: null,
+  })
+  const [deleteConfirmation, setDeleteConfirmation] = useState<{
+    open: boolean
+    item: MenuItem | null
+  }>({
+    open: false,
+    item: null,
   })
 
   // Handle URL parameters for filtering
@@ -119,15 +127,18 @@ export default function MenuItemsPage() {
   }, [])
 
   const handleSaveItem = useCallback(
-    (itemData: Partial<MenuItem>) => {
-      if (itemDrawer.item) {
-        updateItem(itemDrawer.item.id, itemData)
-        toast.success(`${itemData.name || "Item"} updated successfully`)
-      } else {
-        createItem(itemData)
-        toast.success(`${itemData.name || "Item"} created successfully`)
+    async (itemData: Partial<MenuItem>) => {
+      try {
+        if (itemDrawer.item) {
+          await updateItem(itemDrawer.item.id, itemData)
+        } else {
+          await createItem(itemData)
+        }
+        setItemDrawer({ open: false, item: null })
+      } catch (error) {
+        // Error is already handled by context, just re-throw so drawer knows
+        throw error
       }
-      setItemDrawer({ open: false, item: null })
     },
     [itemDrawer.item, updateItem, createItem],
   )
@@ -257,15 +268,24 @@ export default function MenuItemsPage() {
           updateItem(id, { status: newStatus })
           toast.success(`${item.name} ${newStatus === "live" ? "published" : "hidden"}`)
         } else if (action === "delete") {
-          deleteItem(id)
-          toast.success(`${item.name} deleted`)
+          // Show confirmation dialog instead of deleting immediately
+          setDeleteConfirmation({ open: true, item })
+          return
         }
       } catch (error) {
         toast.error("Failed to perform action")
       }
     },
-    [items, updateItem, createItem, deleteItem, setItemDrawer],
+    [items, updateItem, createItem, setItemDrawer],
   )
+
+  const handleConfirmDelete = useCallback(() => {
+    if (deleteConfirmation.item) {
+      deleteItem(deleteConfirmation.item.id)
+      toast.success(`${deleteConfirmation.item.name} deleted`)
+      setDeleteConfirmation({ open: false, item: null })
+    }
+  }, [deleteConfirmation.item, deleteItem])
 
   const selectedItems = items.filter((item) => selectedIds.includes(item.id))
 
@@ -366,6 +386,7 @@ export default function MenuItemsPage() {
 
       {/* Item Drawer */}
       <ItemDrawer
+        key={itemDrawer.item?.id || "new"}
         item={itemDrawer.item}
         isOpen={itemDrawer.open}
         onClose={() => setItemDrawer({ open: false, item: null })}
@@ -384,6 +405,15 @@ export default function MenuItemsPage() {
         availableTags={availableTags}
         availableCategories={categories}
         onConfirm={handleBulkActionConfirm}
+      />
+
+      {/* Delete Confirmation Dialog */}
+      <DeleteConfirmationDialog
+        open={deleteConfirmation.open}
+        onOpenChange={(open) => setDeleteConfirmation({ ...deleteConfirmation, open })}
+        onConfirm={handleConfirmDelete}
+        entityType="item"
+        entityName={deleteConfirmation.item?.name || "this item"}
       />
     </div>
   )

@@ -3,10 +3,10 @@ import { Link } from "@/components/ui/link";
 import { notFound } from "next/navigation";
 import { getCategory, getCategoryProductCount } from "@/lib/queries";
 import { db } from "@/db";
-import { categories } from "@/db/schema";
+import { fastCategories } from "@/db/schema";
 
 export async function generateStaticParams() {
-  return await db.select({ category: categories.slug }).from(categories);
+  return await db.select({ category: fastCategories.slug }).from(fastCategories);
 }
 
 export default async function Page(props: {

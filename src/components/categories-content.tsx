@@ -13,7 +13,6 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { MoreVertical, Edit, Trash2, Plus } from "lucide-react"
 import { CategoryDraggableList } from "@/components/drag-and-drop/category-draggable-list"
-import { EditCategoryDrawer } from "@/components/drawers/edit-category-drawer"
 import type { Category } from "@/types/category"
 import type { MenuItem } from "@/types/menu-item"
 
@@ -26,7 +25,6 @@ interface CategoriesContentProps {
   onReorder?: (categories: Category[]) => void
   uncategorizedCount?: number
   isLoading?: boolean
-  onSaveCategory?: (id: string, updates: any) => void
 }
 
 export function CategoriesContent({
@@ -38,11 +36,8 @@ export function CategoriesContent({
   onReorder,
   uncategorizedCount = 0,
   isLoading = false,
-  onSaveCategory,
 }: CategoriesContentProps) {
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set())
-  const [selectedCategory, setSelectedCategory] = useState<Category | null>(null)
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false)
 
   const toggleCategory = useCallback(
     (categoryId: string) => {
@@ -58,8 +53,8 @@ export function CategoriesContent({
   )
 
   const handleCategoryClick = (category: Category) => {
-    setSelectedCategory(category)
-    setIsDrawerOpen(true)
+    // Use the parent's onEditCategory to open the drawer in the page
+    onEditCategory(category.id)
   }
 
   const handleDeleteClick = (categoryId: string) => {
@@ -231,17 +226,6 @@ export function CategoriesContent({
           </div>
         </div>
       )}
-
-      <EditCategoryDrawer
-        category={selectedCategory}
-        isOpen={isDrawerOpen}
-        onClose={() => {
-          setIsDrawerOpen(false)
-          setSelectedCategory(null)
-        }}
-        onSave={onSaveCategory || (() => {})}
-        onDelete={onDeleteCategory}
-      />
     </>
   )
 }

@@ -89,18 +89,17 @@ export function EditMenuDrawer({ menu, isOpen, onClose, onSave, onDelete }: Edit
     name: "schedules",
   })
 
-  // Reset form when menu changes
+  // Reset form when menu changes or drawer opens
   useEffect(() => {
-    if (isClosing) return // Don't reset when drawer is closing
-
-    if (menu) {
+    if (menu && isOpen) {
+      console.log('EditMenuDrawer - resetting form for menu:', menu.id, menu.name)
       reset({
         name: menu.name,
-        schedules: menu.schedule,
-        orderTypes: menu.orderTypes,
+        schedules: menu.schedule?.length > 0 ? menu.schedule : [{ days: [], startTime: "9:00 AM", endTime: "5:00 PM" }],
+        orderTypes: menu.orderTypes?.length > 0 ? menu.orderTypes : ["delivery", "pickup"],
       })
     }
-  }, [menu, reset, isClosing])
+  }, [menu?.id, isOpen, reset])
 
   const schedules = watch("schedules")
   const orderTypes = watch("orderTypes") || []

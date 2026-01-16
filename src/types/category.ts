@@ -3,7 +3,7 @@ export interface Category {
   name: string
   emoji?: string
   description?: string
-  order: number
+  displayOrder: number
   itemCount: number
   menuIds: string[]
   menuNames: string[]

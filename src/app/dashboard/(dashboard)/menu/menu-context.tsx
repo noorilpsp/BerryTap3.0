@@ -1,229 +1,12 @@
 "use client"
 
-import React, { createContext, useContext, useState, useCallback } from "react"
+import React, { createContext, useContext, useState, useCallback, useEffect } from "react"
 import type { MenuItem } from "@/types/menu-item"
 import type { Category } from "@/types/category"
 import type { CustomizationGroup } from "@/types/customization"
 import type { Menu } from "@/types/menu"
 import { toast } from "sonner"
-
-// Mock data
-const mockItems: MenuItem[] = [
-  {
-    id: "1",
-    name: "Caesar Salad",
-    description: "Fresh romaine lettuce, parmesan cheese, croutons, Caesar dressing",
-    price: 12.5,
-    currency: "USD",
-    image: "/caesar-salad.png",
-    status: "live",
-    categories: ["salads", "lunch-specials"],
-    tags: ["popular", "chef-pick"],
-    dietaryTags: ["vegetarian"],
-    customizationGroups: ["salad-dressing", "protein-add-ons"],
-    availabilityMode: "menu-hours",
-    nutrition: {
-      calories: 350,
-      allergens: ["dairy", "gluten"],
-    },
-  },
-  {
-    id: "2",
-    name: "Margherita Pizza",
-    description: "Classic tomato sauce, fresh mozzarella, and basil",
-    price: 14.99,
-    currency: "USD",
-    image: "/margherita-pizza.png",
-    status: "live",
-    categories: ["pizzas", "lunch-specials"],
-    tags: ["vegetarian", "popular"],
-    dietaryTags: ["vegetarian"],
-    customizationGroups: ["pizza-size", "toppings"],
-    availabilityMode: "menu-hours",
-  },
-  {
-    id: "3",
-    name: "Pepperoni Pizza",
-    description: "Tomato sauce, mozzarella, and pepperoni",
-    price: 16.99,
-    currency: "USD",
-    image: "/pepperoni-pizza.png",
-    status: "live",
-    categories: ["pizzas"],
-    tags: ["popular", "spicy"],
-    dietaryTags: [],
-    customizationGroups: ["pizza-size", "toppings"],
-    availabilityMode: "menu-hours",
-  },
-  {
-    id: "4",
-    name: "Spaghetti Carbonara",
-    description: "Pasta with eggs, cheese, pancetta, and black pepper",
-    price: 15.99,
-    currency: "USD",
-    image: "/spaghetti-carbonara.png",
-    status: "draft",
-    categories: ["pasta", "lunch-specials"],
-    tags: ["new"],
-    dietaryTags: [],
-    customizationGroups: [],
-    availabilityMode: "menu-hours",
-  },
-  {
-    id: "5",
-    name: "Tiramisu",
-    description: "Classic Italian dessert with coffee and mascarpone",
-    price: 7.99,
-    currency: "USD",
-    image: "/classic-tiramisu.png",
-    status: "live",
-    categories: ["desserts"],
-    tags: ["popular"],
-    dietaryTags: ["vegetarian"],
-    customizationGroups: [],
-    availabilityMode: "menu-hours",
-  },
-  {
-    id: "6",
-    name: "Chicken Wings",
-    description: "Crispy wings with your choice of sauce",
-    price: 12.99,
-    currency: "USD",
-    image: "/crispy-chicken-wings.png",
-    status: "soldout",
-    categories: ["appetizers"],
-    tags: ["spicy"],
-    dietaryTags: [],
-    customizationGroups: ["wing-sauce"],
-    availabilityMode: "menu-hours",
-    soldOutUntil: new Date(Date.now() + 86400000),
-  },
-]
-
-const mockCategories: Category[] = [
-  {
-    id: "appetizers",
-    name: "Appetizers",
-    emoji: "🥗",
-    description: "Start your meal with these delicious options",
-    order: 1,
-    itemCount: 12,
-    menuIds: ["lunch", "dinner"],
-    menuNames: ["Lunch Menu", "Dinner Menu"],
-  },
-  {
-    id: "salads",
-    name: "Salads",
-    emoji: "🥬",
-    description: "Fresh, healthy salads",
-    order: 2,
-    itemCount: 8,
-    menuIds: ["lunch", "dinner"],
-    menuNames: ["Lunch Menu", "Dinner Menu"],
-  },
-  {
-    id: "pizzas",
-    name: "Pizzas",
-    emoji: "🍕",
-    description: "Wood-fired artisan pizzas",
-    order: 3,
-    itemCount: 15,
-    menuIds: ["lunch", "dinner", "late-night"],
-    menuNames: ["Lunch Menu", "Dinner Menu", "Late Night Menu"],
-  },
-  {
-    id: "pasta",
-    name: "Pasta",
-    emoji: "🍝",
-    description: "Traditional Italian pasta dishes",
-    order: 4,
-    itemCount: 10,
-    menuIds: ["lunch", "dinner"],
-    menuNames: ["Lunch Menu", "Dinner Menu"],
-  },
-  {
-    id: "desserts",
-    name: "Desserts",
-    emoji: "🍰",
-    description: "Sweet treats to finish your meal",
-    order: 5,
-    itemCount: 7,
-    menuIds: ["lunch", "dinner"],
-    menuNames: ["Lunch Menu", "Dinner Menu"],
-  },
-  {
-    id: "lunch-specials",
-    name: "Lunch Specials",
-    emoji: "🍽️",
-    description: "Special lunch menu items",
-    order: 6,
-    itemCount: 5,
-    menuIds: ["lunch"],
-    menuNames: ["Lunch Menu"],
-  },
-]
-
-const mockCustomizationGroups: CustomizationGroup[] = [
-  {
-    id: "pizza-size",
-    name: "Pizza Size",
-    customerInstructions: "Choose your pizza size",
-    rules: { min: 1, max: 1, required: true },
-    options: [
-      { id: "small", name: 'Small (10")', priceDelta: 0, isDefault: true, order: 1 },
-      { id: "medium", name: 'Medium (14")', priceDelta: 4, isDefault: false, order: 2 },
-      { id: "large", name: 'Large (18")', priceDelta: 8, isDefault: false, order: 3 },
-    ],
-    itemCount: 15,
-    itemNames: ["Margherita Pizza", "Pepperoni Pizza", "BBQ Chicken Pizza"],
-  },
-  {
-    id: "toppings",
-    name: "Toppings",
-    customerInstructions: "Add extra toppings",
-    rules: { min: 0, max: 5, required: false },
-    options: [
-      { id: "mushrooms", name: "Mushrooms", priceDelta: 2, isDefault: false, order: 1 },
-      { id: "olives", name: "Olives", priceDelta: 2, isDefault: false, order: 2 },
-      { id: "extra-cheese", name: "Extra Cheese", priceDelta: 3, isDefault: false, order: 3 },
-    ],
-    itemCount: 12,
-    itemNames: ["Margherita Pizza", "Veggie Pizza"],
-  },
-]
-
-const mockMenus: Menu[] = [
-  {
-    id: "lunch",
-    name: "Lunch Menu",
-    schedule: [
-      {
-        days: [1, 2, 3, 4, 5],
-        startTime: "11:00",
-        endTime: "16:00",
-      },
-    ],
-    orderTypes: ["delivery", "pickup", "dine-in"],
-    categoryCount: 8,
-    itemCount: 45,
-    isActive: true,
-  },
-  {
-    id: "dinner",
-    name: "Dinner Menu",
-    schedule: [
-      {
-        days: [0, 1, 2, 3, 4, 5, 6],
-        startTime: "16:00",
-        endTime: "23:00",
-      },
-    ],
-    orderTypes: ["delivery", "pickup", "dine-in"],
-    categoryCount: 10,
-    itemCount: 52,
-    isActive: true,
-  },
-]
+import { useLocations } from "@/lib/hooks/useLocations"
 
 interface MenuContextType {
   // State
@@ -231,85 +14,590 @@ interface MenuContextType {
   categories: Category[]
   customizationGroups: CustomizationGroup[]
   menus: Menu[]
+  tags: Array<{ id: string; name: string }>
+  allergens: Array<{ id: string; name: string }>
+  loading: boolean
+  error: string | null
+  locationId: string | null
+  locations: Array<{ id: string; name: string }>
+  setLocationId: (id: string) => void
 
   // Items CRUD
-  createItem: (item: Partial<MenuItem>) => void
-  updateItem: (id: string, updates: Partial<MenuItem>) => void
-  deleteItem: (id: string) => void
-  bulkUpdateItems: (ids: string[], updates: Partial<MenuItem>) => void
-  bulkDeleteItems: (ids: string[]) => void
-  reorderItems: (items: MenuItem[]) => void
+  createItem: (item: Partial<MenuItem>) => Promise<void>
+  updateItem: (id: string, updates: Partial<MenuItem>) => Promise<void>
+  deleteItem: (id: string) => Promise<void>
+  bulkUpdateItems: (ids: string[], updates: Partial<MenuItem>) => Promise<void>
+  bulkDeleteItems: (ids: string[]) => Promise<void>
+  reorderItems: (items: MenuItem[]) => Promise<void>
 
   // Categories CRUD
-  createCategory: (category: Omit<Category, "id" | "itemCount">) => void
-  updateCategory: (id: string, updates: Partial<Category>) => void
-  deleteCategory: (id: string) => void
-  reorderCategories: (categories: Category[]) => void
+  createCategory: (category: Omit<Category, "id" | "itemCount">) => Promise<void>
+  updateCategory: (id: string, updates: Partial<Category>) => Promise<void>
+  deleteCategory: (id: string) => Promise<void>
+  reorderCategories: (categories: Category[]) => Promise<void>
 
   // Customization Groups CRUD
-  createCustomizationGroup: (group: Omit<CustomizationGroup, "id" | "itemCount" | "itemNames">) => void
-  updateCustomizationGroup: (id: string, updates: Partial<CustomizationGroup>) => void
-  deleteCustomizationGroup: (id: string) => void
-  duplicateCustomizationGroup: (id: string) => void
+  createCustomizationGroup: (group: Omit<CustomizationGroup, "id" | "itemCount" | "itemNames">) => Promise<void>
+  updateCustomizationGroup: (id: string, updates: Partial<CustomizationGroup>) => Promise<void>
+  deleteCustomizationGroup: (id: string) => Promise<void>
+  duplicateCustomizationGroup: (id: string) => Promise<void>
 
   // Menus CRUD
-  createMenu: (menu: Omit<Menu, "id" | "categoryCount" | "itemCount">) => void
-  updateMenu: (id: string, updates: Partial<Menu>) => void
-  deleteMenu: (id: string) => void
-  toggleMenuActive: (id: string) => void
-  duplicateMenu: (id: string) => void
+  createMenu: (menu: Omit<Menu, "id" | "categoryCount" | "itemCount">) => Promise<void>
+  updateMenu: (id: string, updates: Partial<Menu>) => Promise<void>
+  deleteMenu: (id: string) => Promise<void>
+  toggleMenuActive: (id: string) => Promise<void>
+  duplicateMenu: (id: string) => Promise<void>
+
+  // Refresh data
+  refetch: () => Promise<void>
 }
 
 const MenuContext = createContext<MenuContextType | undefined>(undefined)
 
-export function MenuProvider({ children }: { children: React.ReactNode }) {
-  // Start with mock data to avoid hydration mismatch
-  const [items, setItems] = useState<MenuItem[]>(mockItems)
-  const [categories, setCategories] = useState<Category[]>(mockCategories)
-  const [customizationGroups, setCustomizationGroups] = useState<CustomizationGroup[]>(mockCustomizationGroups)
-  const [menus, setMenus] = useState<Menu[]>(mockMenus)
-  const [isHydrated, setIsHydrated] = useState(false)
+// Helper to normalize time to "HH:MM" format (24-hour)
+function normalizeTime(time: string | number | undefined | null): string {
+  if (!time && time !== 0) return "00:00"
+  
+  // Handle if time is a number (e.g., 7 or 700 or 0700)
+  if (typeof time === 'number') {
+    const str = String(time).padStart(4, '0')
+    return `${str.slice(0, 2)}:${str.slice(2)}`
+  }
+  
+  const timeStr = String(time).trim()
+  
+  // If it's just hours (e.g., "7" or "07")
+  if (!timeStr.includes(':')) {
+    return `${timeStr.padStart(2, '0')}:00`
+  }
+  
+  // Ensure proper padding
+  const [hours, minutes] = timeStr.split(':')
+  return `${hours.padStart(2, '0')}:${(minutes || '00').padStart(2, '0')}`
+}
 
-  // Load from localStorage after hydration
-  React.useEffect(() => {
-    const loadFromStorage = () => {
-      try {
-        const savedItems = localStorage.getItem("menu-items")
-        if (savedItems) {
-          setItems(JSON.parse(savedItems))
-        }
+// Helper to convert 24-hour time to 12-hour format for UI (e.g., "07:00" -> "7:00 AM")
+function to12HourFormat(time24: string): string {
+  if (!time24) return "12:00 AM"
+  
+  const [hoursStr, minutesStr] = time24.split(':')
+  let hours = parseInt(hoursStr, 10)
+  const minutes = minutesStr || '00'
+  
+  if (isNaN(hours)) return "12:00 AM"
+  
+  const period = hours >= 12 ? "PM" : "AM"
+  const displayHours = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours
+  
+  return `${displayHours}:${minutes} ${period}`
+}
 
-        const savedCategories = localStorage.getItem("menu-categories")
-        if (savedCategories) {
-          setCategories(JSON.parse(savedCategories))
-        }
+// Helper function to convert database schedule to UI schedule
+function dbScheduleToUISchedule(schedule: any): Array<{ days: number[]; startTime: string; endTime: string }> {
+  if (!schedule || typeof schedule !== 'object') return []
+  
+  const dayMap: { [key: string]: number } = {
+    sunday: 0,
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6,
+  }
 
-        const savedCustomizationGroups = localStorage.getItem("menu-customization-groups")
-        if (savedCustomizationGroups) {
-          setCustomizationGroups(JSON.parse(savedCustomizationGroups))
-        }
+  const result: Array<{ days: number[]; startTime: string; endTime: string }> = []
+  const timeBlocks: { [key: string]: Array<{ open: string; close: string }> } = {}
 
-        const savedMenus = localStorage.getItem("menu-menus")
-        if (savedMenus) {
-          setMenus(JSON.parse(savedMenus))
+  // Group time blocks by time ranges
+  Object.entries(schedule).forEach(([day, blocks]: [string, any]) => {
+    if (Array.isArray(blocks)) {
+      blocks.forEach((block: { open: string; close: string }) => {
+        const normalizedOpen = normalizeTime(block.open)
+        const normalizedClose = normalizeTime(block.close)
+        const key = `${normalizedOpen}-${normalizedClose}`
+        if (!timeBlocks[key]) {
+          timeBlocks[key] = []
         }
-      } catch (error) {
-        console.error("Error loading from localStorage:", error)
-      }
-      setIsHydrated(true)
+        timeBlocks[key].push({ day, open: normalizedOpen, close: normalizedClose })
+      })
     }
+  })
 
-    loadFromStorage()
+  // Convert grouped blocks to UI format
+  Object.values(timeBlocks).forEach((blocks) => {
+    if (blocks.length > 0) {
+      const days = blocks.map((b: any) => dayMap[b.day]).filter((d) => d !== undefined)
+      if (days.length > 0) {
+        result.push({
+          days,
+          startTime: to12HourFormat(blocks[0].open),
+          endTime: to12HourFormat(blocks[0].close),
+        })
+      }
+    }
+  })
+
+  return result
+}
+
+// Helper to convert 12-hour time to 24-hour format for DB (e.g., "7:00 AM" -> "07:00")
+function to24HourFormat(time12: string): string {
+  if (!time12) return "00:00"
+  
+  // If already in 24-hour format, return as-is
+  if (!time12.includes('AM') && !time12.includes('PM')) {
+    return normalizeTime(time12)
+  }
+  
+  const match = time12.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i)
+  if (!match) return "00:00"
+  
+  let hours = parseInt(match[1], 10)
+  const minutes = match[2]
+  const period = match[3].toUpperCase()
+  
+  if (period === 'AM') {
+    if (hours === 12) hours = 0
+  } else { // PM
+    if (hours !== 12) hours += 12
+  }
+  
+  return `${hours.toString().padStart(2, '0')}:${minutes}`
+}
+
+// Helper function to convert UI schedule to database schedule
+function uiScheduleToDbSchedule(schedule: Array<{ days: number[]; startTime: string; endTime: string }>): any {
+  const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+  const result: any = {}
+
+  schedule.forEach((block) => {
+    block.days.forEach((dayNum) => {
+      const dayName = dayNames[dayNum]
+      if (!result[dayName]) {
+        result[dayName] = []
+      }
+      result[dayName].push({
+        open: to24HourFormat(block.startTime),
+        close: to24HourFormat(block.endTime),
+      })
+    })
+  })
+
+  return result
+}
+
+// Transform database item to UI item
+function transformItem(dbItem: any): MenuItem {
+  // Get all tags from database and normalize to lowercase
+  const allTags: string[] = dbItem.itemTags?.map((it: any) => 
+    (it.tag.name || "").toLowerCase()
+  ) || []
+  
+  // Dietary tags are: vegetarian, vegan, gluten-free
+  const dietaryTagValues = ["vegetarian", "vegan", "gluten-free"]
+  const dietaryTags = allTags.filter((tag: string) => 
+    dietaryTagValues.includes(tag)
+  ) as Array<"vegetarian" | "vegan" | "gluten-free">
+  
+  // Regular tags are: spicy, popular, new, chef-pick (and any others)
+  const regularTags = allTags.filter((tag: string) => 
+    !dietaryTagValues.includes(tag)
+  )
+  
+  return {
+    id: dbItem.id,
+    name: dbItem.name,
+    description: dbItem.description || undefined,
+    price: parseFloat(dbItem.price || "0"),
+    currency: "USD", // Default, can be made configurable
+    image: dbItem.photoUrl || undefined,
+    status: dbItem.status,
+    categories: dbItem.categoryItems?.map((ci: any) => ci.category.id) || [],
+    tags: regularTags,
+    dietaryTags: dietaryTags,
+    customizationGroups: dbItem.itemCustomizations?.map((ic: any) => ic.group.id) || [],
+    availabilityMode: dbItem.useCustomHours ? "custom" : "menu-hours",
+    // Always provide a default customSchedule so switching to custom mode works
+    customSchedule: dbItem.customSchedule
+      ? dbScheduleToUISchedule(dbItem.customSchedule)
+      : [{ days: [], startTime: "7:00 AM", endTime: "11:00 PM" }],
+    nutrition: {
+      calories: dbItem.calories || undefined,
+      // Normalize allergens to lowercase to match UI expected values
+      allergens: dbItem.itemAllergens?.map((ia: any) => 
+        (ia.allergen.name || "").toLowerCase()
+      ) || [],
+    },
+  }
+}
+
+// Transform database category to UI category
+function transformCategory(dbCategory: any): Category {
+  return {
+    id: dbCategory.id,
+    name: dbCategory.name,
+    emoji: dbCategory.emoji || undefined,
+    description: dbCategory.description || undefined,
+    order: dbCategory.displayOrder,
+    itemCount: dbCategory.itemCount || 0,
+    menuIds: dbCategory.menuIds || [],
+    menuNames: dbCategory.menuNames || [],
+  }
+}
+
+// Transform database menu to UI menu
+function transformMenu(dbMenu: any): Menu {
+  const orderTypes: ("delivery" | "pickup" | "dine-in")[] = []
+  if (dbMenu.availabilityDelivery) orderTypes.push("delivery")
+  if (dbMenu.availabilityPickup) orderTypes.push("pickup")
+  if (dbMenu.availabilityDineIn) orderTypes.push("dine-in")
+
+  return {
+    id: dbMenu.id,
+    name: dbMenu.name,
+    schedule: dbScheduleToUISchedule(dbMenu.schedule),
+    orderTypes,
+    categoryCount: dbMenu.categoryCount || 0,
+    itemCount: 0, // Will be calculated from relations
+    isActive: dbMenu.status === "active",
+  }
+}
+
+// Transform database customization group to UI group
+function transformCustomizationGroup(dbGroup: any): CustomizationGroup & {
+  conditionalPricing?: any;
+  conditionalQuantities?: any;
+  secondaryGroups?: any;
+  defaultSelections?: any;
+} {
+  // Reconstruct priceMatrix from conditionalPrices
+  const priceMatrix: Record<string, Record<string, number>> = {};
+  if (dbGroup.options) {
+    dbGroup.options.forEach((option: any) => {
+      if (option.conditionalPrices && option.conditionalPrices.length > 0) {
+        priceMatrix[option.id] = {};
+        option.conditionalPrices.forEach((cp: any) => {
+          if (cp.baseOption) {
+            priceMatrix[option.id][cp.baseOption.id] = parseFloat(cp.price || "0");
+          }
+        });
+      }
+    });
+  }
+
+  // Reconstruct rulesMatrix from conditionalQuantities
+  const rulesMatrix: Record<string, any> = {};
+  if (dbGroup.conditionalQuantities) {
+    dbGroup.conditionalQuantities.forEach((cq: any) => {
+      if (cq.baseOption) {
+        rulesMatrix[cq.baseOption.id] = {
+          min: cq.minSelections || 0,
+          max: cq.maxSelections ?? undefined,
+          required: cq.isRequired || false,
+          maxPerOption: cq.maxPerOption ?? undefined,
+        };
+      }
+    });
+  }
+
+  // Reconstruct secondary groups
+  const secondaryGroupsRules: Array<{ id: string; triggerOptionId: string; showGroupId: string; required: boolean }> = [];
+  if (dbGroup.secondaryRules) {
+    dbGroup.secondaryRules.forEach((rule: any) => {
+      secondaryGroupsRules.push({
+        id: rule.id,
+        triggerOptionId: rule.triggerOptionId,
+        showGroupId: rule.showGroupId,
+        required: rule.isRequired || false,
+      });
+    });
+  }
+
+  // Reconstruct default selections from defaultOptionIds
+  // Can be stored as array of IDs (legacy) or object mapping optionId -> quantity
+  const defaultSelections: Record<string, number> = {};
+  if (dbGroup.defaultOptionIds) {
+    if (Array.isArray(dbGroup.defaultOptionIds)) {
+      // Legacy format: array of option IDs, default quantity to 1
+      dbGroup.defaultOptionIds.forEach((optionId: string) => {
+        defaultSelections[optionId] = 1;
+      });
+    } else if (typeof dbGroup.defaultOptionIds === 'object' && dbGroup.defaultOptionIds !== null) {
+      // New format: object mapping optionId -> quantity
+      Object.entries(dbGroup.defaultOptionIds).forEach(([optionId, quantity]) => {
+        if (typeof quantity === 'number' && quantity > 0) {
+          defaultSelections[optionId] = quantity;
+        }
+      });
+    }
+  }
+
+  return {
+    id: dbGroup.id,
+    name: dbGroup.name,
+    customerInstructions: dbGroup.customerInstructions || "",
+    internalNotes: dbGroup.internalNotes,
+    rules: {
+      min: dbGroup.minSelections || 0,
+      max: dbGroup.maxSelections || undefined,
+      required: dbGroup.isRequired || false,
+    },
+    options: dbGroup.options?.map((opt: any, index: number) => {
+      // Check if option is a default (handle both array and object formats)
+      let isDefault = false;
+      if (dbGroup.defaultOptionIds) {
+        if (Array.isArray(dbGroup.defaultOptionIds)) {
+          // Legacy format: array of option IDs
+          isDefault = dbGroup.defaultOptionIds.includes(opt.id);
+        } else if (typeof dbGroup.defaultOptionIds === 'object' && dbGroup.defaultOptionIds !== null) {
+          // New format: object mapping optionId -> quantity
+          isDefault = opt.id in dbGroup.defaultOptionIds && (dbGroup.defaultOptionIds as any)[opt.id] > 0;
+        }
+      }
+      
+      return {
+        id: opt.id,
+        name: opt.name,
+        priceDelta: parseFloat(opt.price || "0"),
+        isDefault,
+        order: opt.displayOrder || index,
+      };
+    }) || [],
+    itemCount: dbGroup.itemCount || 0,
+    itemNames: dbGroup.itemCustomizations?.map((ic: any) => ic.item.name) || [],
+    // Advanced features
+    conditionalPricing: dbGroup.useConditionalPricing ? {
+      enabled: true,
+      basedOnGroupId: dbGroup.conditionalPricingBaseGroupId || "",
+      priceMatrix: Object.keys(priceMatrix).length > 0 ? priceMatrix : {},
+    } : undefined,
+    conditionalQuantities: dbGroup.useConditionalQuantities ? {
+      enabled: true,
+      basedOnGroupId: dbGroup.conditionalQuantitiesBaseGroupId || "",
+      rulesMatrix: Object.keys(rulesMatrix).length > 0 ? rulesMatrix : {},
+    } : undefined,
+    secondaryGroups: secondaryGroupsRules.length > 0 ? {
+      rules: secondaryGroupsRules,
+    } : undefined,
+    defaultSelections: Object.keys(defaultSelections).length > 0 ? defaultSelections : undefined,
+  }
+}
+
+export function MenuProvider({ children }: { children: React.ReactNode }) {
+  const { locations, loading: locationsLoading } = useLocations()
+  const [locationId, setLocationId] = useState<string | null>(null)
+  const [items, setItems] = useState<MenuItem[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
+  const [customizationGroups, setCustomizationGroups] = useState<CustomizationGroup[]>([])
+  const [menus, setMenus] = useState<Menu[]>([])
+  const [tags, setTags] = useState<Array<{ id: string; name: string }>>([])
+  const [allergens, setAllergens] = useState<Array<{ id: string; name: string }>>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  // Set locationId from first available location
+  useEffect(() => {
+    if (!locationsLoading && locations.length > 0 && !locationId) {
+      setLocationId(locations[0].id)
+    }
+  }, [locations, locationsLoading, locationId])
+
+  // Helper to map tag names to IDs (returns existing IDs only)
+  const getTagIdsFromNames = useCallback((tagNames: string[]): string[] => {
+    return tagNames
+      .map((name) => tags.find((t) => t.name.toLowerCase() === name.toLowerCase())?.id)
+      .filter((id): id is string => id !== undefined)
+  }, [tags])
+
+  // Helper to get or create tags - returns tag IDs, creating any that don't exist
+  const getOrCreateTagIds = useCallback(async (tagNames: string[]): Promise<string[]> => {
+    if (!locationId) return []
+    
+    const tagIds: string[] = []
+    const tagsToCreate: string[] = []
+    
+    for (const name of tagNames) {
+      const existing = tags.find((t) => t.name.toLowerCase() === name.toLowerCase())
+      if (existing) {
+        tagIds.push(existing.id)
+      } else {
+        tagsToCreate.push(name)
+      }
+    }
+    
+    // Create any missing tags
+    for (const name of tagsToCreate) {
+      try {
+        const response = await fetch('/api/tags', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ locationId, name }),
+        })
+        if (response.ok) {
+          const newTag = await response.json()
+          tagIds.push(newTag.id)
+          // Update local tags state
+          setTags(prev => [...prev, { id: newTag.id, name: newTag.name }])
+        }
+      } catch (err) {
+        console.error(`Failed to create tag: ${name}`, err)
+      }
+    }
+    
+    return tagIds
+  }, [locationId, tags])
+
+  // Helper to map allergen names to IDs (returns existing IDs only)
+  const getAllergenIdsFromNames = useCallback((allergenNames: string[]): string[] => {
+    return allergenNames
+      .map((name) => allergens.find((a) => a.name.toLowerCase() === name.toLowerCase())?.id)
+      .filter((id): id is string => id !== undefined)
+  }, [allergens])
+
+  // Helper to get or create allergens - returns allergen IDs, creating any that don't exist
+  const getOrCreateAllergenIds = useCallback(async (allergenNames: string[]): Promise<string[]> => {
+    if (!locationId) return []
+    
+    const allergenIds: string[] = []
+    const allergensToCreate: string[] = []
+    
+    for (const name of allergenNames) {
+      const existing = allergens.find((a) => a.name.toLowerCase() === name.toLowerCase())
+      if (existing) {
+        allergenIds.push(existing.id)
+      } else {
+        allergensToCreate.push(name)
+      }
+    }
+    
+    // Create any missing allergens
+    for (const name of allergensToCreate) {
+      try {
+        const response = await fetch('/api/allergens', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ locationId, name }),
+        })
+        if (response.ok) {
+          const newAllergen = await response.json()
+          allergenIds.push(newAllergen.id)
+          // Update local allergens state
+          setAllergens(prev => [...prev, { id: newAllergen.id, name: newAllergen.name }])
+        }
+      } catch (err) {
+        console.error(`Failed to create allergen: ${name}`, err)
+      }
+    }
+    
+    return allergenIds
+  }, [locationId, allergens])
+
+  // Retry utility function
+  const retryFetch = useCallback(async (
+    url: string,
+    options: RequestInit = {},
+    maxRetries = 3,
+    delay = 1000
+  ): Promise<Response> => {
+    let lastError: Error | null = null
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const response = await fetch(url, options)
+        if (response.ok || attempt === maxRetries - 1) {
+          return response
+        }
+        // If not ok and not last attempt, wait and retry
+        if (attempt < maxRetries - 1) {
+          await new Promise((resolve) => setTimeout(resolve, delay * (attempt + 1)))
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error('Unknown error')
+        if (attempt < maxRetries - 1) {
+          await new Promise((resolve) => setTimeout(resolve, delay * (attempt + 1)))
+        }
+      }
+    }
+    
+    throw lastError || new Error('Failed after retries')
   }, [])
 
-  // Items CRUD
-  const createItem = useCallback((item: Partial<MenuItem>) => {
-    const newItem: MenuItem = {
-      id: Date.now().toString(),
+  // Fetch all data when locationId changes
+  const fetchData = useCallback(async () => {
+    if (!locationId) {
+      setLoading(false)
+      return
+    }
+
+    try {
+      setLoading(true)
+      setError(null)
+
+      // Fetch all data in parallel with retry logic
+      // Add timestamp to bust server-side cache
+      const cacheBuster = `&_t=${Date.now()}`
+      const [itemsRes, categoriesRes, customizationsRes, menusRes, tagsRes, allergensRes] = await Promise.all([
+        retryFetch(`/api/items?locationId=${locationId}${cacheBuster}`, { credentials: 'include', cache: 'no-store' }),
+        retryFetch(`/api/categories?locationId=${locationId}${cacheBuster}`, { credentials: 'include', cache: 'no-store' }),
+        retryFetch(`/api/customizations?locationId=${locationId}${cacheBuster}`, { credentials: 'include', cache: 'no-store' }),
+        retryFetch(`/api/menus?locationId=${locationId}${cacheBuster}`, { credentials: 'include', cache: 'no-store' }),
+        retryFetch(`/api/tags?locationId=${locationId}${cacheBuster}`, { credentials: 'include', cache: 'no-store' }),
+        retryFetch(`/api/allergens?locationId=${locationId}${cacheBuster}`, { credentials: 'include', cache: 'no-store' }),
+      ])
+
+      if (!itemsRes.ok) throw new Error('Failed to fetch items')
+      if (!categoriesRes.ok) throw new Error('Failed to fetch categories')
+      if (!customizationsRes.ok) throw new Error('Failed to fetch customizations')
+      if (!menusRes.ok) throw new Error('Failed to fetch menus')
+      if (!tagsRes.ok) throw new Error('Failed to fetch tags')
+      if (!allergensRes.ok) throw new Error('Failed to fetch allergens')
+
+      const [itemsData, categoriesData, customizationsData, menusData, tagsData, allergensData] = await Promise.all([
+        itemsRes.json(),
+        categoriesRes.json(),
+        customizationsRes.json(),
+        menusRes.json(),
+        tagsRes.json(),
+        allergensRes.json(),
+      ])
+
+      setItems(itemsData.map(transformItem))
+      setCategories(categoriesData.map(transformCategory))
+      setCustomizationGroups(customizationsData.map(transformCustomizationGroup))
+      setMenus(menusData.map(transformMenu))
+      setTags(tagsData.map((t: any) => ({ id: t.id, name: t.name })))
+      setAllergens(allergensData.map((a: any) => ({ id: a.id, name: a.name })))
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to fetch menu data'
+      setError(errorMessage)
+      toast.error(`${errorMessage}. Please try again.`)
+      console.error('[MenuContext] Error fetching data:', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [locationId, retryFetch])
+
+  useEffect(() => {
+    fetchData()
+  }, [fetchData])
+
+  // Items CRUD with optimistic updates
+  const createItem = useCallback(async (item: Partial<MenuItem>) => {
+    if (!locationId) {
+      toast.error("No location selected")
+      return
+    }
+
+    // Optimistic update
+    const tempId = `temp-${Date.now()}`
+    const optimisticItem: MenuItem = {
+      id: tempId,
       name: item.name || "New Item",
       description: item.description,
       price: item.price || 0,
-      currency: item.currency || "USD",
+      currency: "USD",
       image: item.image,
       status: item.status || "draft",
       categories: item.categories || [],
@@ -318,247 +606,612 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
       customizationGroups: item.customizationGroups || [],
       availabilityMode: item.availabilityMode || "menu-hours",
       nutrition: item.nutrition,
-      soldOutUntil: item.soldOutUntil,
     }
-    setItems((prev) => {
-      const updated = [...prev, newItem]
-      if (isHydrated) {
-        localStorage.setItem("menu-items", JSON.stringify(updated))
-      }
-      return updated
-    })
-    toast.success(`${newItem.name} created successfully`)
-  }, [])
+    setItems((prev) => [...prev, optimisticItem])
 
-  const updateItem = useCallback(
-    (id: string, updates: Partial<MenuItem>) => {
-      setItems((prev) => {
-        const updated = prev.map((item) => (item.id === id ? { ...item, ...updates } : item))
-        if (isHydrated) {
-          localStorage.setItem("menu-items", JSON.stringify(updated))
-        }
-        return updated
+    try {
+      const schedule = item.customSchedule ? uiScheduleToDbSchedule(item.customSchedule) : null
+      // Combine regular tags and dietary tags when saving (auto-create if they don't exist)
+      const allTags = [...(item.tags || []), ...(item.dietaryTags || [])]
+      const tagIds = await getOrCreateTagIds(allTags)
+      const allergenIds = await getOrCreateAllergenIds(item.nutrition?.allergens || [])
+      
+      const response = await fetch('/api/items', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          locationId,
+          name: item.name,
+          description: item.description,
+          price: item.price || 0,
+          photoUrl: item.image,
+          calories: item.nutrition?.calories,
+          status: item.status || "draft",
+          useCustomHours: item.availabilityMode === "custom",
+          customSchedule: schedule,
+          displayOrder: 0,
+          categoryIds: item.categories || [],
+          tagIds,
+          allergenIds,
+          customizationGroupIds: item.customizationGroups || [],
+        }),
       })
+
+      if (!response.ok) {
+        // Rollback optimistic update
+        setItems((prev) => prev.filter((i) => i.id !== tempId))
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to create item')
+      }
+
+      toast.success(`${item.name || "Item"} created successfully`)
+      await fetchData()
+    } catch (err) {
+      // Rollback optimistic update
+      setItems((prev) => prev.filter((i) => i.id !== tempId))
+      const errorMessage = err instanceof Error ? err.message : 'Failed to create item'
+      toast.error(errorMessage)
+      throw err
+    }
+  }, [locationId, fetchData, getOrCreateTagIds, getOrCreateAllergenIds])
+
+  const updateItem = useCallback(async (id: string, updates: Partial<MenuItem>) => {
+    // Optimistic update
+    const originalItem = items.find((i) => i.id === id)
+    if (originalItem) {
+      setItems((prev) => prev.map((i) => (i.id === id ? { ...i, ...updates } : i)))
+    }
+
+    try {
+      const schedule = updates.customSchedule ? uiScheduleToDbSchedule(updates.customSchedule) : undefined
+      // Combine regular tags and dietary tags when updating (auto-create if they don't exist)
+      const hasTags = updates.tags !== undefined || updates.dietaryTags !== undefined
+      const tagIds = hasTags 
+        ? await getOrCreateTagIds([...(updates.tags || []), ...(updates.dietaryTags || [])])
+        : undefined
+      const allergenIds = updates.nutrition?.allergens 
+        ? await getOrCreateAllergenIds(updates.nutrition.allergens) 
+        : undefined
+      
+      const response = await fetch(`/api/items/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          name: updates.name,
+          description: updates.description,
+          price: updates.price,
+          photoUrl: updates.image,
+          calories: updates.nutrition?.calories,
+          status: updates.status,
+          useCustomHours: updates.availabilityMode === "custom",
+          customSchedule: schedule,
+          categoryIds: updates.categories,
+          tagIds,
+          allergenIds,
+          customizationGroupIds: updates.customizationGroups,
+        }),
+      })
+
+      if (!response.ok) {
+        // Rollback optimistic update
+        if (originalItem) {
+          setItems((prev) => prev.map((i) => (i.id === id ? originalItem : i)))
+        }
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to update item')
+      }
+
       toast.success("Item updated successfully")
-    },
-    [isHydrated],
-  )
+      await fetchData()
+    } catch (err) {
+      // Rollback optimistic update
+      if (originalItem) {
+        setItems((prev) => prev.map((i) => (i.id === id ? originalItem : i)))
+      }
+      const errorMessage = err instanceof Error ? err.message : 'Failed to update item'
+      toast.error(errorMessage)
+      throw err
+    }
+  }, [items, fetchData, getOrCreateTagIds, getOrCreateAllergenIds])
 
-  const deleteItem = useCallback(
-    (id: string) => {
-      const item = items.find((i) => i.id === id)
-      setItems((prev) => {
-        const updated = prev.filter((item) => item.id !== id)
-        if (isHydrated) {
-          localStorage.setItem("menu-items", JSON.stringify(updated))
-        }
-        return updated
+  const deleteItem = useCallback(async (id: string) => {
+    // Optimistic update
+    const item = items.find((i) => i.id === id)
+    setItems((prev) => prev.filter((i) => i.id !== id))
+
+    try {
+      const response = await fetch(`/api/items/${id}`, {
+        method: 'DELETE',
+        credentials: 'include',
       })
+
+      if (!response.ok) {
+        // Rollback optimistic update
+        if (item) {
+          setItems((prev) => [...prev, item])
+        }
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to delete item')
+      }
+
       toast.success(`${item?.name || "Item"} deleted`)
-    },
-    [items, isHydrated],
-  )
+      await fetchData()
+    } catch (err) {
+      // Rollback optimistic update
+      if (item) {
+        setItems((prev) => [...prev, item])
+      }
+      const errorMessage = err instanceof Error ? err.message : 'Failed to delete item'
+      toast.error(errorMessage)
+      throw err
+    }
+  }, [items, fetchData])
 
-  const bulkUpdateItems = useCallback(
-    (ids: string[], updates: Partial<MenuItem>) => {
-      setItems((prev) => {
-        const updated = prev.map((item) => (ids.includes(item.id) ? { ...item, ...updates } : item))
-        if (isHydrated) {
-          localStorage.setItem("menu-items", JSON.stringify(updated))
-        }
-        return updated
-      })
+  const bulkUpdateItems = useCallback(async (ids: string[], updates: Partial<MenuItem>) => {
+    try {
+      await Promise.all(ids.map((id) => updateItem(id, updates)))
       toast.success(`${ids.length} items updated`)
-    },
-    [isHydrated],
-  )
+    } catch (err) {
+      toast.error('Failed to update items')
+    }
+  }, [updateItem])
 
-  const bulkDeleteItems = useCallback(
-    (ids: string[]) => {
-      setItems((prev) => {
-        const updated = prev.filter((item) => !ids.includes(item.id))
-        if (isHydrated) {
-          localStorage.setItem("menu-items", JSON.stringify(updated))
-        }
-        return updated
-      })
+  const bulkDeleteItems = useCallback(async (ids: string[]) => {
+    try {
+      await Promise.all(ids.map((id) => deleteItem(id)))
       toast.success(`${ids.length} items deleted`)
-    },
-    [isHydrated],
-  )
+    } catch (err) {
+      toast.error('Failed to delete items')
+    }
+  }, [deleteItem])
 
-  const reorderItems = useCallback(
-    (reorderedItems: MenuItem[]) => {
-      setItems(reorderedItems)
-      if (isHydrated) {
-        localStorage.setItem("menu-items", JSON.stringify(reorderedItems))
-      }
-      toast.success("Items reordered")
-    },
-    [isHydrated],
-  )
+  const reorderItems = useCallback(async (reorderedItems: MenuItem[]) => {
+    // Optimistically update UI immediately
+    const previousItems = items
+    setItems(reorderedItems)
 
-  // Categories CRUD
-  const createCategory = useCallback(
-    (category: Omit<Category, "id" | "itemCount">) => {
-      const newCategory: Category = {
-        ...category,
-        id: Date.now().toString(),
-        itemCount: 0,
-      }
-      setCategories((prev) => {
-        const updated = [...prev, newCategory]
-        if (isHydrated) {
-          localStorage.setItem("menu-categories", JSON.stringify(updated))
-        }
-        return updated
+    // Save in background - batch update via single API call
+    try {
+      const updates = reorderedItems.map((item, index) => ({
+        id: item.id,
+        displayOrder: index,
+      }))
+      
+      await retryFetch(`/api/items/reorder?locationId=${locationId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: updates }),
       })
-      toast.success(`${newCategory.name} created`)
-    },
-    [isHydrated],
-  )
+    } catch (err) {
+      // Revert on error
+      setItems(previousItems)
+      toast.error('Failed to reorder items')
+    }
+  }, [items, locationId, retryFetch])
 
-  const updateCategory = useCallback(
-    (id: string, updates: Partial<Category>) => {
-      setCategories((prev) => {
-        const updated = prev.map((cat) => (cat.id === id ? { ...cat, ...updates } : cat))
-        if (isHydrated) {
-          localStorage.setItem("menu-categories", JSON.stringify(updated))
-        }
-        return updated
+  // Categories CRUD with optimistic updates
+  const createCategory = useCallback(async (category: Omit<Category, "id" | "itemCount">) => {
+    if (!locationId) {
+      toast.error("No location selected")
+      return
+    }
+
+    // Optimistic update
+    const tempId = `temp-${Date.now()}`
+    const optimisticCategory: Category = {
+      ...category,
+      id: tempId,
+      itemCount: 0,
+    }
+    setCategories((prev) => [...prev, optimisticCategory])
+
+    try {
+      const response = await fetch('/api/categories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          locationId,
+          name: category.name,
+          emoji: category.emoji,
+          description: category.description,
+          displayOrder: category.displayOrder,
+          menuIds: category.menuIds || [],
+        }),
       })
+
+      if (!response.ok) {
+        // Rollback optimistic update
+        setCategories((prev) => prev.filter((c) => c.id !== tempId))
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to create category')
+      }
+      const newCategory = await response.json()
+      
+      toast.success(`${category.name} created`)
+      await fetchData()
+    } catch (err) {
+      // Rollback optimistic update
+      setCategories((prev) => prev.filter((c) => c.id !== tempId))
+      const errorMessage = err instanceof Error ? err.message : 'Failed to create category'
+      toast.error(errorMessage)
+      throw err
+    }
+  }, [locationId, fetchData])
+
+  const updateCategory = useCallback(async (id: string, updates: Partial<Category>) => {
+    try {
+      // Build request body, only including defined fields
+      const body: any = {}
+      if (updates.name !== undefined) body.name = updates.name
+      if (updates.emoji !== undefined) body.emoji = updates.emoji || null
+      if (updates.description !== undefined) body.description = updates.description || null
+      if (updates.displayOrder !== undefined) body.displayOrder = updates.displayOrder
+      if (updates.menuIds !== undefined) body.menuIds = updates.menuIds
+
+      console.log('updateCategory - id:', id, 'body:', body)
+
+      const response = await fetch(`/api/categories/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        console.error('updateCategory API error:', error)
+        throw new Error(error.error || 'Failed to update category')
+      }
+
+      const updatedCategory = await response.json()
+      console.log('updateCategory - response:', updatedCategory)
+
       toast.success("Category updated")
-    },
-    [isHydrated],
-  )
+      await fetchData()
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to update category'
+      console.error('updateCategory error:', err)
+      toast.error(errorMessage)
+      throw err
+    }
+  }, [fetchData])
 
-  const deleteCategory = useCallback(
-    (id: string) => {
-      const category = categories.find((c) => c.id === id)
-      setCategories((prev) => {
-        const updated = prev.filter((cat) => cat.id !== id)
-        if (isHydrated) {
-          localStorage.setItem("menu-categories", JSON.stringify(updated))
-        }
-        return updated
+  const deleteCategory = useCallback(async (id: string) => {
+    try {
+      const response = await fetch(`/api/categories/${id}`, {
+        method: 'DELETE',
+        credentials: 'include',
       })
-      toast.success(`${category?.name || "Category"} deleted`)
-    },
-    [categories, isHydrated],
-  )
 
-  const reorderCategories = useCallback(
-    (reorderedCategories: Category[]) => {
-      setCategories(reorderedCategories)
-      if (isHydrated) {
-        localStorage.setItem("menu-categories", JSON.stringify(reorderedCategories))
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to delete category')
       }
-      toast.success("Categories reordered")
-    },
-    [isHydrated],
-  )
+
+      const category = categories.find((c) => c.id === id)
+      toast.success(`${category?.name || "Category"} deleted`)
+      await fetchData()
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to delete category'
+      toast.error(errorMessage)
+      throw err
+    }
+  }, [categories, fetchData])
+
+  const reorderCategories = useCallback(async (reorderedCategories: Category[]) => {
+    // Optimistically update UI immediately
+    const previousCategories = categories
+    const updatedCategories = reorderedCategories.map((cat, index) => ({
+      ...cat,
+      displayOrder: index,
+    }))
+    setCategories(updatedCategories)
+
+    // Save in background - batch update via single API call
+    try {
+      const updates = updatedCategories.map((cat) => ({
+        id: cat.id,
+        displayOrder: cat.displayOrder,
+      }))
+      
+      await retryFetch(`/api/categories/reorder?locationId=${locationId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categories: updates }),
+      })
+    } catch (err) {
+      // Revert on error
+      setCategories(previousCategories)
+      toast.error('Failed to reorder categories')
+    }
+  }, [categories, locationId])
 
   // Customization Groups CRUD
-  const createCustomizationGroup = useCallback((group: Omit<CustomizationGroup, "id" | "itemCount" | "itemNames">) => {
-    const newGroup: CustomizationGroup = {
-      ...group,
-      id: Date.now().toString(),
-      itemCount: 0,
-      itemNames: [],
+  const createCustomizationGroup = useCallback(async (group: Omit<CustomizationGroup, "id" | "itemCount" | "itemNames"> & {
+    conditionalPricing?: any;
+    conditionalQuantities?: any;
+    secondaryGroups?: any;
+    defaultSelections?: any;
+  }) => {
+    if (!locationId) {
+      toast.error("No location selected")
+      return
     }
-    setCustomizationGroups((prev) => [...prev, newGroup])
-    toast.success(`${newGroup.name} created`)
-  }, [])
 
-  const updateCustomizationGroup = useCallback((id: string, updates: Partial<CustomizationGroup>) => {
-    setCustomizationGroups((prev) => prev.map((group) => (group.id === id ? { ...group, ...updates } : group)))
-    toast.success("Customization group updated")
-  }, [])
+    try {
+      const response = await fetch('/api/customizations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          locationId,
+          name: group.name,
+          customerInstructions: group.customerInstructions,
+          internalNotes: group.internalNotes,
+          isRequired: group.rules.required,
+          minSelections: group.rules.min,
+          maxSelections: group.rules.max,
+          displayOrder: 0,
+          options: group.options.map((opt, index) => ({
+            name: opt.name,
+            price: opt.priceDelta,
+            displayOrder: opt.order ?? index,
+            isDefault: opt.isDefault || false,
+          })),
+          useConditionalPricing: group.conditionalPricing?.enabled || false,
+          conditionalPricingBaseGroupId: group.conditionalPricing?.basedOnGroupId && group.conditionalPricing.basedOnGroupId !== "" 
+            ? group.conditionalPricing.basedOnGroupId 
+            : null,
+          conditionalPricing: group.conditionalPricing,
+          useConditionalQuantities: group.conditionalQuantities?.enabled || false,
+          conditionalQuantitiesBaseGroupId: group.conditionalQuantities?.basedOnGroupId && group.conditionalQuantities.basedOnGroupId !== ""
+            ? group.conditionalQuantities.basedOnGroupId 
+            : null,
+          conditionalQuantities: group.conditionalQuantities,
+          secondaryGroups: group.secondaryGroups,
+          defaultSelections: group.defaultSelections,
+        }),
+      })
 
-  const deleteCustomizationGroup = useCallback(
-    (id: string) => {
-      const group = customizationGroups.find((g) => g.id === id)
-      setCustomizationGroups((prev) => prev.filter((group) => group.id !== id))
-      toast.success(`${group?.name || "Group"} deleted`)
-    },
-    [customizationGroups],
-  )
-
-  const duplicateCustomizationGroup = useCallback(
-    (id: string) => {
-      const group = customizationGroups.find((g) => g.id === id)
-      if (group) {
-        const newGroup: CustomizationGroup = {
-          ...group,
-          id: Date.now().toString(),
-          name: `${group.name} (Copy)`,
-        }
-        setCustomizationGroups((prev) => [...prev, newGroup])
-        toast.success(`${group.name} duplicated`)
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to create customization group')
       }
-    },
-    [customizationGroups],
-  )
 
-  // Menus CRUD
-  const createMenu = useCallback((menu: Omit<Menu, "id" | "categoryCount" | "itemCount">) => {
-    const newMenu: Menu = {
+      toast.success(`${group.name} created`)
+      await fetchData()
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to create customization group'
+      toast.error(errorMessage)
+      throw err
+    }
+  }, [locationId, fetchData])
+
+  const updateCustomizationGroup = useCallback(async (id: string, updates: Partial<CustomizationGroup> & {
+    conditionalPricing?: any;
+    conditionalQuantities?: any;
+    secondaryGroups?: any;
+    defaultSelections?: any;
+  }) => {
+    try {
+      const response = await fetch(`/api/customizations/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          name: updates.name,
+          customerInstructions: updates.customerInstructions,
+          internalNotes: updates.internalNotes,
+          isRequired: updates.rules?.required,
+          minSelections: updates.rules?.min,
+          maxSelections: updates.rules?.max,
+          // Include options if provided
+          options: updates.options?.map((opt, index) => ({
+            name: opt.name,
+            price: opt.priceDelta || 0,
+            displayOrder: index,
+            isDefault: opt.isDefault || false,
+          })),
+          // Include advanced features (ensure empty strings are converted to null for UUID fields)
+          useConditionalPricing: updates.conditionalPricing?.enabled || false,
+          conditionalPricingBaseGroupId: updates.conditionalPricing?.basedOnGroupId && updates.conditionalPricing.basedOnGroupId !== "" 
+            ? updates.conditionalPricing.basedOnGroupId 
+            : null,
+          conditionalPricing: updates.conditionalPricing,
+          useConditionalQuantities: updates.conditionalQuantities?.enabled || false,
+          conditionalQuantitiesBaseGroupId: updates.conditionalQuantities?.basedOnGroupId && updates.conditionalQuantities.basedOnGroupId !== ""
+            ? updates.conditionalQuantities.basedOnGroupId 
+            : null,
+          conditionalQuantities: updates.conditionalQuantities,
+          secondaryGroups: updates.secondaryGroups,
+          defaultSelections: updates.defaultSelections,
+        }),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to update customization group')
+      }
+
+      toast.success("Customization group updated")
+      await fetchData()
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to update customization group'
+      toast.error(errorMessage)
+      throw err
+    }
+  }, [fetchData])
+
+  const deleteCustomizationGroup = useCallback(async (id: string) => {
+    try {
+      const response = await fetch(`/api/customizations/${id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to delete customization group')
+      }
+
+      const group = customizationGroups.find((g) => g.id === id)
+      toast.success(`${group?.name || "Group"} deleted`)
+      await fetchData()
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to delete customization group'
+      toast.error(errorMessage)
+      throw err
+    }
+  }, [customizationGroups, fetchData])
+
+  const duplicateCustomizationGroup = useCallback(async (id: string) => {
+    const group = customizationGroups.find((g) => g.id === id)
+    if (group) {
+      await createCustomizationGroup({
+        ...group,
+        name: `${group.name} (Copy)`,
+      })
+    }
+  }, [customizationGroups, createCustomizationGroup])
+
+  // Menus CRUD with optimistic updates
+  const createMenu = useCallback(async (menu: Omit<Menu, "id" | "categoryCount" | "itemCount">) => {
+    if (!locationId) {
+      toast.error("No location selected")
+      return
+    }
+
+    // Optimistic update
+    const tempId = `temp-${Date.now()}`
+    const optimisticMenu: Menu = {
       ...menu,
-      id: Date.now().toString(),
+      id: tempId,
       categoryCount: 0,
       itemCount: 0,
     }
-    setMenus((prev) => [...prev, newMenu])
-    toast.success(`${newMenu.name} created`)
-  }, [])
+    setMenus((prev) => [...prev, optimisticMenu])
 
-  const updateMenu = useCallback((id: string, updates: Partial<Menu>) => {
-    setMenus((prev) => prev.map((menu) => (menu.id === id ? { ...menu, ...updates } : menu)))
-    toast.success("Menu updated")
-  }, [])
+    try {
+      const schedule = uiScheduleToDbSchedule(menu.schedule)
+      const response = await fetch('/api/menus', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          locationId,
+          name: menu.name,
+          schedule,
+          availabilityDelivery: menu.orderTypes.includes("delivery"),
+          availabilityPickup: menu.orderTypes.includes("pickup"),
+          availabilityDineIn: menu.orderTypes.includes("dine-in"),
+          status: menu.isActive ? "active" : "inactive",
+          displayOrder: 0,
+        }),
+      })
 
-  const deleteMenu = useCallback(
-    (id: string) => {
-      const menu = menus.find((m) => m.id === id)
-      setMenus((prev) => prev.filter((menu) => menu.id !== id))
-      toast.success(`${menu?.name || "Menu"} deleted`)
-    },
-    [menus],
-  )
-
-  const toggleMenuActive = useCallback((id: string) => {
-    setMenus((prev) =>
-      prev.map((menu) => {
-        if (menu.id === id) {
-          toast.success(`${menu.name} ${menu.isActive ? "deactivated" : "activated"}`)
-          return { ...menu, isActive: !menu.isActive }
-        }
-        return menu
-      }),
-    )
-  }, [])
-
-  const duplicateMenu = useCallback(
-    (id: string) => {
-      const menu = menus.find((m) => m.id === id)
-      if (menu) {
-        const newMenu: Menu = {
-          ...menu,
-          id: Date.now().toString(),
-          name: `${menu.name} (Copy)`,
-        }
-        setMenus((prev) => [...prev, newMenu])
-        toast.success(`${menu.name} duplicated`)
+      if (!response.ok) {
+        // Rollback optimistic update
+        setMenus((prev) => prev.filter((m) => m.id !== tempId))
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to create menu')
       }
-    },
-    [menus],
-  )
+
+      toast.success(`${menu.name} created`)
+      await fetchData()
+    } catch (err) {
+      // Rollback optimistic update
+      setMenus((prev) => prev.filter((m) => m.id !== tempId))
+      const errorMessage = err instanceof Error ? err.message : 'Failed to create menu'
+      toast.error(errorMessage)
+      throw err
+    }
+  }, [locationId, fetchData])
+
+  const updateMenu = useCallback(async (id: string, updates: Partial<Menu>) => {
+    try {
+      const schedule = updates.schedule ? uiScheduleToDbSchedule(updates.schedule) : undefined
+      const response = await fetch(`/api/menus/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          name: updates.name,
+          schedule,
+          availabilityDelivery: updates.orderTypes?.includes("delivery"),
+          availabilityPickup: updates.orderTypes?.includes("pickup"),
+          availabilityDineIn: updates.orderTypes?.includes("dine-in"),
+          status: updates.isActive !== undefined ? (updates.isActive ? "active" : "inactive") : undefined,
+        }),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to update menu')
+      }
+
+      toast.success("Menu updated")
+      await fetchData()
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to update menu'
+      toast.error(errorMessage)
+      throw err
+    }
+  }, [fetchData])
+
+  const deleteMenu = useCallback(async (id: string) => {
+    try {
+      const response = await fetch(`/api/menus/${id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to delete menu')
+      }
+
+      const menu = menus.find((m) => m.id === id)
+      toast.success(`${menu?.name || "Menu"} deleted`)
+      await fetchData()
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to delete menu'
+      toast.error(errorMessage)
+      throw err
+    }
+  }, [menus, fetchData])
+
+  const toggleMenuActive = useCallback(async (id: string) => {
+    const menu = menus.find((m) => m.id === id)
+    if (menu) {
+      await updateMenu(id, { isActive: !menu.isActive })
+    }
+  }, [menus, updateMenu])
+
+  const duplicateMenu = useCallback(async (id: string) => {
+    const menu = menus.find((m) => m.id === id)
+    if (menu) {
+      await createMenu({
+        ...menu,
+        name: `${menu.name} (Copy)`,
+      })
+    }
+  }, [menus, createMenu])
 
   const value: MenuContextType = {
     items,
     categories,
     customizationGroups,
     menus,
+    tags,
+    allergens,
+    loading: loading || locationsLoading,
+    error,
+    locationId,
+    locations: locations.map((l) => ({ id: l.id, name: l.name })),
+    setLocationId,
     createItem,
     updateItem,
     deleteItem,
@@ -578,6 +1231,7 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
     deleteMenu,
     toggleMenuActive,
     duplicateMenu,
+    refetch: fetchData,
   }
 
   return <MenuContext.Provider value={value}>{children}</MenuContext.Provider>

@@ -184,64 +184,67 @@ export function ConditionalPricingBuilder({
                   <span>Set prices for each combination. Cells highlighted in orange differ from base price.</span>
                 </div>
 
-                <div className="overflow-x-auto">
-                  <table className="w-full border-collapse">
-                    <thead>
-                      <tr className="border-b">
-                        <th className="p-3 text-left font-medium">Option</th>
-                        {baseGroup.options.map((baseOption) => (
-                          <th key={baseOption.id} className="p-3 text-center font-medium">
-                            {baseOption.name}
-                          </th>
-                        ))}
-                        <th className="p-3 text-center font-medium">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {currentGroup.options.map((option) => (
-                        <tr key={option.id} className="border-b">
-                          <td className="p-3 font-medium">{option.name}</td>
-                          {baseGroup.options.map((baseOption) => {
-                            const price = value.priceMatrix[option.id]?.[baseOption.id] ?? option.priceDelta
-                            const isDifferent = price !== option.priceDelta
-                            return (
-                              <td key={baseOption.id} className="p-3">
-                                <div className="relative">
-                                  <DollarSign className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                                  <Input
-                                    type="number"
-                                    step="0.01"
-                                    min="0"
-                                    value={price}
-                                    onChange={(e) =>
-                                      handlePriceChange(
-                                        option.id,
-                                        baseOption.id,
-                                        Number.parseFloat(e.target.value) || 0,
-                                      )
-                                    }
-                                    className={`pl-8 text-center ${isDifferent ? "border-orange-500 bg-orange-50" : ""}`}
-                                  />
-                                </div>
-                              </td>
-                            )
-                          })}
-                          <td className="p-3 text-center">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                const price = prompt("Apply same price to all:")
-                                if (price) applyPriceToRow(option.id, Number.parseFloat(price))
-                              }}
-                            >
-                              Apply to Row
-                            </Button>
-                          </td>
+                <div className="overflow-x-auto -mx-6 px-6">
+                  <div className="min-w-full inline-block">
+                    <table className="w-full border-collapse min-w-[600px]">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="p-2 text-left font-medium text-sm">Option</th>
+                          {baseGroup.options.map((baseOption) => (
+                            <th key={baseOption.id} className="p-2 text-center font-medium text-sm whitespace-nowrap">
+                              {baseOption.name}
+                            </th>
+                          ))}
+                          <th className="p-2 text-center font-medium text-sm">Actions</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {currentGroup.options.map((option) => (
+                          <tr key={option.id} className="border-b">
+                            <td className="p-2 font-medium text-sm">{option.name}</td>
+                            {baseGroup.options.map((baseOption) => {
+                              const price = value.priceMatrix[option.id]?.[baseOption.id] ?? option.priceDelta
+                              const isDifferent = price !== option.priceDelta
+                              return (
+                                <td key={baseOption.id} className="p-2">
+                                  <div className="relative">
+                                    <DollarSign className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                                    <Input
+                                      type="number"
+                                      step="0.01"
+                                      min="0"
+                                      value={price}
+                                      onChange={(e) =>
+                                        handlePriceChange(
+                                          option.id,
+                                          baseOption.id,
+                                          Number.parseFloat(e.target.value) || 0,
+                                        )
+                                      }
+                                      className={`pl-7 pr-2 py-1.5 text-sm text-center w-20 ${isDifferent ? "border-orange-500 bg-orange-50" : ""}`}
+                                    />
+                                  </div>
+                                </td>
+                              )
+                            })}
+                            <td className="p-2 text-center">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-xs"
+                                onClick={() => {
+                                  const price = prompt("Apply same price to all:")
+                                  if (price) applyPriceToRow(option.id, Number.parseFloat(price))
+                                }}
+                              >
+                                Apply to Row
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-2">

@@ -76,7 +76,7 @@ async function cleanupOrphanedData() {
     const orphanedSubcollections = await sql`
       SELECT scl.id, scl.category_slug
       FROM subcollections scl
-      LEFT JOIN categories c ON scl.category_slug = c.slug
+      LEFT JOIN fast_categories c ON scl.category_slug = c.slug
       WHERE c.slug IS NULL
     `
     if (orphanedSubcollections.length > 0) {
@@ -84,7 +84,7 @@ async function cleanupOrphanedData() {
       orphanedSubcollections.forEach((scl: any) => {
         console.log(`     - ${scl.id} (references category: ${scl.category_slug})`)
       })
-      await sql`DELETE FROM subcollections WHERE category_slug NOT IN (SELECT slug FROM categories)`
+      await sql`DELETE FROM subcollections WHERE category_slug NOT IN (SELECT slug FROM fast_categories)`
       console.log(`   Deleted ${orphanedSubcollections.length} orphaned subcollection(s)`)
     } else {
       console.log('   No orphaned records found')
@@ -94,7 +94,7 @@ async function cleanupOrphanedData() {
     console.log('\n5. Checking categories...')
     const orphanedCategories = await sql`
       SELECT c.slug, c.collection_id
-      FROM categories c
+      FROM fast_categories c
       LEFT JOIN collections col ON c.collection_id = col.id
       WHERE col.id IS NULL
     `
@@ -103,7 +103,7 @@ async function cleanupOrphanedData() {
       orphanedCategories.forEach((c: any) => {
         console.log(`     - ${c.slug} (references collection: ${c.collection_id})`)
       })
-      await sql`DELETE FROM categories WHERE collection_id NOT IN (SELECT id FROM collections)`
+      await sql`DELETE FROM fast_categories WHERE collection_id NOT IN (SELECT id FROM collections)`
       console.log(`   Deleted ${orphanedCategories.length} orphaned category(ies)`)
     } else {
       console.log('   No orphaned records found')

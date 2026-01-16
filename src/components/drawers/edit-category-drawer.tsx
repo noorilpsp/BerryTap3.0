@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useMemo } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import * as z from "zod"
@@ -15,8 +15,9 @@ import { toast } from "sonner"
 import { EmojiInputField } from "@/components/emoji-input-field"
 import { MenuSelector } from "@/components/menu-selector"
 import { UnsavedChangesModal } from "@/components/modals/unsaved-changes-modal"
-import { mockMenus } from "@/lib/mockData"
 import type { Category } from "@/types/category"
+import type { Menu } from "@/types/menu"
+import { useMenu } from "@/app/dashboard/(dashboard)/menu/menu-context"
 
 const categorySchema = z.object({
   name: z.string().min(1, "Category name is required"),
@@ -30,6 +31,7 @@ type CategoryFormData = z.infer<typeof categorySchema>
 interface EditCategoryDrawerProps {
   category: Category | null
   isOpen: boolean
+  menus?: Menu[]
   onClose: () => void
   onSave: (
     id: string,
@@ -43,11 +45,24 @@ interface EditCategoryDrawerProps {
   onDelete?: (id: string) => void
 }
 
-export function EditCategoryDrawer({ category, isOpen, onClose, onSave, onDelete }: EditCategoryDrawerProps) {
+export function EditCategoryDrawer({ category, isOpen, menus: menusProp = [], onClose, onSave, onDelete }: EditCategoryDrawerProps) {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showUnsavedModal, setShowUnsavedModal] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
+
+  // Get menus from context as fallback if prop is empty
+  const { menus: contextMenus } = useMenu()
+  
+  // Use prop menus if available and not empty, otherwise use context menus
+  const menus = menusProp && menusProp.length > 0 ? menusProp : contextMenus
+
+  // Ensure menus is always an array and updates when menus change
+  const safeMenus = useMemo(() => {
+    const result = Array.isArray(menus) ? menus : []
+    console.log('EditCategoryDrawer - menusProp:', menusProp, 'contextMenus:', contextMenus, 'final menus:', result)
+    return result
+  }, [menus, menusProp, contextMenus])
 
   const form = useForm<CategoryFormData>({
     resolver: zodResolver(categorySchema),
@@ -81,16 +96,22 @@ export function EditCategoryDrawer({ category, isOpen, onClose, onSave, onDelete
   }, [category, reset])
 
   const onSubmit = async (data: CategoryFormData) => {
-    if (!category) return
+    if (!category) {
+      toast.error("Category not found")
+      return
+    }
 
     setIsSubmitting(true)
     try {
+      console.log('onSubmit - category id:', category.id, 'data:', data)
       await onSave(category.id, data)
-      toast.success("Category updated successfully!")
+      console.log('onSave completed successfully')
+      toast.success("Category published successfully!")
       reset()
       onClose()
     } catch (error) {
-      toast.error("Failed to update category")
+      console.error('onSubmit error:', error)
+      toast.error(error instanceof Error ? error.message : "Failed to update category")
     } finally {
       setIsSubmitting(false)
     }
@@ -242,17 +263,23 @@ export function EditCategoryDrawer({ category, isOpen, onClose, onSave, onDelete
               {/* Add to Menus */}
               <div className="space-y-2">
                 <Label>Add to Menus (optional)</Label>
-                <MenuSelector
-                  menus={mockMenus.map((menu) => ({
-                    id: menu.id,
-                    label: menu.name,
-                  }))}
-                  selected={watch("menuIds") || []}
-                  onChange={(selectedIds) =>
-                    setValue("menuIds", selectedIds, { shouldDirty: true, shouldValidate: true })
-                  }
-                  placeholder="Search menus..."
-                />
+                {safeMenus.length > 0 ? (
+                  <MenuSelector
+                    menus={safeMenus.map((menu) => ({
+                      id: menu.id,
+                      label: menu.name,
+                    }))}
+                    selected={watch("menuIds") || []}
+                    onChange={(selectedIds) =>
+                      setValue("menuIds", selectedIds, { shouldDirty: true, shouldValidate: true })
+                    }
+                    placeholder="Search menus..."
+                  />
+                ) : (
+                  <div className="text-sm text-muted-foreground p-4 border rounded-md">
+                    No menus available. Please create a menu first.
+                  </div>
+                )}
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   Select which menus this category should appear in
                 </p>
@@ -265,8 +292,83 @@ export function EditCategoryDrawer({ category, isOpen, onClose, onSave, onDelete
               <Button type="button" variant="ghost" onClick={handleClose} disabled={isSubmitting}>
                 Cancel
               </Button>
-              <Button type="submit" className="bg-orange-600 hover:bg-orange-700" disabled={isSubmitting}>
-                {isSubmitting ? "Updating..." : "Update Category"}
+              <Button 
+                type="button" 
+                variant="outline" 
+                onClick={async (e) => {
+                  e.preventDefault()
+                  if (!category) return
+                  
+                  // Validate form
+                  const isValid = await form.trigger()
+                  if (!isValid) {
+                    toast.error("Please fix form errors before saving")
+                    return
+                  }
+                  
+                  // Get form values and save as draft
+                  const formData = form.getValues()
+                  setIsSubmitting(true)
+                  try {
+                    await onSave(category.id, formData)
+                    toast.success("Category saved as draft")
+                    reset()
+                    onClose()
+                  } catch (error) {
+                    toast.error("Failed to save category")
+                  } finally {
+                    setIsSubmitting(false)
+                  }
+                }}
+                disabled={isSubmitting}
+              >
+                Save Draft
+              </Button>
+              <Button 
+                type="button" 
+                className="bg-orange-600 hover:bg-orange-700" 
+                disabled={isSubmitting}
+                onClick={async (e) => {
+                  e.preventDefault()
+                  console.log('=== PUBLISH BUTTON CLICKED ===')
+                  console.log('category:', category)
+                  
+                  if (!category) {
+                    toast.error("Category not found")
+                    return
+                  }
+                  
+                  // Validate form
+                  const isValid = await form.trigger()
+                  console.log('Form valid:', isValid)
+                  
+                  if (!isValid) {
+                    console.log('Form errors:', form.formState.errors)
+                    toast.error("Please fix form errors")
+                    return
+                  }
+                  
+                  // Get form values
+                  const formData = form.getValues()
+                  console.log('Form data:', formData)
+                  
+                  setIsSubmitting(true)
+                  try {
+                    console.log('Calling onSave...')
+                    await onSave(category.id, formData)
+                    console.log('onSave completed')
+                    toast.success("Category published successfully!")
+                    reset()
+                    onClose()
+                  } catch (error) {
+                    console.error('Publish error:', error)
+                    toast.error(error instanceof Error ? error.message : "Failed to publish")
+                  } finally {
+                    setIsSubmitting(false)
+                  }
+                }}
+              >
+                {isSubmitting ? "Publishing..." : "Publish"}
               </Button>
             </div>
           </SheetFooter>

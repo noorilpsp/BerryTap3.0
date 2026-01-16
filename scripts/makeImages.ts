@@ -3,7 +3,7 @@ import { db } from "../src/db";
 import { Effect, Schedule } from "effect";
 import {
   products as products_table,
-  categories as categories_table,
+  fastCategories as categories_table,
   subcategories as subcategories_table,
 } from "../src/db/schema";
 import { eq } from "drizzle-orm";
@@ -77,8 +77,8 @@ const main = Effect.gen(function* () {
   );
 
   const categories = yield* Effect.tryPromise(() =>
-    db.query.categories.findMany({
-      where: (categories, { isNull }) => isNull(categories.image_url),
+    db.query.fastCategories.findMany({
+      where: (fastCategories, { isNull }) => isNull(fastCategories.image_url),
     }),
   );
 

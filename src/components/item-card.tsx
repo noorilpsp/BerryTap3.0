@@ -115,7 +115,8 @@ export function ItemCard({
     onClick?.(item.id)
   }
 
-  const handleQuickAction = (action: string) => {
+  const handleQuickAction = (e: React.MouseEvent, action: string) => {
+    e.stopPropagation()
     onQuickAction?.(item.id, action)
   }
 
@@ -179,30 +180,21 @@ export function ItemCard({
             !selectionMode && ( // Hide in selection mode
               <div className="absolute inset-0 bg-black/60 flex items-center justify-center gap-4 transition-opacity duration-200">
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleQuickAction("edit")
-                  }}
+                  onClick={(e) => handleQuickAction(e, "edit")}
                   className="p-3 bg-white rounded-full hover:bg-blue-50 hover:shadow-md transition-all duration-200 cursor-pointer group"
                   aria-label="Edit item"
                 >
                   <Edit className="w-5 h-5 text-gray-900 group-hover:text-blue-600 transition-colors duration-200" />
                 </button>
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleQuickAction("preview")
-                  }}
+                  onClick={(e) => handleQuickAction(e, "preview")}
                   className="p-3 bg-white rounded-full hover:bg-green-50 hover:shadow-md transition-all duration-200 cursor-pointer group"
                   aria-label="Preview item"
                 >
                   <Eye className="w-5 h-5 text-gray-900 group-hover:text-green-600 transition-colors duration-200" />
                 </button>
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleQuickAction("duplicate")
-                  }}
+                  onClick={(e) => handleQuickAction(e, "duplicate")}
                   className="p-3 bg-white rounded-full hover:bg-purple-50 hover:shadow-md transition-all duration-200 cursor-pointer group"
                   aria-label="Duplicate item"
                 >
@@ -306,25 +298,25 @@ export function ItemCard({
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => handleQuickAction("view")}>
+                <DropdownMenuItem onClick={(e) => handleQuickAction(e, "view")}>
                   <Eye className="w-4 h-4 mr-2" />
                   View Details
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleQuickAction("edit")}>
+                <DropdownMenuItem onClick={(e) => handleQuickAction(e, "edit")}>
                   <Edit className="w-4 h-4 mr-2" />
                   Edit
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleQuickAction("duplicate")}>
+                <DropdownMenuItem onClick={(e) => handleQuickAction(e, "duplicate")}>
                   <Copy className="w-4 h-4 mr-2" />
                   Duplicate
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => handleQuickAction(isSoldOut ? "mark-live" : "mark-soldout")}>
+                <DropdownMenuItem onClick={(e) => handleQuickAction(e, isSoldOut ? "mark-live" : "mark-soldout")}>
                   {isSoldOut ? "Mark Live" : "Mark Sold Out"}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  onClick={() => handleQuickAction("delete")}
+                  onClick={(e) => handleQuickAction(e, "delete")}
                   className="text-red-600 focus:text-red-600"
                 >
                   <Trash2 className="w-4 h-4 mr-2" />
@@ -461,24 +453,24 @@ export function ItemCard({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => handleQuickAction("view")}>
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, "view")}>
                 <Eye className="w-4 h-4 mr-2" />
                 View Details
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleQuickAction("edit")}>
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, "edit")}>
                 <Edit className="w-4 h-4 mr-2" />
                 Edit
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleQuickAction("duplicate")}>
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, "duplicate")}>
                 <Copy className="w-4 h-4 mr-2" />
                 Duplicate
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => handleQuickAction(isSoldOut ? "mark-live" : "mark-soldout")}>
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, isSoldOut ? "mark-live" : "mark-soldout")}>
                 {isSoldOut ? "Mark Live" : "Mark Sold Out"}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => handleQuickAction("delete")} className="text-red-600 focus:text-red-600">
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, "delete")} className="text-red-600 focus:text-red-600">
                 <Trash2 className="w-4 h-4 mr-2" />
                 Delete
               </DropdownMenuItem>
@@ -604,24 +596,24 @@ export function ItemCard({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => handleQuickAction("view")}>
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, "view")}>
                 <Eye className="w-4 h-4 mr-2" />
                 View Details
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleQuickAction("edit")}>
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, "edit")}>
                 <Edit className="w-4 h-4 mr-2" />
                 Edit
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleQuickAction("duplicate")}>
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, "duplicate")}>
                 <Copy className="w-4 h-4 mr-2" />
                 Duplicate
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => handleQuickAction(isSoldOut ? "mark-live" : "mark-soldout")}>
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, isSoldOut ? "mark-live" : "mark-soldout")}>
                 {isSoldOut ? "Mark Live" : "Mark Sold Out"}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => handleQuickAction("delete")} className="text-red-600 focus:text-red-600">
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, "delete")} className="text-red-600 focus:text-red-600">
                 <Trash2 className="w-4 h-4 mr-2" />
                 Delete
               </DropdownMenuItem>
@@ -753,10 +745,7 @@ export function ItemCard({
         {/* Action Buttons */}
         <div className="flex gap-2 pt-2">
           <button
-            onClick={(e) => {
-              e.stopPropagation()
-              handleQuickAction("edit")
-            }}
+            onClick={(e) => handleQuickAction(e, "edit")}
             className="flex-1 h-10 bg-gray-900 hover:bg-gray-800 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2" // gray-900 button
           >
             <Edit className="w-5 h-5" />
@@ -773,24 +762,24 @@ export function ItemCard({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => handleQuickAction("view")}>
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, "view")}>
                 <Eye className="w-4 h-4 mr-2" />
                 View Details
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleQuickAction("edit")}>
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, "edit")}>
                 <Edit className="w-4 h-4 mr-2" />
                 Edit
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleQuickAction("duplicate")}>
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, "duplicate")}>
                 <Copy className="w-4 h-4 mr-2" />
                 Duplicate
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => handleQuickAction(isSoldOut ? "mark-live" : "mark-soldout")}>
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, isSoldOut ? "mark-live" : "mark-soldout")}>
                 {isSoldOut ? "Mark Live" : "Mark Sold Out"}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => handleQuickAction("delete")} className="text-red-600 focus:text-red-600">
+              <DropdownMenuItem onClick={(e) => handleQuickAction(e, "delete")} className="text-red-600 focus:text-red-600">
                 <Trash2 className="w-4 h-4 mr-2" />
                 Delete
               </DropdownMenuItem>

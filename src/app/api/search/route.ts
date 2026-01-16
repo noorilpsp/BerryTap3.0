@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
   const results = await getSearchResults(searchTerm);
 
   const searchResults: ProductSearchResult = results.map((item) => {
-    const href = `/products/${item.categories.slug}/${item.subcategories.slug}/${item.products.slug}`;
+    const href = `/products/${item.fastCategories.slug}/${item.subcategories.slug}/${item.products.slug}`;
     return {
       ...item.products,
       href,
