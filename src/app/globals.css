@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark *));
+@custom-variant vivid (&:is(.vivid *));
 
 :root {
   /* Light energetic fitness theme with vibrant blues and greens */
@@ -48,6 +49,24 @@
   /* Added success and warning colors for KPI cards */
   --success: 142.1 76.2% 36.3%;
   --warning: 38 92% 50%;
+
+  /* Z-index stacking for mobile ordering */
+  --z-base: 0;
+  --z-hero: 20;
+  --z-sticky: 40;
+  --z-bottom-bar: 50;
+  --z-toast: 60;
+  --z-popover: 80;
+  --z-modal-backdrop: 110;
+  --z-modal-content: 111;
+
+  /* Mobile ordering liquid-glass (classic theme) */
+  --glass-bg: rgba(255, 255, 255, 0.6);
+  --glass-border: rgba(255, 255, 255, 0.5);
+  --glass-sheen: rgba(255, 255, 255, 0.22);
+  --glass-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+  --bg-sheen: rgba(180, 160, 120, 0.12);
+  --bg-gloss: rgba(150, 170, 210, 0.1);
 }
 
 .dark {
@@ -89,6 +108,191 @@
   /* Added dark mode success and warning colors */
   --success: 142.1 70.6% 45.3%;
   --warning: 38 92% 60%;
+
+  /* Mobile ordering liquid-glass (night/dark theme) */
+  --glass-bg: rgba(28, 38, 72, 0.6);
+  --glass-border: rgba(80, 120, 255, 0.12);
+  --glass-sheen: rgba(120, 170, 255, 0.08);
+  --glass-shadow: 0 4px 30px rgba(0, 0, 0, 0.35);
+  --bg-sheen: rgba(100, 160, 255, 0.14);
+  --bg-gloss: rgba(60, 100, 220, 0.06);
+}
+
+/* Vivid theme: match checkout-button-design — light text on dark, neon emerald accents */
+.vivid {
+  --background: oklch(0.065 0 0);
+  --foreground: oklch(0.98 0 0);
+  --card: oklch(0.11 0.01 170);
+  --card-foreground: oklch(0.98 0 0);
+  --popover: oklch(0.11 0.01 170);
+  --popover-foreground: oklch(0.98 0 0);
+  --primary: oklch(0.74 0.18 168);
+  --primary-foreground: oklch(0.065 0 0);
+  --secondary: oklch(0.155 0.015 170);
+  --secondary-foreground: oklch(0.95 0 0);
+  --muted: oklch(0.175 0.01 170);
+  --muted-foreground: oklch(0.65 0.012 0);
+  --accent: oklch(0.74 0.18 168);
+  --accent-foreground: oklch(0.065 0 0);
+  --destructive: oklch(0.68 0.27 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.3 0.04 170);
+  --input: oklch(0.155 0.015 170);
+  --ring: oklch(0.74 0.18 168);
+
+  --glass-bg: rgba(0, 0, 0, 0.6);
+  --glass-border: rgba(16, 185, 129, 0.22);
+  --glass-sheen: rgba(16, 185, 129, 0.1);
+  --glass-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+  --bg-sheen: rgba(255, 255, 255, 0.14);
+  --bg-gloss: rgba(255, 255, 255, 0.06);
+
+  --sidebar: oklch(0.065 0 0);
+  --sidebar-foreground: oklch(0.98 0 0);
+  --sidebar-primary: oklch(0.74 0.18 168);
+  --sidebar-primary-foreground: oklch(0.065 0 0);
+  --sidebar-accent: oklch(0.155 0.015 170);
+  --sidebar-accent-foreground: oklch(0.95 0 0);
+  --sidebar-border: oklch(0.3 0.04 170);
+  --sidebar-ring: oklch(0.74 0.18 168);
+}
+
+/* ═══════════════════════════════════════════════════
+   Mobile ordering: checkout-button-design font setup (Option A)
+   Each app section keeps its own design; mobile uses next/font Geist
+   ═══════════════════════════════════════════════════ */
+.mobile-ordering-root {
+  --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+}
+
+/* ═══════════════════════════════════════════════════
+   Liquid glass background — /mobile pages only
+   When html.liquid-glass-page: gradient bg + frosted overlay
+   ═══════════════════════════════════════════════════ */
+html.liquid-glass-page body {
+  background: transparent !important;
+  transition: background 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+html.liquid-glass-page body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)),
+    linear-gradient(
+      110deg,
+      transparent 15%,
+      var(--bg-sheen) 35%,
+      var(--bg-sheen) 50%,
+      transparent 70%
+    ),
+    linear-gradient(
+      160deg,
+      var(--bg-gloss) 0%,
+      transparent 40%
+    ),
+    linear-gradient(
+      340deg,
+      var(--bg-gloss) 0%,
+      transparent 35%
+    );
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(48px) saturate(1.45);
+  -webkit-backdrop-filter: blur(48px) saturate(1.45);
+}
+
+/* Mobile ordering: use checkout-button-design theme colors (classic, night, vivid) */
+html.liquid-glass-page:not(.dark):not(.vivid) {
+  /* Classic theme — match checkout-button-design */
+  --background: oklch(0.985 0.002 75);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.955 0.002 75);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.955 0.002 75);
+  --muted-foreground: oklch(0.46 0.01 286);
+  --accent: oklch(0.955 0.002 75);
+  --accent-foreground: oklch(0.205 0 0);
+  --border: oklch(0.908 0.004 75);
+  --input: oklch(0.908 0.004 75);
+  --ring: oklch(0.556 0.01 286);
+  --glass-bg: rgba(255, 255, 255, 0.6);
+  --glass-border: rgba(255, 255, 255, 0.5);
+  --glass-sheen: rgba(255, 255, 255, 0.22);
+  --bg-sheen: rgba(180, 160, 120, 0.12);
+  --bg-gloss: rgba(150, 170, 210, 0.1);
+}
+html.liquid-glass-page.dark {
+  /* Night theme — match checkout-button-design */
+  --background: oklch(0.2 0.03 265);
+  --foreground: oklch(0.93 0.007 260);
+  --card: oklch(0.24 0.028 265);
+  --card-foreground: oklch(0.93 0.007 260);
+  --popover: oklch(0.175 0.015 265);
+  --popover-foreground: oklch(0.93 0.007 260);
+  --primary: oklch(0.685 0.17 265);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.26 0.028 265);
+  --secondary-foreground: oklch(0.86 0.008 260);
+  --muted: oklch(0.26 0.025 265);
+  --muted-foreground: oklch(0.58 0.025 260);
+  --accent: oklch(0.3 0.03 265);
+  --accent-foreground: oklch(0.93 0.007 260);
+  --destructive: oklch(0.63 0.24 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.32 0.025 265);
+  --input: oklch(0.26 0.025 265);
+  --ring: oklch(0.685 0.17 265);
+  --glass-bg: rgba(28, 38, 72, 0.6);
+  --glass-border: rgba(80, 120, 255, 0.12);
+  --glass-sheen: rgba(120, 170, 255, 0.08);
+  --bg-sheen: rgba(100, 160, 255, 0.14);
+  --bg-gloss: rgba(60, 100, 220, 0.06);
+}
+
+/* Color scene behind the frosted glass — classic (light) */
+html.liquid-glass-page:not(.dark):not(.vivid) {
+  background-color: oklch(0.84 0.025 265);
+  background-image:
+    radial-gradient(80% 70% at 0% 0%, rgba(255, 106, 70, 0.62), transparent 65%),
+    radial-gradient(74% 62% at 100% 0%, rgba(70, 136, 255, 0.55), transparent 64%),
+    radial-gradient(62% 58% at 50% 0%, rgba(255, 190, 70, 0.36), transparent 62%),
+    radial-gradient(88% 72% at 50% 50%, rgba(186, 96, 255, 0.28), transparent 68%),
+    radial-gradient(70% 60% at 22% 76%, rgba(0, 206, 224, 0.36), transparent 62%),
+    radial-gradient(64% 54% at 80% 84%, rgba(255, 120, 182, 0.32), transparent 60%);
+}
+
+/* Night (dark) theme */
+html.liquid-glass-page.dark {
+  background-color: oklch(0.11 0.05 265);
+  background-image:
+    radial-gradient(82% 72% at 0% 0%, rgba(76, 58, 255, 0.64), transparent 66%),
+    radial-gradient(70% 62% at 100% 0%, rgba(0, 196, 255, 0.52), transparent 64%),
+    radial-gradient(60% 56% at 52% 0%, rgba(212, 62, 255, 0.35), transparent 62%),
+    radial-gradient(90% 72% at 50% 52%, rgba(0, 108, 208, 0.26), transparent 68%),
+    radial-gradient(66% 58% at 20% 74%, rgba(0, 226, 184, 0.32), transparent 62%),
+    radial-gradient(62% 52% at 82% 82%, rgba(255, 72, 140, 0.24), transparent 60%);
+}
+
+/* Vivid (high contrast) theme */
+html.liquid-glass-page.vivid {
+  background-color: oklch(0.03 0 0);
+  background-image:
+    radial-gradient(84% 72% at 0% 0%, rgba(12, 255, 168, 0.72), transparent 66%),
+    radial-gradient(70% 62% at 100% 0%, rgba(255, 235, 58, 0.5), transparent 64%),
+    radial-gradient(62% 56% at 50% 0%, rgba(0, 204, 255, 0.46), transparent 62%),
+    radial-gradient(90% 72% at 50% 52%, rgba(255, 64, 186, 0.3), transparent 68%),
+    radial-gradient(68% 58% at 20% 74%, rgba(216, 68, 255, 0.38), transparent 62%),
+    radial-gradient(64% 54% at 82% 84%, rgba(16, 255, 205, 0.42), transparent 60%);
 }
 
 @theme inline {
@@ -311,6 +515,95 @@
       min-height: 32px !important;
       min-width: auto !important;
     }
+
+    /* Override for menu item add/quantity controls, cart trigger - keep compact sizing like original checkout app */
+    .menu-item-controls button {
+      min-height: unset !important;
+      min-width: unset !important;
+    }
+
+    /* Override for context pill (Table X Dine-in) - keep compact sizing like checkout-button-design */
+    .context-pill button {
+      min-height: unset !important;
+      min-width: unset !important;
+    }
+
+    /* SmartBottomBar grip - keep h-8 like original; 44px rule would force it taller */
+    .smart-bottom-bar-grip {
+      min-height: unset !important;
+      min-width: unset !important;
+    }
+
+    /* Checkout Order Summary - compact collapse button and controls like checkout-button-design */
+    .checkout-order-summary button {
+      min-height: unset !important;
+      min-width: unset !important;
+    }
+
+    /* Checkout header (back button, item count) - match checkout-button-design sizing */
+    .checkout-header a,
+    .checkout-header button {
+      min-height: unset !important;
+      min-width: unset !important;
+    }
+  }
+
+  /* Context pill dropdown - match checkout-button-design hover/focus (bg + text/icon color) */
+  /* Exclude backdrop so it stays dark (bg-black/20) when hovering outside the dropdown */
+  .context-pill [data-slot="button"]:hover,
+  .context-pill button:not(.context-pill-backdrop):hover {
+    background-color: rgba(255, 255, 255, 0.1) !important;
+    color: rgb(13 13 13) !important; /* black - matches accent-foreground in original */
+  }
+  .context-pill [data-slot="button"]:hover svg,
+  .context-pill button:not(.context-pill-backdrop):hover svg {
+    color: inherit !important;
+  }
+  .context-pill [data-slot="button"]:focus-visible,
+  .context-pill button:not(.context-pill-backdrop):focus-visible {
+    background-color: rgba(255, 255, 255, 0.1) !important;
+    color: rgb(13 13 13) !important;
+  }
+  .context-pill [data-slot="button"]:focus-visible svg,
+  .context-pill button:not(.context-pill-backdrop):focus-visible svg {
+    color: inherit !important;
+  }
+  html.dark .context-pill [data-slot="button"]:hover,
+  html.dark .context-pill button:not(.context-pill-backdrop):hover {
+    background-color: rgba(30, 64, 175, 0.35) !important;
+    color: rgb(191 219 254) !important; /* blue-100 - light text on blue bg */
+  }
+  html.dark .context-pill [data-slot="button"]:hover svg,
+  html.dark .context-pill button:not(.context-pill-backdrop):hover svg {
+    color: inherit !important;
+  }
+  html.dark .context-pill [data-slot="button"]:focus-visible,
+  html.dark .context-pill button:not(.context-pill-backdrop):focus-visible {
+    background-color: rgba(30, 64, 175, 0.35) !important;
+    color: rgb(191 219 254) !important;
+  }
+  html.dark .context-pill [data-slot="button"]:focus-visible svg,
+  html.dark .context-pill button:not(.context-pill-backdrop):focus-visible svg {
+    color: inherit !important;
+  }
+  /* Vivid: keep same colors on hover — no black text, preserve white/light text and icons */
+  html.vivid .context-pill [data-slot="button"]:hover,
+  html.vivid .context-pill button:not(.context-pill-backdrop):hover {
+    background-color: rgba(255, 255, 255, 0.1) !important;
+    color: rgb(255 255 255) !important;
+  }
+  html.vivid .context-pill [data-slot="button"]:hover svg,
+  html.vivid .context-pill button:not(.context-pill-backdrop):hover svg {
+    color: rgb(255 255 255) !important;
+  }
+  html.vivid .context-pill [data-slot="button"]:focus-visible,
+  html.vivid .context-pill button:not(.context-pill-backdrop):focus-visible {
+    background-color: rgba(255, 255, 255, 0.1) !important;
+    color: rgb(255 255 255) !important;
+  }
+  html.vivid .context-pill [data-slot="button"]:focus-visible svg,
+  html.vivid .context-pill button:not(.context-pill-backdrop):focus-visible svg {
+    color: rgb(255 255 255) !important;
   }
 
   /* Fix overlapping Select dropdowns and emoji picker - ensure popper content always renders above UI layers */
@@ -432,6 +725,111 @@
   [role="progressbar"] [data-progress-indicator] {
     background-color: var(--progress-background, hsl(var(--primary)));
     transition: width 500ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Mobile ordering: liquid-glass, sheen-overlay, dine-icon-float */
+  @keyframes glass-sheen-sweep {
+    0%, 100% { background-position: 200% 0; }
+    50% { background-position: -200% 0; }
+  }
+
+  .liquid-glass {
+    position: relative;
+    background: var(--glass-bg, rgba(255, 255, 255, 0.6));
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.5));
+    box-shadow: var(--glass-shadow, 0 4px 24px rgba(0, 0, 0, 0.06));
+  }
+
+  .liquid-glass::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(
+      105deg,
+      transparent 38%,
+      var(--glass-sheen, rgba(255, 255, 255, 0.22)) 50%,
+      transparent 62%
+    );
+    background-size: 250% 100%;
+    animation: glass-sheen-sweep 8s ease-in-out infinite;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .liquid-glass > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .sheen-overlay {
+    overflow: hidden;
+  }
+
+  .sheen-overlay::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(
+      105deg,
+      transparent 40%,
+      var(--glass-sheen, rgba(255, 255, 255, 0.22)) 50%,
+      transparent 60%
+    );
+    background-size: 250% 100%;
+    animation: glass-sheen-sweep 8s ease-in-out infinite;
+    opacity: 0.9;
+    z-index: 0;
+  }
+
+  .sheen-overlay > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  @keyframes dine-icon-float {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    50% { transform: translateY(-2px) rotate(-4deg); }
+  }
+
+  .dine-icon-float {
+    animation: dine-icon-float 3.2s ease-in-out infinite;
+    transform-origin: center;
+  }
+
+  @keyframes context-dot-pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.4); opacity: 0.4; }
+  }
+
+  .context-dot-pulse {
+    animation: context-dot-pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes logo-float {
+    0%, 100% { transform: translateY(0px) scale(1); }
+    50% { transform: translateY(-6px) scale(1.01); }
+  }
+
+  .logo-float {
+    animation: logo-float 3.8s ease-in-out infinite;
+    will-change: transform;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .liquid-glass::after,
+    .sheen-overlay::after {
+      animation: none;
+    }
+    .dine-icon-float,
+    .context-dot-pulse,
+    .logo-float {
+      animation: none;
+    }
   }
 
   /* Added motion utilities for BerryTap animations */

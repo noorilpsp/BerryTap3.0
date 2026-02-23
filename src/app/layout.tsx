@@ -31,6 +31,13 @@ export default async function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{if(!location.pathname.startsWith('/mobile'))return;var t=localStorage.getItem("theme");if(t==="night")document.documentElement.classList.add("dark");else if(t==="vivid")document.documentElement.classList.add("vivid");}catch(e){}})();`,
+          }}
+        />
+      </head>
       <body
         className={`${GeistSans.variable} ${GeistMono.variable} flex flex-col overflow-y-auto overflow-x-hidden antialiased`}
       >
