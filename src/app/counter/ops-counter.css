@@ -1,0 +1,315 @@
+/* ═══════════════════════════════════════════════════
+   Ops Counter — table-merge-manager theme
+   Dark theme, typography, portaled content
+   ═══════════════════════════════════════════════════ */
+
+.ops-counter-root {
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif);
+  /* Table-merge dark theme (HSL) */
+  --background: hsl(220 20% 4%);
+  --foreground: hsl(210 20% 95%);
+  --card: hsl(220 18% 7%);
+  --card-foreground: hsl(210 20% 95%);
+  --popover: hsl(220 18% 8%);
+  --popover-foreground: hsl(210 20% 95%);
+  --primary: hsl(185 85% 45%);
+  --primary-foreground: hsl(220 20% 4%);
+  --secondary: hsl(220 15% 12%);
+  --secondary-foreground: hsl(210 15% 85%);
+  --muted: hsl(220 15% 12%);
+  --muted-foreground: hsl(220 10% 48%);
+  --accent: hsl(220 15% 14%);
+  --accent-foreground: hsl(210 15% 90%);
+  --border: hsl(220 15% 14%);
+  --input: hsl(220 15% 14%);
+  --ring: hsl(185 85% 45%);
+}
+
+/* Dialog, Sheet, AlertDialog — portaled content (PaymentModal, CustomizeItemModal, "Start new draft?" confirm) */
+html[data-ops-counter] [data-slot="dialog-overlay"],
+html[data-ops-counter] [data-slot="sheet-overlay"],
+html[data-ops-counter] [data-slot="alert-dialog-overlay"] {
+  z-index: 90 !important;
+  background: rgb(0 0 0 / 0.8) !important;
+}
+/* PaymentModal (Charge & Send): match table-merge — large modal (64rem = 1024px) */
+html[data-ops-counter] [data-slot="dialog-content"].payment-modal {
+  width: min(96vw, 64rem) !important;
+  max-width: 64rem !important;
+  max-height: calc(100dvh - 2rem) !important;
+}
+/* CustomizeItemModal: match table-merge size (max-w-2xl = 672px) */
+html[data-ops-counter] [data-slot="dialog-content"].max-w-2xl {
+  max-width: 42rem !important;
+  max-height: 90vh !important;
+}
+html[data-ops-counter] [data-slot="dialog-content"],
+html[data-ops-counter] [data-slot="sheet-content"],
+html[data-ops-counter] [data-slot="alert-dialog-content"] {
+  z-index: 90 !important;
+  --background: hsl(220 20% 4%);
+  --foreground: hsl(210 20% 95%);
+  --card: hsl(220 18% 7%);
+  --primary: hsl(185 85% 45%);
+  --primary-foreground: hsl(220 20% 4%);
+  --accent: hsl(220 15% 14%);
+  --accent-foreground: hsl(210 15% 90%);
+  --secondary: hsl(220 15% 12%);
+  --muted: hsl(220 15% 12%);
+  --muted-foreground: hsl(220 10% 48%);
+  --border: hsl(220 15% 14%);
+  --input: hsl(220 15% 14%);
+  --ring: hsl(185 85% 45%);
+  background: hsl(220 20% 4%) !important;
+  color: hsl(210 20% 95%) !important;
+  border-color: hsl(220 15% 14%) !important;
+  font-family: var(--font-inter-ops, var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif) !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+html[data-ops-counter] [data-slot="dialog-content"] [data-slot="dialog-header"],
+html[data-ops-counter] [data-slot="dialog-content"] [data-slot="dialog-footer"],
+html[data-ops-counter] [data-slot="sheet-content"] [data-slot="sheet-header"],
+html[data-ops-counter] [data-slot="sheet-content"] [data-slot="sheet-footer"],
+html[data-ops-counter] [data-slot="alert-dialog-content"] [data-slot="alert-dialog-header"],
+html[data-ops-counter] [data-slot="alert-dialog-content"] [data-slot="alert-dialog-footer"] {
+  background: hsl(220 20% 4%) !important;
+  color: hsl(210 20% 95%) !important;
+}
+
+/* AlertDialog footer buttons — match table-merge: same height, colors, font */
+html[data-ops-counter] [data-slot="alert-dialog-content"] [data-slot="alert-dialog-footer"] button {
+  height: 2.5rem !important;
+  min-height: 2.5rem !important;
+  padding: 0 1rem !important;
+  font-size: 0.875rem !important;
+  font-weight: 500 !important;
+  font-family: var(--font-inter-ops, var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif) !important;
+  border-radius: 0.375rem !important;
+}
+/* Primary action (Start New, last button): cyan bg, dark text — match table-merge */
+html[data-ops-counter] [data-slot="alert-dialog-content"] [data-slot="alert-dialog-footer"] button:last-child {
+  background: hsl(185 85% 45%) !important;
+  color: hsl(220 20% 4%) !important;
+  border: none !important;
+}
+html[data-ops-counter] [data-slot="alert-dialog-content"] [data-slot="alert-dialog-footer"] button:last-child:hover {
+  background: hsl(185 85% 40%) !important;
+  color: hsl(220 20% 4%) !important;
+}
+/* Cancel (first button): outline style — match table-merge */
+html[data-ops-counter] [data-slot="alert-dialog-content"] [data-slot="alert-dialog-footer"] button:first-child {
+  background: hsl(220 20% 4%) !important;
+  color: hsl(210 20% 95%) !important;
+  border: 1px solid hsl(220 15% 14%) !important;
+}
+html[data-ops-counter] [data-slot="alert-dialog-content"] [data-slot="alert-dialog-footer"] button:first-child:hover {
+  background: hsl(220 15% 14%) !important;
+  color: hsl(210 15% 90%) !important;
+  border-color: hsl(220 15% 14%) !important;
+}
+html[data-ops-counter] [data-slot="dialog-content"] [data-slot="input"],
+html[data-ops-counter] [data-slot="sheet-content"] [data-slot="input"] {
+  background: hsl(220 15% 14% / 0.5) !important;
+  border-color: hsl(220 15% 14%) !important;
+  color: hsl(210 20% 95%) !important;
+}
+html[data-ops-counter] [data-slot="dialog-content"] [data-slot="input"]::placeholder,
+html[data-ops-counter] [data-slot="sheet-content"] [data-slot="input"]::placeholder {
+  color: hsl(220 10% 48%) !important;
+}
+
+/* CustomizeItemModal — icon placeholder, item name, base price */
+html[data-ops-counter] [data-slot="dialog-content"] .bg-muted {
+  background: hsl(220 15% 12%) !important;
+}
+html[data-ops-counter] [data-slot="dialog-content"] h2.text-lg {
+  font-size: 1.125rem !important;
+  font-weight: 600 !important;
+  color: hsl(210 20% 95%) !important;
+}
+html[data-ops-counter] [data-slot="dialog-content"] p.text-muted-foreground {
+  color: hsl(220 10% 48%) !important;
+}
+/* Quantity display number */
+html[data-ops-counter] [data-slot="dialog-content"] .w-12.text-center {
+  font-size: 1.125rem !important;
+  font-weight: 600 !important;
+  color: hsl(210 20% 95%) !important;
+}
+/* CustomizeItemModal (and dialog form controls) — match table-merge size, font, colors */
+html[data-ops-counter] [data-slot="dialog-content"] [data-slot="textarea"] {
+  background: hsl(220 20% 4%) !important;
+  border-color: hsl(220 15% 14%) !important;
+  color: hsl(210 20% 95%) !important;
+  min-height: 5rem !important;
+  font-size: 0.875rem !important;
+  font-family: var(--font-inter-ops, var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif) !important;
+}
+html[data-ops-counter] [data-slot="dialog-content"] [data-slot="textarea"]::placeholder {
+  color: hsl(220 10% 48%) !important;
+}
+html[data-ops-counter] [data-slot="dialog-content"] [data-slot="checkbox"] {
+  border-color: hsl(185 85% 45%) !important;
+  background: transparent !important;
+}
+html[data-ops-counter] [data-slot="dialog-content"] [data-slot="checkbox"][data-state="checked"] {
+  background: hsl(185 85% 45%) !important;
+  border-color: hsl(185 85% 45%) !important;
+  color: hsl(220 20% 4%) !important;
+}
+/* Section labels (Doneness, Extras, Quantity, For Seat, For Wave, Special Instructions) */
+html[data-ops-counter] [data-slot="dialog-content"] label.block {
+  font-size: 0.75rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.05em !important;
+  text-transform: uppercase !important;
+  color: hsl(220 10% 48%) !important;
+}
+/* Extras row labels (item name + price) */
+html[data-ops-counter] [data-slot="dialog-content"] label.flex span:last-child {
+  color: hsl(220 10% 48%) !important;
+}
+
+/* Checkbox — match table-merge: primary (cyan) border, cyan bg when checked */
+html[data-ops-counter] [data-slot="dialog-content"] [data-slot="checkbox"] {
+  width: 1rem !important;
+  height: 1rem !important;
+  min-width: 1rem !important;
+  min-height: 1rem !important;
+  border-radius: 0.125rem !important;
+  border: 1px solid hsl(185 85% 45%) !important;
+  background: transparent !important;
+}
+html[data-ops-counter] [data-slot="dialog-content"] [data-slot="checkbox"][data-state="checked"] {
+  background: hsl(185 85% 45%) !important;
+  border-color: hsl(185 85% 45%) !important;
+  color: hsl(220 20% 4%) !important;
+}
+
+/* Pill/choice buttons (options, seat, wave) — MUST stay rounded-full, table-merge look */
+html[data-ops-counter] [data-slot="dialog-content"] button.rounded-full {
+  border-radius: 9999px !important;
+  padding: 0.5rem 1rem !important;
+  font-size: 0.875rem !important;
+  font-weight: 500 !important;
+  font-family: var(--font-inter-ops, var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif) !important;
+  transition: border-color, background-color, color 0.15s ease !important;
+}
+/* Pill unselected: dark border, light text, hover primary tint */
+html[data-ops-counter] [data-slot="dialog-content"] button.rounded-full:not([class*="bg-primary"]) {
+  background: transparent !important;
+  color: hsl(210 20% 95%) !important;
+  border: 2px solid hsl(220 15% 14%) !important;
+}
+html[data-ops-counter] [data-slot="dialog-content"] button.rounded-full:not([class*="bg-primary"]):hover {
+  border-color: hsl(185 85% 45% / 0.5) !important;
+}
+/* Pill selected (options, seat): cyan */
+html[data-ops-counter] [data-slot="dialog-content"] button.rounded-full.bg-primary {
+  background: hsl(185 85% 45%) !important;
+  color: hsl(220 20% 4%) !important;
+  border: 2px solid hsl(185 85% 45%) !important;
+}
+/* Wave pill selected: amber (table-merge uses border-amber-400 bg-amber-500/15 text-amber-200) */
+html[data-ops-counter] [data-slot="dialog-content"] button.rounded-full[class*="border-amber"] {
+  background: hsl(38 92% 50% / 0.15) !important;
+  color: hsl(45 93% 88%) !important;
+  border: 2px solid hsl(45 93% 65%) !important;
+}
+
+/* Quantity +/- and footer buttons — rounded-md, h-10 */
+html[data-ops-counter] [data-slot="dialog-content"] .flex.items-center.gap-4 > button {
+  width: 2.5rem !important;
+  min-width: 2.5rem !important;
+  height: 2.5rem !important;
+  min-height: 2.5rem !important;
+  padding: 0 !important;
+  border-radius: 0.375rem !important;
+  border: 1px solid hsl(220 15% 14%) !important;
+  background: hsl(220 20% 4%) !important;
+  color: hsl(210 20% 95%) !important;
+  font-family: var(--font-inter-ops, var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif) !important;
+}
+html[data-ops-counter] [data-slot="dialog-content"] .flex.items-center.gap-4 > button:hover:not(:disabled) {
+  background: hsl(220 15% 14%) !important;
+  border-color: hsl(220 15% 14%) !important;
+}
+/* Footer Cancel: outline, h-10, rounded-md */
+html[data-ops-counter] [data-slot="dialog-content"] .sticky button:first-of-type {
+  height: 2.5rem !important;
+  min-height: 2.5rem !important;
+  padding: 0 1rem !important;
+  border-radius: 0.375rem !important;
+  font-size: 0.875rem !important;
+  font-weight: 500 !important;
+  font-family: var(--font-inter-ops, var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif) !important;
+  background: hsl(220 20% 4%) !important;
+  color: hsl(210 20% 95%) !important;
+  border: 1px solid hsl(220 15% 14%) !important;
+}
+html[data-ops-counter] [data-slot="dialog-content"] .sticky button:first-of-type:hover {
+  background: hsl(220 15% 14%) !important;
+  color: hsl(210 15% 90%) !important;
+}
+/* Footer Add to Order: primary cyan, h-10, rounded-md */
+html[data-ops-counter] [data-slot="dialog-content"] .sticky button:last-of-type {
+  height: 2.5rem !important;
+  min-height: 2.5rem !important;
+  padding: 0 1rem !important;
+  border-radius: 0.375rem !important;
+  font-size: 0.875rem !important;
+  font-weight: 500 !important;
+  font-family: var(--font-inter-ops, var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif) !important;
+  background: hsl(185 85% 45%) !important;
+  color: hsl(220 20% 4%) !important;
+  border: none !important;
+}
+html[data-ops-counter] [data-slot="dialog-content"] .sticky button:last-of-type:hover {
+  background: hsl(185 85% 40%) !important;
+  color: hsl(220 20% 4%) !important;
+}
+/* Footer total text */
+html[data-ops-counter] [data-slot="dialog-content"] .sticky .text-lg {
+  font-size: 1.125rem !important;
+  font-weight: 600 !important;
+  color: hsl(210 20% 95%) !important;
+}
+
+/* Tooltip, select, popover — counter modals may use these */
+html[data-ops-counter] [data-slot="tooltip-content"] {
+  background: hsl(220 18% 9%) !important;
+  color: hsl(210 20% 95%) !important;
+  border: 1px solid hsl(220 15% 22%) !important;
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif) !important;
+}
+html[data-ops-counter] [data-slot="select-content"] {
+  background: hsl(220 18% 9%) !important;
+  border-color: hsl(220 15% 22%) !important;
+  color: hsl(210 20% 95%) !important;
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif) !important;
+}
+html[data-ops-counter] [data-slot="select-item"]:focus,
+html[data-ops-counter] [data-slot="select-item"][data-highlighted] {
+  background: hsl(220 15% 14%) !important;
+  color: hsl(210 15% 90%) !important;
+}
+html[data-ops-counter] [data-slot="popover-content"] {
+  background: hsl(220 18% 9%) !important;
+  border-color: hsl(220 15% 22%) !important;
+  color: hsl(210 20% 95%) !important;
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif) !important;
+}
+
+html[data-ops-counter] [data-slot="dropdown-menu-content"],
+html[data-ops-counter] [data-slot="dropdown-menu-sub-content"] {
+  background: hsl(220 18% 9%) !important;
+  border-color: hsl(220 15% 22%) !important;
+  color: hsl(210 20% 95%) !important;
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif) !important;
+}
+html[data-ops-counter] [data-slot="dropdown-menu-item"]:focus,
+html[data-ops-counter] [data-slot="dropdown-menu-item"][data-highlighted] {
+  background: hsl(220 15% 14%) !important;
+  color: hsl(210 15% 90%) !important;
+}
