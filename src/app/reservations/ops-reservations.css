@@ -1,0 +1,514 @@
+/* ═══════════════════════════════════════════════════
+   Ops Reservations — table-merge-manager theme
+   Dark cyan/slate theme, glass surfaces, animations
+   ═══════════════════════════════════════════════════ */
+
+.ops-reservations-root {
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif);
+  /* Table-merge theme — oklch to match NextFaster globals (text-foreground etc) */
+  --background: oklch(0.12 0.02 250);
+  --foreground: oklch(0.95 0.01 250);
+  --card: oklch(0.15 0.02 250);
+  --card-foreground: oklch(0.95 0.01 250);
+  --popover: oklch(0.15 0.02 250);
+  --popover-foreground: oklch(0.95 0.01 250);
+  --primary: oklch(0.65 0.18 185);
+  --primary-foreground: oklch(0.12 0.02 250);
+  --secondary: oklch(0.2 0.02 250);
+  --secondary-foreground: oklch(0.9 0.01 250);
+  --muted: oklch(0.2 0.02 250);
+  --muted-foreground: oklch(0.55 0.02 250);
+  --accent: oklch(0.22 0.02 250);
+  --accent-foreground: oklch(0.92 0.01 250);
+  --border: oklch(0.25 0.02 250);
+  --input: oklch(0.22 0.02 250);
+  --ring: oklch(0.65 0.18 185);
+  --destructive: oklch(0.6 0.2 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --surface-glass: 220 18% 8%;
+  --surface-glass-border: 220 15% 18%;
+  --success: 160 84% 39%;
+  --warning: 38 92% 50%;
+}
+
+/* Glass surfaces */
+.ops-reservations-root .glass-surface,
+html[data-ops-reservations] [data-slot="dialog-content"] .glass-surface,
+html[data-ops-reservations] [data-slot="sheet-content"] .glass-surface {
+  background: hsl(var(--surface-glass) / 0.6);
+  border: 1px solid hsl(var(--surface-glass-border) / 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.ops-reservations-root .glass-surface-strong,
+html[data-ops-reservations] [data-slot="dialog-content"] .glass-surface-strong,
+html[data-ops-reservations] [data-slot="sheet-content"] .glass-surface-strong {
+  background: hsl(var(--surface-glass) / 0.85);
+  border: 1px solid hsl(var(--surface-glass-border) / 0.6);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* Reservations-specific animations */
+@keyframes res-pulse-badge {
+  0%, 100% { box-shadow: 0 0 0 0 hsl(270 70% 60% / 0.3); }
+  50% { box-shadow: 0 0 0 6px hsl(270 70% 60% / 0); }
+}
+.ops-reservations-root .res-pulse-badge {
+  animation: res-pulse-badge 2s ease-in-out infinite;
+}
+
+@keyframes res-pulse-bar {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+.ops-reservations-root .res-pulse-bar {
+  animation: res-pulse-bar 1.5s ease-in-out infinite;
+}
+
+/* Timeline now line glow */
+@keyframes tl-now-glow {
+  0%, 100% { box-shadow: 0 0 8px 2px rgba(34, 211, 238, 0.25); }
+  50% { box-shadow: 0 0 16px 4px rgba(34, 211, 238, 0.4); }
+}
+.ops-reservations-root .tl-now-line > div > div:last-child {
+  animation: tl-now-glow 3s ease-in-out infinite;
+}
+
+/* List row stagger */
+@keyframes list-row-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.ops-reservations-root .list-row-stagger {
+  animation: list-row-enter 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  animation-delay: calc(var(--row-index, 0) * 30ms);
+}
+
+/* List bulk bar */
+@keyframes list-bulk-slide-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.ops-reservations-root .list-bulk-bar {
+  animation: list-bulk-slide-up 200ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* Waitlist alert banner */
+@keyframes wl-alert-slide {
+  from { opacity: 0; transform: translateY(-12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes wl-alert-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.15); }
+  50% { box-shadow: 0 0 12px 3px rgba(16, 185, 129, 0.08); }
+}
+.ops-reservations-root .wl-alert-banner {
+  animation: wl-alert-slide 400ms cubic-bezier(0.34, 1.56, 0.64, 1) both,
+    wl-alert-glow 3s ease-in-out 0.4s infinite;
+}
+
+/* Scrollbar hide for lens nav */
+.ops-reservations-root .scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.ops-reservations-root .scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Timeline block & ghost */
+@keyframes tl-block-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes tl-ghost-breathe {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.5; }
+}
+.ops-reservations-root .tl-block {
+  animation: tl-block-appear 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+.ops-reservations-root .tl-ghost-block {
+  animation: tl-ghost-breathe 3s ease-in-out infinite;
+}
+
+/* Waitlist card stagger */
+@keyframes wl-card-enter {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.ops-reservations-root .wl-card-stagger {
+  animation: wl-card-enter 250ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  animation-delay: calc(var(--card-index, 0) * 40ms);
+}
+
+/* Detail panel animations */
+@keyframes detail-backdrop-kf {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes detail-slide-right-kf {
+  from { opacity: 0; transform: translateX(100%); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes detail-slide-up-kf {
+  from { opacity: 0; transform: translateY(100%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes detail-fade-kf {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+.ops-reservations-root .detail-backdrop {
+  animation: detail-backdrop-kf 200ms ease-out both;
+}
+.ops-reservations-root .detail-panel-slide-right {
+  animation: detail-slide-right-kf 300ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+.ops-reservations-root .detail-panel-slide-up {
+  animation: detail-slide-up-kf 250ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+.ops-reservations-root .detail-panel-fade {
+  animation: detail-fade-kf 250ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes detail-section-stagger-kf {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.ops-reservations-root .detail-section-stagger {
+  animation: detail-section-stagger-kf 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+.ops-reservations-root .detail-section-stagger:nth-child(1) { animation-delay: 50ms; }
+.ops-reservations-root .detail-section-stagger:nth-child(2) { animation-delay: 100ms; }
+.ops-reservations-root .detail-section-stagger:nth-child(3) { animation-delay: 150ms; }
+.ops-reservations-root .detail-section-stagger:nth-child(4) { animation-delay: 200ms; }
+.ops-reservations-root .detail-section-stagger:nth-child(5) { animation-delay: 250ms; }
+.ops-reservations-root .detail-section-stagger:nth-child(6) { animation-delay: 300ms; }
+
+@keyframes detail-status-pulse-kf {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+.ops-reservations-root .detail-status-pulse {
+  animation: detail-status-pulse-kf 2s ease-in-out infinite;
+}
+
+@keyframes detail-course-fill-kf {
+  from { width: 0; }
+}
+.ops-reservations-root .detail-course-fill {
+  animation: detail-course-fill-kf 800ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes detail-note-expand-kf {
+  from { opacity: 0; max-height: 0; }
+  to { opacity: 1; max-height: 200px; }
+}
+.ops-reservations-root .detail-note-expand {
+  animation: detail-note-expand-kf 250ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  overflow: hidden;
+}
+
+.ops-reservations-root .detail-msg-stagger {
+  animation: detail-section-stagger-kf 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  animation-delay: calc(var(--msg-index, 0) * 80ms);
+}
+
+.ops-reservations-root .detail-history-stagger {
+  animation: detail-section-stagger-kf 250ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  animation-delay: calc(var(--hist-index, 0) * 60ms);
+}
+
+/* Detail panel — match table-merge: font, colors, scrollbar, buttons.
+   Force oklch so text-foreground, bg-background etc resolve to dark theme. */
+.ops-reservations-root .detail-panel-ops,
+html[data-ops-reservations] .detail-panel-ops {
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif);
+  --background: oklch(0.1 0.02 250);
+  --foreground: oklch(0.95 0.01 250);
+  --card: oklch(0.13 0.02 250);
+  --card-foreground: oklch(0.95 0.01 250);
+  --popover: oklch(0.13 0.02 250);
+  --popover-foreground: oklch(0.95 0.01 250);
+  --secondary: oklch(0.18 0.02 250);
+  --secondary-foreground: oklch(0.9 0.01 250);
+  --muted: oklch(0.18 0.02 250);
+  --muted-foreground: oklch(0.55 0.02 250);
+  --destructive: oklch(0.6 0.2 25);
+  --destructive-foreground: oklch(0.98 0 0);
+}
+.ops-reservations-root .detail-panel-ops [data-slot="scroll-area-viewport"] {
+  background: transparent;
+}
+/* Buttons in detail panel: remove NextFaster shadow/ring, match table-merge */
+.ops-reservations-root .detail-panel-ops [data-slot="button"] {
+  box-shadow: none !important;
+}
+.ops-reservations-root .detail-panel-ops [data-slot="button"].border-zinc-700 {
+  background: hsl(220 13% 16% / 0.5) !important;
+  border-color: hsl(220 13% 25%) !important;
+  color: hsl(210 15% 88%) !important;
+}
+.ops-reservations-root .detail-panel-ops [data-slot="button"].border-zinc-700:hover {
+  background: hsl(220 13% 22%) !important;
+  color: hsl(210 20% 95%) !important;
+}
+.ops-reservations-root .detail-panel-ops [data-slot="scroll-area-scrollbar"] [data-slot="scroll-area-thumb"] {
+  background: hsl(220 15% 30%);
+  border-radius: 9999px;
+}
+
+/* Detail panel Tabs — match table-merge */
+.ops-reservations-root .detail-panel-ops [data-slot="tabs-list"] {
+  background: hsl(220 18% 9% / 0.8);
+  border-color: hsl(220 15% 22%);
+  color: hsl(220 10% 48%);
+}
+.ops-reservations-root .detail-panel-ops [data-slot="tabs-trigger"] {
+  color: hsl(220 10% 48%);
+}
+.ops-reservations-root .detail-panel-ops [data-slot="tabs-trigger"][data-state="active"] {
+  background: hsl(220 13% 16%);
+  color: hsl(210 20% 95%);
+}
+
+/* Detail panel header & sections — match table-merge zinc theme */
+.ops-reservations-root .detail-panel-ops section.rounded-xl {
+  background: hsl(220 18% 9% / 0.5) !important;
+  border-color: hsl(220 15% 18% / 0.5) !important;
+}
+.ops-reservations-root .detail-panel-ops h2.text-foreground,
+.ops-reservations-root .detail-panel-ops .text-foreground,
+html[data-ops-reservations] .detail-panel-ops h2.text-foreground,
+html[data-ops-reservations] .detail-panel-ops .text-foreground {
+  color: oklch(0.95 0.01 250) !important;
+}
+/* Ensure all text in panel is light-on-dark (override inherited light theme) */
+.ops-reservations-root .detail-panel-ops,
+html[data-ops-reservations] .detail-panel-ops {
+  color: oklch(0.95 0.01 250) !important;
+  background-color: oklch(0.08 0.02 250) !important;
+}
+.ops-reservations-root .detail-panel-ops .sticky.border-b,
+html[data-ops-reservations] .detail-panel-ops .sticky.border-b {
+  background: oklch(0.1 0.02 250 / 0.95) !important;
+  border-color: hsl(220 15% 18% / 0.5) !important;
+}
+
+/* Service period button (Lunch/Dinner) — match table-merge: text always white */
+.ops-reservations-root .timeline-service-period-btn,
+.ops-reservations-root .timeline-service-period-btn:hover,
+.ops-reservations-root .timeline-service-period-btn:focus,
+.ops-reservations-root .timeline-service-period-btn:focus-visible,
+.ops-reservations-root .timeline-service-period-btn[data-state="open"] {
+  background: hsl(220 13% 16% / 0.6) !important;
+  border-color: hsl(220 13% 25%) !important;
+  color: hsl(210 20% 95%) !important;
+  box-shadow: none !important;
+}
+.ops-reservations-root .timeline-service-period-btn:hover,
+.ops-reservations-root .timeline-service-period-btn[data-state="open"] {
+  background: hsl(220 13% 22% / 0.6) !important;
+}
+.ops-reservations-root .timeline-service-period-btn * {
+  color: inherit !important;
+}
+
+/* Dialog & Sheet — match table-merge: z-index, overlay, size, stacking */
+html[data-ops-reservations] [data-slot="dialog-overlay"],
+html[data-ops-reservations] [data-slot="sheet-overlay"] {
+  z-index: 90 !important;
+  background: rgb(0 0 0 / 0.8) !important;
+}
+html[data-ops-reservations] [data-slot="dialog-content"],
+html[data-ops-reservations] [data-slot="sheet-content"] {
+  z-index: 90 !important;
+}
+/* Reservation form modal — exact same size as table-merge */
+html[data-ops-reservations] [data-slot="dialog-content"].reservation-form-dialog {
+  width: min(1320px, 98vw) !important;
+  max-width: none !important;
+}
+
+/* Dialog & Sheet (New/Edit reservation form) — 1:1 table-merge: theme, font, colors.
+   table-merge uses HSL; use full hsl() values so bg-secondary/50, border-border/60
+   produce the same lighter grayish look (not dark navy). */
+html[data-ops-reservations] [data-slot="dialog-content"],
+html[data-ops-reservations] [data-slot="sheet-content"] {
+  --background: hsl(220 20% 4%);
+  --foreground: hsl(210 20% 95%);
+  --card: hsl(220 18% 7%);
+  --card-foreground: hsl(210 20% 95%);
+  --popover: hsl(220 18% 8%);
+  --popover-foreground: hsl(210 20% 95%);
+  --primary: hsl(185 85% 45%);
+  --primary-foreground: hsl(220 20% 4%);
+  --secondary: hsl(220 15% 12%);
+  --secondary-foreground: hsl(210 15% 85%);
+  --muted: hsl(220 15% 12%);
+  --muted-foreground: hsl(220 10% 48%);
+  --accent: hsl(220 15% 14%);
+  --accent-foreground: hsl(210 15% 90%);
+  --destructive: hsl(0 72% 51%);
+  --destructive-foreground: hsl(0 0% 98%);
+  --border: hsl(220 15% 14%);
+  --input: hsl(220 15% 14%);
+  --ring: hsl(185 85% 45%);
+  --radius: 0.625rem;
+  --surface-glass: 220 18% 8%;
+  --surface-glass-border: 220 15% 18%;
+  /* Exact table-merge surface colors */
+  background: hsl(220 20% 4%) !important;
+  color: hsl(210 20% 95%) !important;
+  border-color: hsl(220 15% 14%) !important;
+  font-family: var(--font-inter-ops, var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif) !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+html[data-ops-reservations] [data-slot="sheet-content"] [data-slot="sheet-header"],
+html[data-ops-reservations] [data-slot="sheet-content"] [data-slot="sheet-footer"],
+html[data-ops-reservations] [data-slot="dialog-content"] [data-slot="dialog-header"],
+html[data-ops-reservations] [data-slot="dialog-content"] [data-slot="dialog-footer"] {
+  background: hsl(220 20% 4%) !important;
+  color: hsl(210 20% 95%) !important;
+}
+/* Form content inside modal — inputs, labels, borders match table-merge */
+html[data-ops-reservations] [data-slot="dialog-content"] [data-slot="input"],
+html[data-ops-reservations] [data-slot="sheet-content"] [data-slot="input"] {
+  background: hsl(220 15% 14% / 0.5) !important;
+  border-color: hsl(220 15% 14%) !important;
+  color: hsl(210 20% 95%) !important;
+}
+html[data-ops-reservations] [data-slot="dialog-content"] [data-slot="input"]::placeholder,
+html[data-ops-reservations] [data-slot="sheet-content"] [data-slot="input"]::placeholder {
+  color: hsl(220 10% 48%) !important;
+}
+
+/* ═══════════════════════════════════════════════════
+   Ops portal overrides
+   Radix portals (tooltip, select, popover, dropdown, calendar)
+   render in body outside ops-reservations-root.
+   When html has data-ops-reservations, force dark zinc styling.
+   ═══════════════════════════════════════════════════ */
+
+html[data-ops-reservations] [data-slot="tooltip-content"] {
+  background: hsl(220 18% 9%) !important;
+  color: hsl(210 20% 95%) !important;
+  border: 1px solid hsl(220 15% 22%) !important;
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif) !important;
+}
+
+html[data-ops-reservations] [data-slot="tooltip-content"] [data-radix-popper-arrow],
+html[data-ops-reservations] [data-slot="tooltip-content"] .rotate-45 {
+  background: hsl(220 18% 9%) !important;
+  fill: hsl(220 18% 9%) !important;
+}
+
+html[data-ops-reservations] [data-slot="dropdown-menu-content"],
+html[data-ops-reservations] [data-slot="dropdown-menu-sub-content"] {
+  background: hsl(220 18% 9%) !important;
+  border-color: hsl(220 15% 22%) !important;
+  color: hsl(210 20% 95%) !important;
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif) !important;
+}
+
+html[data-ops-reservations] [data-slot="dropdown-menu-item"],
+html[data-ops-reservations] [data-slot="dropdown-menu-item"]:focus,
+html[data-ops-reservations] [data-slot="dropdown-menu-item"][data-highlighted] {
+  color: hsl(210 20% 95%) !important;
+}
+html[data-ops-reservations] [data-slot="dropdown-menu-item"]:focus,
+html[data-ops-reservations] [data-slot="dropdown-menu-item"][data-highlighted] {
+  background: hsl(220 15% 14%) !important;
+}
+/* Cancel / No-Show: keep rose color on dark dropdown */
+html[data-ops-reservations] [data-slot="dropdown-menu-item"].text-rose-400,
+html[data-ops-reservations] [data-slot="dropdown-menu-item"].text-rose-400:focus,
+html[data-ops-reservations] [data-slot="dropdown-menu-item"].text-rose-400[data-highlighted] {
+  color: rgb(251 113 133) !important; /* rose-400 */
+}
+
+html[data-ops-reservations] [data-slot="select-content"] {
+  background: hsl(220 18% 9%) !important;
+  border-color: hsl(220 15% 22%) !important;
+  color: hsl(210 20% 95%) !important;
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif) !important;
+}
+
+html[data-ops-reservations] [data-slot="select-item"]:focus,
+html[data-ops-reservations] [data-slot="select-item"][data-highlighted] {
+  background: hsl(220 15% 14%) !important;
+  color: hsl(210 15% 90%) !important;
+}
+
+/* Select separator lines — match table-merge: bg-muted (subtle gray) */
+html[data-ops-reservations] [data-slot="select-separator"] {
+  background: hsl(220 15% 12%) !important;
+}
+
+html[data-ops-reservations] [data-slot="popover-content"] {
+  background: hsl(220 18% 9%) !important;
+  border-color: hsl(220 15% 22%) !important;
+  color: hsl(210 20% 95%) !important;
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif) !important;
+}
+
+html[data-ops-reservations] [data-slot="context-menu-content"],
+html[data-ops-reservations] [data-slot="context-menu-sub-content"] {
+  background: hsl(220 18% 9%) !important;
+  border-color: hsl(220 15% 22%) !important;
+  color: hsl(210 20% 95%) !important;
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif) !important;
+}
+
+html[data-ops-reservations] [data-slot="context-menu-item"]:focus,
+html[data-ops-reservations] [data-slot="context-menu-item"][data-highlighted],
+html[data-ops-reservations] [data-slot="context-menu-sub-trigger"]:focus,
+html[data-ops-reservations] [data-slot="context-menu-sub-trigger"][data-highlighted],
+html[data-ops-reservations] [data-slot="context-menu-sub-trigger"][data-state="open"] {
+  background: hsl(220 15% 14%) !important;
+  color: hsl(210 15% 90%) !important;
+}
+
+/* Calendar inside popover */
+html[data-ops-reservations] [data-slot="popover-content"] [data-slot="calendar"],
+html[data-ops-reservations] .rdp {
+  --rdp-accent-color: hsl(185 85% 45%);
+  --rdp-accent-background-color: hsl(220 15% 14%);
+}
+
+html[data-ops-reservations] .rdp-months {
+  color: hsl(210 20% 95%);
+}
+
+html[data-ops-reservations] .rdp-day {
+  color: hsl(210 20% 95%);
+}
+
+html[data-ops-reservations] .rdp-day_selected,
+html[data-ops-reservations] .rdp-day_range_middle {
+  background: hsl(185 85% 45% / 0.3) !important;
+  color: hsl(210 20% 95%) !important;
+}
+
+html[data-ops-reservations] .rdp-day_today:not(.rdp-day_selected) {
+  border-color: hsl(185 85% 45%);
+  color: hsl(210 20% 95%);
+}
+
+html[data-ops-reservations] .rdp-head_cell {
+  color: hsl(220 10% 48%);
+}
+
+html[data-ops-reservations] .rdp-nav_button {
+  background: transparent;
+  color: hsl(210 20% 95%);
+  border-color: hsl(220 15% 22%);
+}
+
+html[data-ops-reservations] .rdp-nav_button:hover {
+  background: hsl(220 15% 14%);
+}
