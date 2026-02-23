@@ -212,6 +212,56 @@
   }
 }
 
+/* KDS: urgent ticket pulsing animation */
+@keyframes urgentPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(239, 68, 68, 0);
+  }
+}
+
+/* KDS: ticket landing glow animations */
+@keyframes ticketLandingGlow {
+  0% {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+  }
+  15% {
+    box-shadow: 0 0 20px 4px rgba(59, 130, 246, 0.4);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+  }
+}
+
+@keyframes ticketLandingGlowReady {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+  }
+  15% {
+    box-shadow: 0 0 20px 4px rgba(34, 197, 94, 0.4);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+  }
+}
+
+/* KDS: ticket landing glow utility classes */
+.ticket-landing-preparing {
+  animation: ticketLandingGlow 1000ms ease-out forwards;
+}
+
+.ticket-landing-ready {
+  animation: ticketLandingGlowReady 1000ms ease-out forwards;
+}
+
+/* KDS: theme transition for dark/light mode switching */
+.theme-transition {
+  transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;

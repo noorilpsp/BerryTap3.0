@@ -21,6 +21,7 @@ import {
   Megaphone,
   Layers,
   Package,
+  ChefHat,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
@@ -69,6 +70,7 @@ const operationsItems = [
   },
   { title: "Tables", href: "/dashboard/tables", icon: Grid3x3 },
   { title: "Reservations", href: "/dashboard/reservations", icon: Calendar },
+  { title: "Kitchen Display", href: "/kds", icon: ChefHat },
 ]
 
 const businessItems = [
