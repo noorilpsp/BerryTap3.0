@@ -1,394 +1,331 @@
-// Revenue Timeline Data (30 data points)
-export const revenueTimelineData = [
-  { date: "Oct 15", baseline: 850, actual: 890, lift: 40, period: "before" },
-  { date: "Oct 18", baseline: 920, actual: 920, lift: 0, period: "before" },
-  { date: "Oct 21", baseline: 880, actual: 910, lift: 30, period: "before" },
-  { date: "Oct 24", baseline: 950, actual: 950, lift: 0, period: "before" },
-  { date: "Oct 27", baseline: 900, actual: 920, lift: 20, period: "before" },
-  { date: "Oct 30", baseline: 930, actual: 930, lift: 0, period: "before" },
-  { date: "Nov 1", baseline: 900, actual: 1150, lift: 250, period: "during" },
-  { date: "Nov 3", baseline: 920, actual: 1280, lift: 360, period: "during" },
-  { date: "Nov 5", baseline: 950, actual: 1520, lift: 570, period: "during" },
-  { date: "Nov 7", baseline: 980, actual: 1680, lift: 700, period: "during" },
-  { date: "Nov 9", baseline: 1000, actual: 1850, lift: 850, period: "during" },
-  { date: "Nov 11", baseline: 990, actual: 1920, lift: 930, period: "during" },
-  { date: "Nov 13", baseline: 1010, actual: 2150, lift: 1140, period: "during" },
-  { date: "Nov 15", baseline: 980, actual: 2380, lift: 1400, period: "during" },
-  { date: "Nov 17", baseline: 1020, actual: 2520, lift: 1500, period: "during" },
-  { date: "Nov 19", baseline: 1030, actual: 2650, lift: 1620, period: "during" },
-  { date: "Nov 21", baseline: 1050, actual: 2780, lift: 1730, period: "during" },
-  { date: "Nov 23", baseline: 1080, actual: 2850, lift: 1770, period: "during" },
-  { date: "Nov 25", baseline: 1100, actual: 2820, lift: 1720, period: "during" },
-  { date: "Nov 27", baseline: 1070, actual: 2650, lift: 1580, period: "during" },
-  { date: "Nov 29", baseline: 1090, actual: 2450, lift: 1360, period: "during" },
-  { date: "Nov 30", baseline: 1100, actual: 2200, lift: 1100, period: "during" },
-  { date: "Dec 1", baseline: 1080, actual: 1520, lift: 440, period: "after" },
-  { date: "Dec 3", baseline: 1050, actual: 1280, lift: 230, period: "after" },
-  { date: "Dec 5", baseline: 1020, actual: 1150, lift: 130, period: "after" },
-  { date: "Dec 7", baseline: 1040, actual: 1100, lift: 60, period: "after" },
-  { date: "Dec 9", baseline: 1060, actual: 1080, lift: 20, period: "after" },
-  { date: "Dec 11", baseline: 1030, actual: 1040, lift: 10, period: "after" },
-  { date: "Dec 13", baseline: 1000, actual: 1010, lift: 10, period: "after" },
-  { date: "Dec 15", baseline: 1020, actual: 1020, lift: 0, period: "after" }
+// ── Analytics Data Types & Mock Data ──────────────────────────────
+
+export interface KpiItem {
+  label: string
+  value: number
+  previous: number
+  change: number
+  trend: "up" | "down_good" | "down_bad" | "up_bad"
+  format: "number" | "currency" | "percent" | "minutes" | "decimal"
+  prefix?: string
+  suffix?: string
+  tabLink?: string
+}
+
+export interface DailyEntry {
+  date: string
+  day: string
+  covers: number
+  revenue: number
+  noShows: number
+}
+
+export interface DayAvg {
+  day: string
+  avg: number
+  prev: number
+}
+
+export interface ChannelData {
+  covers: number
+  revenue: number
+  avgCheck: number
+  noShowRate: number
+  confirmRate: number | null
+  costPerCover: number
+}
+
+export interface PartySizeEntry {
+  size: string
+  percentage: number
+  avgCheck: number
+}
+
+export interface RevPASHRow {
+  day: string
+  hours: Record<string, number>
+  avg: number
+}
+
+export interface TurnTimeByParty {
+  size: string
+  target: number
+  actual: number
+  variance: number
+  status: "under" | "on_target" | "slight_over" | "over" | "significant_over"
+}
+
+export interface TurnDistribution {
+  range: string
+  count: number
+}
+
+export interface NoShowByItem {
+  day?: string
+  slot?: string
+  channel?: string
+  type?: string
+  rate: number
+}
+
+export interface RepeatOffender {
+  name: string
+  noShows: number
+  totalBookings: number
+  rate: number
+  status: "flagged" | "blocked"
+}
+
+export interface WaitDistEntry {
+  range: string
+  count: number
+  percentage: number
+  abandonRate?: number
+}
+
+export interface ZoneRevenue {
+  zone: string
+  revenue: number
+  percentage: number
+  seats: number
+  revenuePerSeat: number
+}
+
+export interface TableRevenue {
+  table: string
+  revenue: number
+  features: string
+  server: string
+}
+
+export interface ChannelTrendWeek {
+  week: string
+  direct: number
+  phone: number
+  google: number
+  walkIn: number
+}
+
+export interface TurnTimeTrendWeek {
+  week: string
+  avg: number
+  target: number
+}
+
+// ── Mock Data ────────────────────────────────────────────────────
+
+export const kpis: KpiItem[] = [
+  { label: "Total Covers", value: 2847, previous: 2631, change: 8.2, trend: "up", format: "number", tabLink: "overview" },
+  { label: "Revenue", value: 312000, previous: 278500, change: 12.0, trend: "up", format: "currency", prefix: "$", tabLink: "covers-revenue" },
+  { label: "Rev / Cover", value: 109.6, previous: 105.9, change: 3.5, trend: "up", format: "currency", prefix: "$", tabLink: "covers-revenue" },
+  { label: "No-Show Rate", value: 4.2, previous: 5.3, change: -1.1, trend: "down_good", format: "percent", suffix: "%", tabLink: "no-shows" },
+  { label: "Avg Turn Time", value: 82, previous: 85, change: -3, trend: "down_good", format: "minutes", suffix: " min", tabLink: "turn-times" },
+  { label: "Confirm Rate", value: 91.4, previous: 89.3, change: 2.1, trend: "up", format: "percent", suffix: "%", tabLink: "channels" },
+  { label: "Turns / Table", value: 1.86, previous: 1.74, change: 0.12, trend: "up", format: "decimal", tabLink: "turn-times" },
+  { label: "Capacity Util.", value: 78.2, previous: 73.9, change: 4.3, trend: "up", format: "percent", suffix: "%", tabLink: "overview" },
 ]
 
-// Redemption Rate Trend Data (8 weeks)
-export const redemptionRateData = [
-  { week: "W1", actual: 38.5, movingAvg: 38.5, redemptions: 156 },
-  { week: "W2", actual: 41.2, movingAvg: 39.9, redemptions: 167 },
-  { week: "W3", actual: 44.8, movingAvg: 41.5, redemptions: 182 },
-  { week: "W4", actual: 43.1, movingAvg: 41.9, redemptions: 175 },
-  { week: "W5", actual: 46.5, movingAvg: 42.8, redemptions: 189 },
-  { week: "W6", actual: 42.9, movingAvg: 43.2, redemptions: 174 },
-  { week: "W7", actual: 47.3, movingAvg: 43.5, redemptions: 192 },
-  { week: "W8", actual: 45.8, movingAvg: 44.3, redemptions: 186 }
+export const dailyData: DailyEntry[] = [
+  { date: "Dec 19", day: "Thu", covers: 92, revenue: 10120, noShows: 3 },
+  { date: "Dec 20", day: "Fri", covers: 124, revenue: 14880, noShows: 5 },
+  { date: "Dec 21", day: "Sat", covers: 138, revenue: 17940, noShows: 3 },
+  { date: "Dec 22", day: "Sun", covers: 78, revenue: 7800, noShows: 4 },
+  { date: "Dec 23", day: "Mon", covers: 68, revenue: 6120, noShows: 2 },
+  { date: "Dec 24", day: "Tue", covers: 45, revenue: 5400, noShows: 1 },
+  { date: "Dec 25", day: "Wed", covers: 0, revenue: 0, noShows: 0 },
+  { date: "Dec 26", day: "Thu", covers: 82, revenue: 9020, noShows: 3 },
+  { date: "Dec 27", day: "Fri", covers: 130, revenue: 15600, noShows: 6 },
+  { date: "Dec 28", day: "Sat", covers: 142, revenue: 18460, noShows: 4 },
+  { date: "Dec 29", day: "Sun", covers: 80, revenue: 8000, noShows: 3 },
+  { date: "Dec 30", day: "Mon", covers: 72, revenue: 6480, noShows: 4 },
+  { date: "Dec 31", day: "Tue", covers: 145, revenue: 21750, noShows: 2 },
+  { date: "Jan 1", day: "Wed", covers: 55, revenue: 5500, noShows: 1 },
+  { date: "Jan 2", day: "Thu", covers: 88, revenue: 9680, noShows: 4 },
+  { date: "Jan 3", day: "Fri", covers: 126, revenue: 15120, noShows: 7 },
+  { date: "Jan 4", day: "Sat", covers: 135, revenue: 17550, noShows: 2 },
+  { date: "Jan 5", day: "Sun", covers: 74, revenue: 7400, noShows: 3 },
+  { date: "Jan 6", day: "Mon", covers: 70, revenue: 6300, noShows: 5 },
+  { date: "Jan 7", day: "Tue", covers: 85, revenue: 9350, noShows: 3 },
+  { date: "Jan 8", day: "Wed", covers: 82, revenue: 8200, noShows: 4 },
+  { date: "Jan 9", day: "Thu", covers: 94, revenue: 10340, noShows: 5 },
+  { date: "Jan 10", day: "Fri", covers: 128, revenue: 15360, noShows: 8 },
+  { date: "Jan 11", day: "Sat", covers: 140, revenue: 18200, noShows: 4 },
+  { date: "Jan 12", day: "Sun", covers: 76, revenue: 7600, noShows: 4 },
+  { date: "Jan 13", day: "Mon", covers: 74, revenue: 6660, noShows: 3 },
+  { date: "Jan 14", day: "Tue", covers: 86, revenue: 9460, noShows: 4 },
+  { date: "Jan 15", day: "Wed", covers: 80, revenue: 8000, noShows: 2 },
+  { date: "Jan 16", day: "Thu", covers: 90, revenue: 9900, noShows: 3 },
+  { date: "Jan 17", day: "Fri", covers: 118, revenue: 14160, noShows: 5 },
 ]
 
-// Usage Heatmap Data (7 days × 13 hours)
-const hours = ["11 AM", "12 PM", "1 PM", "2 PM", "3 PM", "4 PM", "5 PM", "6 PM", "7 PM", "8 PM", "9 PM", "10 PM", "11 PM"]
-
-export const usageHeatmapData = [
-  // Monday
-  { day: "Mon", hour: "11 AM", value: 5 },
-  { day: "Mon", hour: "12 PM", value: 12 },
-  { day: "Mon", hour: "1 PM", value: 8 },
-  { day: "Mon", hour: "2 PM", value: 6 },
-  { day: "Mon", hour: "3 PM", value: 3 },
-  { day: "Mon", hour: "4 PM", value: 2 },
-  { day: "Mon", hour: "5 PM", value: 45 },
-  { day: "Mon", hour: "6 PM", value: 67 },
-  { day: "Mon", hour: "7 PM", value: 23 },
-  { day: "Mon", hour: "8 PM", value: 15 },
-  { day: "Mon", hour: "9 PM", value: 8 },
-  { day: "Mon", hour: "10 PM", value: 4 },
-  { day: "Mon", hour: "11 PM", value: 2 },
-  // Tuesday
-  { day: "Tue", hour: "11 AM", value: 6 },
-  { day: "Tue", hour: "12 PM", value: 14 },
-  { day: "Tue", hour: "1 PM", value: 32 },
-  { day: "Tue", hour: "2 PM", value: 7 },
-  { day: "Tue", hour: "3 PM", value: 4 },
-  { day: "Tue", hour: "4 PM", value: 2 },
-  { day: "Tue", hour: "5 PM", value: 42 },
-  { day: "Tue", hour: "6 PM", value: 65 },
-  { day: "Tue", hour: "7 PM", value: 21 },
-  { day: "Tue", hour: "8 PM", value: 18 },
-  { day: "Tue", hour: "9 PM", value: 9 },
-  { day: "Tue", hour: "10 PM", value: 5 },
-  { day: "Tue", hour: "11 PM", value: 2 },
-  // Wednesday
-  { day: "Wed", hour: "11 AM", value: 7 },
-  { day: "Wed", hour: "12 PM", value: 28 },
-  { day: "Wed", hour: "1 PM", value: 35 },
-  { day: "Wed", hour: "2 PM", value: 8 },
-  { day: "Wed", hour: "3 PM", value: 5 },
-  { day: "Wed", hour: "4 PM", value: 3 },
-  { day: "Wed", hour: "5 PM", value: 48 },
-  { day: "Wed", hour: "6 PM", value: 71 },
-  { day: "Wed", hour: "7 PM", value: 26 },
-  { day: "Wed", hour: "8 PM", value: 19 },
-  { day: "Wed", hour: "9 PM", value: 11 },
-  { day: "Wed", hour: "10 PM", value: 6 },
-  { day: "Wed", hour: "11 PM", value: 3 },
-  // Thursday
-  { day: "Thu", hour: "11 AM", value: 8 },
-  { day: "Thu", hour: "12 PM", value: 31 },
-  { day: "Thu", hour: "1 PM", value: 38 },
-  { day: "Thu", hour: "2 PM", value: 9 },
-  { day: "Thu", hour: "3 PM", value: 6 },
-  { day: "Thu", hour: "4 PM", value: 3 },
-  { day: "Thu", hour: "5 PM", value: 52 },
-  { day: "Thu", hour: "6 PM", value: 74 },
-  { day: "Thu", hour: "7 PM", value: 29 },
-  { day: "Thu", hour: "8 PM", value: 21 },
-  { day: "Thu", hour: "9 PM", value: 13 },
-  { day: "Thu", hour: "10 PM", value: 7 },
-  { day: "Thu", hour: "11 PM", value: 4 },
-  // Friday
-  { day: "Fri", hour: "11 AM", value: 15 },
-  { day: "Fri", hour: "12 PM", value: 42 },
-  { day: "Fri", hour: "1 PM", value: 48 },
-  { day: "Fri", hour: "2 PM", value: 18 },
-  { day: "Fri", hour: "3 PM", value: 12 },
-  { day: "Fri", hour: "4 PM", value: 38 },
-  { day: "Fri", hour: "5 PM", value: 78 },
-  { day: "Fri", hour: "6 PM", value: 95 },
-  { day: "Fri", hour: "7 PM", value: 88 },
-  { day: "Fri", hour: "8 PM", value: 65 },
-  { day: "Fri", hour: "9 PM", value: 42 },
-  { day: "Fri", hour: "10 PM", value: 28 },
-  { day: "Fri", hour: "11 PM", value: 15 },
-  // Saturday
-  { day: "Sat", hour: "11 AM", value: 22 },
-  { day: "Sat", hour: "12 PM", value: 52 },
-  { day: "Sat", hour: "1 PM", value: 58 },
-  { day: "Sat", hour: "2 PM", value: 28 },
-  { day: "Sat", hour: "3 PM", value: 18 },
-  { day: "Sat", hour: "4 PM", value: 45 },
-  { day: "Sat", hour: "5 PM", value: 85 },
-  { day: "Sat", hour: "6 PM", value: 102 },
-  { day: "Sat", hour: "7 PM", value: 96 },
-  { day: "Sat", hour: "8 PM", value: 72 },
-  { day: "Sat", hour: "9 PM", value: 48 },
-  { day: "Sat", hour: "10 PM", value: 32 },
-  { day: "Sat", hour: "11 PM", value: 18 },
-  // Sunday
-  { day: "Sun", hour: "11 AM", value: 18 },
-  { day: "Sun", hour: "12 PM", value: 45 },
-  { day: "Sun", hour: "1 PM", value: 51 },
-  { day: "Sun", hour: "2 PM", value: 24 },
-  { day: "Sun", hour: "3 PM", value: 15 },
-  { day: "Sun", hour: "4 PM", value: 41 },
-  { day: "Sun", hour: "5 PM", value: 68 },
-  { day: "Sun", hour: "6 PM", value: 82 },
-  { day: "Sun", hour: "7 PM", value: 76 },
-  { day: "Sun", hour: "8 PM", value: 58 },
-  { day: "Sun", hour: "9 PM", value: 38 },
-  { day: "Sun", hour: "10 PM", value: 25 },
-  { day: "Sun", hour: "11 PM", value: 12 }
+export const coversByDay: DayAvg[] = [
+  { day: "Mon", avg: 72, prev: 65 },
+  { day: "Tue", avg: 84, prev: 78 },
+  { day: "Wed", avg: 81, prev: 76 },
+  { day: "Thu", avg: 92, prev: 86 },
+  { day: "Fri", avg: 128, prev: 118 },
+  { day: "Sat", avg: 138, prev: 125 },
+  { day: "Sun", avg: 76, prev: 72 },
 ]
 
-// Promotion Type Distribution
-export const promotionTypeData = [
-  {
-    type: "Percentage Discount",
-    count: 18,
-    percentage: 38.3,
-    revenue: 3420,
-    avgRedemptionRate: 44.2
-  },
-  {
-    type: "Fixed Discount",
-    count: 12,
-    percentage: 25.5,
-    revenue: 2180,
-    avgRedemptionRate: 38.7
-  },
-  {
-    type: "BOGO",
-    count: 8,
-    percentage: 17.0,
-    revenue: 1840,
-    avgRedemptionRate: 52.3
-  },
-  {
-    type: "Happy Hour",
-    count: 9,
-    percentage: 19.2,
-    revenue: 1010,
-    avgRedemptionRate: 41.8
-  }
+export const coversByPeriod = [
+  { period: "Breakfast", value: 12, fill: "#fbbf24" },
+  { period: "Lunch", value: 28, fill: "#22d3ee" },
+  { period: "Brunch", value: 18, fill: "#a78bfa" },
+  { period: "Dinner", value: 42, fill: "#34d399" },
 ]
 
-// Top Performing Items
-export const topPerformingItems = [
-  {
-    id: "item_001",
-    name: "Pilsner Draft",
-    revenueLift: 640,
-    redemptions: 128,
-    category: "Beverages",
-    promotions: ["Happy Hour 20%", "Student Discount 10%"],
-    avgOrderValue: 5.0
-  },
-  {
-    id: "item_002",
-    name: "IPA Draft",
-    revenueLift: 445,
-    redemptions: 89,
-    category: "Beverages",
-    promotions: ["Happy Hour 20%"],
-    avgOrderValue: 5.0
-  },
-  {
-    id: "item_003",
-    name: "Margherita Pizza",
-    revenueLift: 380,
-    redemptions: 23,
-    category: "Food",
-    promotions: ["BOGO Pizza Tuesdays"],
-    avgOrderValue: 16.5
-  },
-  {
-    id: "item_004",
-    name: "Wheat Beer",
-    revenueLift: 205,
-    redemptions: 41,
-    category: "Beverages",
-    promotions: ["Happy Hour 20%", "Weekend Brunch 15%"],
-    avgOrderValue: 5.0
-  },
-  {
-    id: "item_005",
-    name: "Caesar Salad",
-    revenueLift: 180,
-    redemptions: 18,
-    category: "Food",
-    promotions: ["Lunch Special €5 Off"],
-    avgOrderValue: 10.0
-  },
-  {
-    id: "item_006",
-    name: "Lager Draft",
-    revenueLift: 120,
-    redemptions: 24,
-    category: "Beverages",
-    promotions: ["Happy Hour 20%"],
-    avgOrderValue: 5.0
-  },
-  {
-    id: "item_007",
-    name: "House Wine",
-    revenueLift: 95,
-    redemptions: 13,
-    category: "Beverages",
-    promotions: ["Weekend Brunch 15%"],
-    avgOrderValue: 7.3
-  },
-  {
-    id: "item_008",
-    name: "Burger Combo",
-    revenueLift: 85,
-    redemptions: 7,
-    category: "Food",
-    promotions: ["Lunch Special €5 Off"],
-    avgOrderValue: 12.15
-  },
-  {
-    id: "item_009",
-    name: "Tiramisu",
-    revenueLift: 60,
-    redemptions: 8,
-    category: "Desserts",
-    promotions: ["Weekend Brunch 15%"],
-    avgOrderValue: 7.5
-  },
-  {
-    id: "item_010",
-    name: "Espresso",
-    revenueLift: 45,
-    redemptions: 18,
-    category: "Beverages",
-    promotions: ["Weekend Brunch 15%"],
-    avgOrderValue: 2.5
-  }
+export const channelMix: Record<string, ChannelData> = {
+  Direct: { covers: 1082, revenue: 128600, avgCheck: 118.80, noShowRate: 3.1, confirmRate: 96, costPerCover: 0 },
+  Phone: { covers: 626, revenue: 72400, avgCheck: 115.60, noShowRate: 2.8, confirmRate: 94, costPerCover: 0 },
+  Google: { covers: 427, revenue: 42700, avgCheck: 100.00, noShowRate: 12.1, confirmRate: 72, costPerCover: 2.50 },
+  "Walk-in": { covers: 712, revenue: 68300, avgCheck: 95.90, noShowRate: 0, confirmRate: null, costPerCover: 0 },
+}
+
+export const partySizeDistribution: PartySizeEntry[] = [
+  { size: "1", percentage: 8, avgCheck: 62 },
+  { size: "2", percentage: 32, avgCheck: 98 },
+  { size: "3-4", percentage: 28, avgCheck: 142 },
+  { size: "5-6", percentage: 18, avgCheck: 195 },
+  { size: "7-8", percentage: 10, avgCheck: 268 },
+  { size: "9-10", percentage: 3, avgCheck: 345 },
+  { size: "10+", percentage: 1, avgCheck: 480 },
 ]
 
-// Performance Scores
-export const performanceScores = [
-  {
-    promotionId: "promo_001",
-    promotionName: "Happy Hour 20% Draft Beers",
-    score: 92,
-    rating: 5,
-    ratingLabel: "Excellent",
-    ratingColor: "success",
-    metrics: {
-      redemptionRate: { score: 28, max: 30, value: 46.8 },
-      revenueLift: { score: 24, max: 25, value: 1240.5 },
-      roi: { score: 19, max: 20, value: 3.8 },
-      customerAcquisition: { score: 13, max: 15, value: 45 },
-      efficiency: { score: 8, max: 10, value: 82 }
-    },
-    trend: "up",
-    trendPercent: 5.2
-  },
-  {
-    promotionId: "promo_003",
-    promotionName: "BOGO Pizza Tuesdays",
-    score: 85,
-    rating: 4,
-    ratingLabel: "Very Good",
-    ratingColor: "info",
-    metrics: {
-      redemptionRate: { score: 26, max: 30, value: 45.6 },
-      revenueLift: { score: 22, max: 25, value: 2340.0 },
-      roi: { score: 16, max: 20, value: 3.2 },
-      customerAcquisition: { score: 12, max: 15, value: 89 },
-      efficiency: { score: 9, max: 10, value: 88 }
-    },
-    trend: "up",
-    trendPercent: 2.8
-  },
-  {
-    promotionId: "promo_006",
-    promotionName: "Student Discount 10%",
-    score: 78,
-    rating: 3,
-    ratingLabel: "Good",
-    ratingColor: "warning",
-    metrics: {
-      redemptionRate: { score: 21, max: 30, value: 23.5 },
-      revenueLift: { score: 23, max: 25, value: 8900.0 },
-      roi: { score: 15, max: 20, value: 2.9 },
-      customerAcquisition: { score: 14, max: 15, value: 450 },
-      efficiency: { score: 5, max: 10, value: 52 }
-    },
-    trend: "stable",
-    trendPercent: 0.5
-  }
+export const revPASHData: RevPASHRow[] = [
+  { day: "Mon", hours: { "17": 8, "18": 12, "19": 18, "20": 16, "21": 10, "22": 4 }, avg: 11.3 },
+  { day: "Tue", hours: { "17": 9, "18": 14, "19": 20, "20": 19, "21": 12, "22": 5 }, avg: 13.2 },
+  { day: "Wed", hours: { "17": 9, "18": 13, "19": 19, "20": 18, "21": 11, "22": 5 }, avg: 12.5 },
+  { day: "Thu", hours: { "17": 10, "18": 15, "19": 22, "20": 21, "21": 14, "22": 6 }, avg: 14.7 },
+  { day: "Fri", hours: { "17": 12, "18": 18, "19": 28, "20": 26, "21": 18, "22": 8 }, avg: 18.3 },
+  { day: "Sat", hours: { "17": 14, "18": 20, "19": 30, "20": 28, "21": 20, "22": 10 }, avg: 20.3 },
+  { day: "Sun", hours: { "17": 8, "18": 12, "19": 16, "20": 14, "21": 9, "22": 3 }, avg: 10.3 },
+]
+export const revPASHMeta = { peak: 30, target: 20, average: 14.4 }
+
+export const noShowByDay: NoShowByItem[] = [
+  { day: "Mon", rate: 5.2 }, { day: "Tue", rate: 4.1 }, { day: "Wed", rate: 3.8 },
+  { day: "Thu", rate: 4.5 }, { day: "Fri", rate: 5.6 }, { day: "Sat", rate: 2.8 }, { day: "Sun", rate: 4.8 },
+]
+export const noShowByTime: NoShowByItem[] = [
+  { slot: "5-6 PM", rate: 2.8 }, { slot: "6-7 PM", rate: 3.5 }, { slot: "7-8 PM", rate: 5.8 },
+  { slot: "8-9 PM", rate: 4.9 }, { slot: "9-10 PM", rate: 6.2 }, { slot: "Lunch", rate: 2.1 },
+]
+export const noShowByChannel: NoShowByItem[] = [
+  { channel: "Direct", rate: 3.1 }, { channel: "Phone", rate: 2.8 },
+  { channel: "Google", rate: 12.1 }, { channel: "Walk-in", rate: 0 }, { channel: "Instagram", rate: 7.5 },
+]
+export const noShowByGuestType: NoShowByItem[] = [
+  { type: "VIP", rate: 0.8 }, { type: "Regular", rate: 2.2 },
+  { type: "New guest", rate: 8.4 }, { type: "Flagged", rate: 34 },
+]
+export const noShowRevenueImpact = { lostRevenue: 14280, avgNoShowCheck: 119, recoveredPercent: 38, recoveredAmount: 5426, netLoss: 8854 }
+export const repeatOffenders: RepeatOffender[] = [
+  { name: "Morrison", noShows: 2, totalBookings: 3, rate: 67, status: "flagged" },
+  { name: "Baker", noShows: 3, totalBookings: 5, rate: 60, status: "flagged" },
+  { name: "Unknown (Google)", noShows: 2, totalBookings: 2, rate: 100, status: "blocked" },
 ]
 
-// AI Insights
-export const aiInsights = [
-  {
-    id: "insight_001",
-    type: "top",
-    variant: "success",
-    icon: "Sparkles",
-    title: "Top Insight",
-    message:
-      '"Happy Hour 20%" is your best performing promotion. Revenue lift 12.3% higher than average. Consider extending to weekends for additional €850/week.',
-    confidence: 92,
-    actions: [
-      { label: "Extend Promotion", variant: "default", action: "extend" },
-      { label: "View Details", variant: "outline", action: "view" }
-    ],
-    dismissable: false
-  },
-  {
-    id: "insight_002",
-    type: "warning",
-    variant: "destructive",
-    icon: "AlertTriangle",
-    title: "Cannibalization Alert",
-    message:
-      '"Lunch Special" may be reducing regular lunch sales by 8%. Total lunch revenue unchanged despite promotion. Consider narrowing target audience or adjusting discount amount.',
-    confidence: 78,
-    actions: [
-      { label: "Review Strategy", variant: "default", action: "review" },
-      { label: "Dismiss", variant: "ghost", action: "dismiss" }
-    ],
-    dismissable: true
-  },
-  {
-    id: "insight_003",
-    type: "prediction",
-    variant: "default",
-    icon: "TrendingUp",
-    title: "Prediction",
-    message:
-      'Extending "Weekend Brunch" through November could yield an additional €2,300 in revenue based on historical patterns and current redemption trends.',
-    confidence: 85,
-    actions: [
-      { label: "Apply Recommendation", variant: "default", action: "apply" },
-      { label: "Learn More", variant: "outline", action: "learn" }
-    ],
-    dismissable: true
-  },
-  {
-    id: "insight_004",
-    type: "opportunity",
-    variant: "secondary",
-    icon: "Lightbulb",
-    title: "Opportunity",
-    message:
-      'Thursday evenings show 40% lower redemption rates than other weekdays. Consider creating a "Thirsty Thursday" promotion targeting 6-8 PM with appetizer bundles.',
-    confidence: 71,
-    actions: [
-      { label: "Create Promotion", variant: "default", action: "create" },
-      { label: "See Analysis", variant: "outline", action: "analysis" }
-    ],
-    dismissable: true
-  }
+export const turnTimeByParty: TurnTimeByParty[] = [
+  { size: "1 guest", target: 60, actual: 54, variance: -6, status: "under" },
+  { size: "2 guests", target: 75, actual: 78, variance: 3, status: "slight_over" },
+  { size: "3-4 guests", target: 90, actual: 88, variance: -2, status: "on_target" },
+  { size: "5-6 guests", target: 105, actual: 112, variance: 7, status: "over" },
+  { size: "7-8 guests", target: 120, actual: 134, variance: 14, status: "significant_over" },
+  { size: "9-10 guests", target: 135, actual: 148, variance: 13, status: "significant_over" },
 ]
+export const turnDistribution: TurnDistribution[] = [
+  { range: "45-60", count: 142 }, { range: "60-75", count: 389 },
+  { range: "75-90", count: 512 }, { range: "90-105", count: 324 },
+  { range: "105-120", count: 186 }, { range: "120-135", count: 98 }, { range: "135-150+", count: 42 },
+]
+export const turnTimeMeta = { median: 82, mean: 88, stdDev: 18 }
+export const turnTimeByDay = [
+  { day: "Mon", avg: 78 }, { day: "Tue", avg: 82 }, { day: "Wed", avg: 80 },
+  { day: "Thu", avg: 84 }, { day: "Fri", avg: 92 }, { day: "Sat", avg: 98 }, { day: "Sun", avg: 82 },
+]
+export const turnTimeByZone = [
+  { zone: "Main Dining", avg: 86 }, { zone: "Patio", avg: 72 }, { zone: "Private Room", avg: 108 },
+]
+export const turnTimeTrend: TurnTimeTrendWeek[] = [
+  { week: "W1", avg: 90, target: 82 }, { week: "W2", avg: 88, target: 82 }, { week: "W3", avg: 86, target: 82 },
+  { week: "W4", avg: 84, target: 82 }, { week: "W5", avg: 89, target: 82 }, { week: "W6", avg: 87, target: 82 },
+  { week: "W7", avg: 85, target: 82 }, { week: "W8", avg: 86, target: 82 }, { week: "W9", avg: 83, target: 82 },
+  { week: "W10", avg: 82, target: 82 }, { week: "W11", avg: 80, target: 82 }, { week: "W12", avg: 82, target: 82 },
+]
+
+export const channelTrend: ChannelTrendWeek[] = [
+  { week: "W1", direct: 82, phone: 52, google: 28, walkIn: 56 },
+  { week: "W2", direct: 85, phone: 50, google: 30, walkIn: 58 },
+  { week: "W3", direct: 80, phone: 48, google: 32, walkIn: 55 },
+  { week: "W4", direct: 88, phone: 55, google: 29, walkIn: 60 },
+  { week: "W5", direct: 84, phone: 53, google: 34, walkIn: 57 },
+  { week: "W6", direct: 90, phone: 51, google: 33, walkIn: 59 },
+  { week: "W7", direct: 86, phone: 49, google: 36, walkIn: 56 },
+  { week: "W8", direct: 92, phone: 54, google: 35, walkIn: 58 },
+  { week: "W9", direct: 88, phone: 50, google: 38, walkIn: 60 },
+  { week: "W10", direct: 94, phone: 52, google: 37, walkIn: 57 },
+  { week: "W11", direct: 91, phone: 48, google: 40, walkIn: 59 },
+  { week: "W12", direct: 96, phone: 50, google: 39, walkIn: 61 },
+]
+
+export const waitlistAnalysis = {
+  kpis: {
+    totalParties: { value: 312, change: 18 },
+    conversionRate: { value: 78.2, change: 4.2 },
+    avgWaitTime: { value: 22, change: -3 },
+    quoteAccuracy: { value: 84.6, change: 6.1 },
+  },
+  waitDistribution: [
+    { range: "0-10 min", count: 42, percentage: 17 },
+    { range: "10-20 min", count: 68, percentage: 28 },
+    { range: "20-30 min", count: 62, percentage: 25 },
+    { range: "30-45 min", count: 38, percentage: 15 },
+    { range: "45-60 min", count: 22, percentage: 9 },
+    { range: "60+ min", count: 16, percentage: 6, abandonRate: 68 },
+  ] as WaitDistEntry[],
+  quoteAccuracy: { early: 18, onTime: 67, late: 15, avgOverquote: 4, avgUnderquote: -8 },
+  barSpend: { partiesAtBar: 62, avgSpend: 34.50, totalRevenue: 6676, avgTransferred: 28.40, transferRate: 82 },
+  abandonment: { total: 68, rate: 21.8, beforeQuote: 22, atQuote: 28, afterQuote: 18, avgWaitBeforeLeaving: 34, worstPartySize: "5-6" },
+}
+
+export const revenueByZone: ZoneRevenue[] = [
+  { zone: "Main Dining", revenue: 198400, percentage: 63.6, seats: 52, revenuePerSeat: 3815 },
+  { zone: "Patio", revenue: 62400, percentage: 20.0, seats: 18, revenuePerSeat: 3467 },
+  { zone: "Private Room", revenue: 51200, percentage: 16.4, seats: 14, revenuePerSeat: 3657 },
+]
+
+export const revenueByTable: TableRevenue[] = [
+  { table: "T12", revenue: 18200, features: "window", server: "Mike" },
+  { table: "T17", revenue: 16800, features: "round 6-top", server: "Lisa" },
+  { table: "T7", revenue: 15400, features: "booth", server: "Mike" },
+  { table: "T23", revenue: 14900, features: "private", server: "Jordan" },
+  { table: "T22", revenue: 13200, features: "patio 6-top", server: "Carlos" },
+  { table: "T8", revenue: 12800, features: "merged often", server: "Mike" },
+  { table: "T10", revenue: 11600, features: "", server: "Mike" },
+  { table: "T14", revenue: 11200, features: "", server: "Lisa" },
+  { table: "T15", revenue: 10800, features: "", server: "Lisa" },
+  { table: "T9", revenue: 10600, features: "merged often", server: "Mike" },
+]
+
+export const overviewInsights = [
+  "Saturday covers up 15% -- consider adding a late-night seating at 9:30 PM",
+  "Monday remains slowest -- a Monday promotion could lift covers by ~20",
+  "Google Reserve no-show rate (12%) is 3x higher than direct (3.8%)",
+  "2-tops make up 32% of covers but only 18% of revenue -- upsell opportunity",
+]
+
+// helpers
+export function formatCurrency(n: number) {
+  if (n >= 1000) return `$${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}K`
+  return `$${n.toLocaleString()}`
+}
+export function formatKpiValue(kpi: KpiItem) {
+  if (kpi.format === "currency" && kpi.value >= 1000) return formatCurrency(kpi.value)
+  if (kpi.format === "currency") return `$${kpi.value}`
+  if (kpi.prefix || kpi.suffix) return `${kpi.prefix ?? ""}${kpi.value.toLocaleString()}${kpi.suffix ?? ""}`
+  return kpi.value.toLocaleString()
+}
+export function trendIsPositive(trend: KpiItem["trend"]) {
+  return trend === "up" || trend === "down_good"
+}

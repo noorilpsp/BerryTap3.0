@@ -888,6 +888,70 @@ html[data-ops-tables] [data-slot="alert-dialog-content"] {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Add Guest dialog (guests page): match table-merge size and chrome when opened from ops */
+html[data-ops-tables] [data-slot="dialog-content"].add-guest-dialog {
+  background: rgb(24 24 27 / 0.98) !important;
+  border-color: rgb(63 63 70 / 0.6) !important;
+  color: rgb(244 244 245) !important;
+  max-width: 32rem !important;
+}
+html[data-ops-tables] .add-guest-dialog [data-slot="dialog-close"] {
+  color: rgb(212 212 216) !important;
+}
+html[data-ops-tables] .add-guest-dialog [data-slot="dialog-close"]:hover {
+  color: rgb(255 255 255) !important;
+  opacity: 1 !important;
+}
+
+/* Compose (New Message) dialog: match table-merge theme when opened from Communications */
+html[data-ops-tables] [data-slot="dialog-content"].compose-dialog {
+  background: rgb(24 24 27 / 0.98) !important;
+  border-color: rgb(63 63 70 / 0.6) !important;
+  color: rgb(244 244 245) !important;
+  max-width: 36rem !important;
+}
+html[data-ops-tables] .compose-dialog [data-slot="dialog-close"] {
+  color: rgb(212 212 216) !important;
+}
+html[data-ops-tables] .compose-dialog [data-slot="dialog-close"]:hover {
+  color: rgb(255 255 255) !important;
+  opacity: 1 !important;
+}
+
+/* Communications page: tab bar and triggers match table-merge (emerald active, zinc inactive) */
+html[data-ops-tables] .comms-tabs-bar [data-slot="tabs-list"] {
+  background: transparent !important;
+}
+html[data-ops-tables] .comms-tabs-bar [data-slot="tabs-trigger"] {
+  background: transparent !important;
+  color: rgb(113 113 122) !important;
+  border-color: transparent !important;
+}
+html[data-ops-tables] .comms-tabs-bar [data-slot="tabs-trigger"]:hover {
+  color: rgb(212 212 216) !important;
+}
+html[data-ops-tables] .comms-tabs-bar [data-slot="tabs-trigger"][data-state="active"] {
+  color: rgb(52 211 153) !important;
+  border-bottom-color: rgb(16 185 129) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Template Editor (New/Edit Template) dialog: match table-merge theme when opened from Communications */
+html[data-ops-tables] [data-slot="dialog-content"].template-editor-dialog {
+  background: rgb(24 24 27 / 0.98) !important;
+  border-color: rgb(63 63 70 / 0.6) !important;
+  color: rgb(244 244 245) !important;
+  max-width: 36rem !important;
+}
+html[data-ops-tables] .template-editor-dialog [data-slot="dialog-close"] {
+  color: rgb(212 212 216) !important;
+}
+html[data-ops-tables] .template-editor-dialog [data-slot="dialog-close"]:hover {
+  color: rgb(255 255 255) !important;
+  opacity: 1 !important;
+}
+
 /* Merge-split history (and any ops-tables sheet): header and glass surfaces match table-merge */
 html[data-ops-tables] [data-slot="sheet-content"] [data-slot="sheet-header"] {
   background: hsl(220 20% 4%) !important;
@@ -978,6 +1042,21 @@ html[data-ops-tables] [data-slot="dialog-content"] [data-slot="dialog-header"] {
   background: hsl(var(--surface-glass) / 0.85) !important;
   border-bottom: 1px solid hsl(220 15% 14% / 0.25) !important;
   color: hsl(210 20% 95%) !important;
+}
+/* Add Guest dialog: header same as background (no black bar) */
+html[data-ops-tables] [data-slot="dialog-content"].add-guest-dialog [data-slot="dialog-header"] {
+  background: transparent !important;
+  border-bottom: none !important;
+}
+/* Compose (New Message) dialog: header same as background */
+html[data-ops-tables] [data-slot="dialog-content"].compose-dialog [data-slot="dialog-header"] {
+  background: transparent !important;
+  border-bottom: none !important;
+}
+/* Template Editor (New/Edit Template) dialog: header same as background */
+html[data-ops-tables] [data-slot="dialog-content"].template-editor-dialog [data-slot="dialog-header"] {
+  background: transparent !important;
+  border-bottom: none !important;
 }
 /* Merge dialogs: section boxes (Step 1, Splitting T8+T9, Impact Analysis) — own container + color like table-merge .section-zone */
 html[data-ops-tables] [data-slot="dialog-content"] .merge-dialog-section-box {
@@ -1537,4 +1616,68 @@ html[data-ops-tables] [data-slot="dropdown-menu-item"][data-highlighted] {
 }
 .booking-slide-in-left {
   animation: booking-slide-left 300ms ease-out both;
+}
+
+/* ── Guests (ops) ───────────────────────────────────────────────── */
+@keyframes guest-profile-enter-kf {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.guest-profile-enter {
+  animation: guest-profile-enter-kf 250ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes guest-analytics-enter-kf {
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.guest-analytics-enter {
+  animation: guest-analytics-enter-kf 300ms cubic-bezier(0.4, 0, 0.2, 1) 100ms both;
+}
+
+@keyframes guest-section-stagger-kf {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.guest-profile-section {
+  animation: guest-section-stagger-kf 250ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+.guest-insight-section {
+  animation: guest-section-stagger-kf 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+/* ── Analytics (ops) ────────────────────────────────────────────── */
+@keyframes analytics-bar-grow {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+.analytics-bar-enter {
+  animation: analytics-bar-grow 400ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation-delay: calc(var(--bar-index, 0) * 50ms);
+  transform-origin: bottom;
+}
+
+@keyframes analytics-insight-slide {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.analytics-insight-stagger {
+  animation: analytics-insight-slide 200ms ease-out both;
+  animation-delay: calc(var(--insight-index, 0) * 100ms);
+}
+
+@keyframes analytics-kpi-count {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.analytics-kpi-enter {
+  animation: analytics-kpi-count 300ms ease-out both;
+}
+
+@keyframes analytics-tab-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.analytics-tab-content {
+  animation: analytics-tab-fade 200ms ease-out;
 }
