@@ -1521,3 +1521,20 @@ html[data-ops-tables] [data-slot="dropdown-menu-item"][data-highlighted] {
     }
   } */
 }
+
+/* ── Guest Booking Widget ──────────────────────────────────────── */
+@keyframes booking-slide-right {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.booking-slide-in-right {
+  animation: booking-slide-right 300ms ease-out both;
+}
+
+@keyframes booking-slide-left {
+  from { opacity: 0; transform: translateX(-24px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.booking-slide-in-left {
+  animation: booking-slide-left 300ms ease-out both;
+}

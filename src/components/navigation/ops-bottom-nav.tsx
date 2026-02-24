@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { BarChart3, Bell, CalendarDays, ClipboardList, Clock, Combine, LayoutGrid, ShoppingBasket, Table2, Users } from "lucide-react"
+import { BarChart3, Bell, CalendarCheck, CalendarDays, ClipboardList, Clock, Combine, LayoutGrid, PencilRuler, ShoppingBasket, Table2, Users } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
@@ -27,6 +27,12 @@ const items: OpsNavItem[] = [
     active: (pathname) => pathname.startsWith("/floor-map"),
   },
   {
+    href: "/builder",
+    label: "Builder",
+    Icon: PencilRuler,
+    active: (pathname) => pathname.startsWith("/builder"),
+  },
+  {
     href: "/dashboard/orders",
     label: "Orders",
     Icon: ClipboardList,
@@ -49,6 +55,12 @@ const items: OpsNavItem[] = [
     label: "Comms",
     Icon: Bell,
     active: (pathname) => pathname.startsWith("/communications"),
+  },
+  {
+    href: "/book",
+    label: "Book",
+    Icon: CalendarCheck,
+    active: (pathname) => pathname.startsWith("/book"),
   },
   {
     href: "/reservations/list",
