@@ -518,6 +518,402 @@ html.liquid-glass-page.vivid {
 }
 .animate-charge-core { animation: charge-core 1250ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 
+/* Tables (table detail, my-tables) — theme, animations, portaled content
+   Uses full hsl() values so Tailwind v4 @theme resolves correctly (table-merge parity) */
+.ops-tables-root {
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif);
+  background-color: hsl(220 20% 4%);
+  color: hsl(210 20% 95%);
+  --background: hsl(220 20% 4%);
+  --foreground: hsl(210 20% 95%);
+  --card: hsl(220 18% 7%);
+  --card-foreground: hsl(210 20% 95%);
+  --popover: hsl(220 18% 8%);
+  --popover-foreground: hsl(210 20% 95%);
+  --primary: hsl(185 85% 45%);
+  --primary-foreground: hsl(220 20% 4%);
+  --secondary: hsl(220 15% 12%);
+  --secondary-foreground: hsl(210 15% 85%);
+  --muted: hsl(220 15% 12%);
+  --muted-foreground: hsl(220 10% 48%);
+  --accent: hsl(220 15% 14%);
+  --accent-foreground: hsl(210 15% 90%);
+  --border: hsl(220 15% 14%);
+  --input: hsl(220 15% 14%);
+  --ring: hsl(185 85% 45%);
+  --destructive: hsl(0 72% 51%);
+  --glow-free: 185 85% 45%;
+  --glow-active: 38 92% 50%;
+  --glow-urgent: 0 72% 51%;
+  --glow-billing: 217 91% 60%;
+  --glow-closed: 220 10% 30%;
+  --surface-glass: 220 18% 8%;
+  --surface-glass-border: 220 15% 18%;
+}
+.ops-tables-root .glow-free { box-shadow: 0 0 14px 2px hsl(var(--glow-free) / 0.35), inset 0 1px 0 hsl(var(--glow-free) / 0.1); }
+.ops-tables-root .glow-active { box-shadow: 0 0 14px 2px hsl(var(--glow-active) / 0.35), inset 0 1px 0 hsl(var(--glow-active) / 0.1); }
+.ops-tables-root .glow-urgent { box-shadow: 0 0 18px 3px hsl(var(--glow-urgent) / 0.45), inset 0 1px 0 hsl(var(--glow-urgent) / 0.15); }
+.ops-tables-root .glow-billing { box-shadow: 0 0 14px 2px hsl(var(--glow-billing) / 0.35), inset 0 1px 0 hsl(var(--glow-billing) / 0.1); }
+.ops-tables-root .glow-closed { box-shadow: 0 0 6px 1px hsl(var(--glow-closed) / 0.2); }
+
+.ops-tables-root header.border-b {
+  background-color: hsl(220 18% 7%);
+  border-color: hsl(220 15% 14%);
+}
+
+/* Explicit container overrides (Tailwind variable cascade fallback) */
+.ops-tables-root .bg-background { background-color: hsl(220 20% 4%) !important; }
+.ops-tables-root .bg-card { background-color: hsl(220 18% 7%) !important; }
+.ops-tables-root .bg-secondary { background-color: hsl(220 15% 12%) !important; }
+.ops-tables-root .border-border { border-color: hsl(220 15% 14%) !important; }
+.ops-tables-root .text-foreground { color: hsl(210 20% 95%) !important; }
+.ops-tables-root .text-muted-foreground { color: hsl(220 10% 48%) !important; }
+
+/* OrderSummary Total row: match table-merge font size and family */
+.ops-tables-root .order-summary-total {
+  font-family: var(--font-inter-ops, var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif);
+}
+.ops-tables-root .order-summary-total .text-sm {
+  font-size: 0.875rem !important;
+  font-weight: 600 !important;
+}
+
+@keyframes pulse-ring-glow {
+  0% { box-shadow: 0 0 14px 2px hsl(var(--glow-urgent, 0 72% 51%) / 0.45), 0 0 0 0 hsl(var(--glow-urgent, 0 72% 51%) / 0.5); }
+  70% { box-shadow: 0 0 14px 2px hsl(var(--glow-urgent, 0 72% 51%) / 0.45), 0 0 0 10px hsl(var(--glow-urgent, 0 72% 51%) / 0); }
+  100% { box-shadow: 0 0 14px 2px hsl(var(--glow-urgent, 0 72% 51%) / 0.45), 0 0 0 0 hsl(var(--glow-urgent, 0 72% 51%) / 0); }
+}
+.animate-pulse-ring { animation: pulse-ring-glow 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+
+@keyframes status-ring-glow {
+  0% { box-shadow: 0 0 12px 2px rgb(var(--ring-rgb, 248 113 113) / 0.42), 0 0 0 0 rgb(var(--ring-rgb, 248 113 113) / 0.46); }
+  70% { box-shadow: 0 0 12px 2px rgb(var(--ring-rgb, 248 113 113) / 0.42), 0 0 0 10px rgb(var(--ring-rgb, 248 113 113) / 0); }
+  100% { box-shadow: 0 0 12px 2px rgb(var(--ring-rgb, 248 113 113) / 0.42), 0 0 0 0 rgb(var(--ring-rgb, 248 113 113) / 0); }
+}
+.animate-status-ring { animation: status-ring-glow 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+
+@keyframes seat-ready-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.52), 0 0 16px rgba(248, 113, 113, 0.35); transform: scale(1); }
+  50% { box-shadow: 0 0 0 10px rgba(248, 113, 113, 0), 0 0 24px rgba(248, 113, 113, 0.52); transform: scale(1.045); }
+}
+.animate-seat-ready-pulse { animation: seat-ready-pulse 1.2s cubic-bezier(0.4, 0, 0.6, 1) infinite; will-change: transform, box-shadow; }
+
+@keyframes table-aura {
+  0%, 100% { opacity: 0.2; transform: scale(0.97); }
+  50% { opacity: 0.48; transform: scale(1.08); }
+}
+.animate-table-aura { animation: table-aura 1.8s ease-in-out infinite; will-change: transform, opacity; }
+
+@keyframes selected-chip-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--chip-glow, rgba(56, 189, 248, 0.35)); transform: translateZ(0) scale(1); }
+  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--chip-glow, rgba(56, 189, 248, 0.35)) 45%, transparent); transform: translateZ(0) scale(1.035); }
+}
+.animate-selected-chip { animation: selected-chip-pulse 1.8s ease-in-out infinite; will-change: transform, box-shadow; }
+
+@keyframes fade-slide-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-slide-in { animation: fade-slide-in 0.3s ease-out both; }
+
+.ops-tables-root [data-slot="button"].h-9 { min-height: 2.5rem !important; height: 2.5rem !important; }
+.ops-tables-root [data-slot="button"].h-8 { min-height: 2.25rem !important; height: 2.25rem !important; }
+/* Icon buttons: table-merge = h-10 w-10 — exclude h-7 (quantity steppers in OrderSummary) */
+.ops-tables-root [data-slot="button"].size-9:not([class*="h-7"]) { width: 2.5rem !important; height: 2.5rem !important; min-width: 2.5rem !important; min-height: 2.5rem !important; }
+
+/* By Seat / By Wave toggle — match table-merge Tabs styling */
+.ops-tables-root [data-slot="tabs-list"].h-8 {
+  border-radius: 0.375rem !important;
+  padding: 0.25rem !important;
+}
+.ops-tables-root [data-slot="tabs-list"].h-8 [data-slot="tabs-trigger"] {
+  flex: none !important;
+  border: none !important;
+  border-radius: 0.125rem !important;
+  padding: 0.25rem 0.75rem !important;
+  font-size: 0.75rem !important;
+  line-height: 1rem !important;
+}
+.ops-tables-root [data-slot="tabs-list"].h-8 [data-slot="tabs-trigger"][data-state="active"] {
+  background-color: hsl(220 20% 4%) !important;
+  color: hsl(210 20% 95%) !important;
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05) !important;
+}
+
+/* ActionBar buttons: force colored borders (override Button outline dark:border-input) */
+.ops-tables-root .table-detail-action-bar [data-slot="button"] {
+  border-width: 1px !important;
+}
+.ops-tables-root .table-detail-action-bar [data-action="add-items"] {
+  border-color: rgb(16 185 129 / 0.5) !important;
+  color: rgb(52 211 153) !important;
+}
+.ops-tables-root .table-detail-action-bar [data-action="add-items"]:hover:not(:disabled) {
+  border-color: rgb(52 211 153 / 0.5) !important;
+  color: rgb(134 239 172) !important;
+}
+.ops-tables-root .table-detail-action-bar [data-action="fire-wave"]:not(:disabled) {
+  border-color: rgb(245 158 11 / 0.5) !important;
+  color: rgb(251 191 36) !important;
+}
+.ops-tables-root .table-detail-action-bar [data-action="fire-wave"]:not(:disabled):hover {
+  border-color: rgb(251 191 36 / 0.5) !important;
+  color: rgb(253 224 71) !important;
+}
+.ops-tables-root .table-detail-action-bar [data-action="fire-wave"]:disabled {
+  border-color: rgb(245 158 11 / 0.2) !important;
+  color: rgb(251 191 36 / 0.4) !important;
+}
+.ops-tables-root .table-detail-action-bar [data-action="kitchen"] {
+  border-color: rgb(59 130 246 / 0.5) !important;
+  color: rgb(96 165 250) !important;
+}
+.ops-tables-root .table-detail-action-bar [data-action="kitchen"]:hover:not(:disabled) {
+  border-color: rgb(96 165 250 / 0.5) !important;
+  color: rgb(147 197 253) !important;
+}
+.ops-tables-root .table-detail-action-bar [data-action="bill"][data-bill-mode="bill"] {
+  border-color: rgb(139 92 246 / 0.5) !important;
+  color: rgb(167 139 250) !important;
+}
+.ops-tables-root .table-detail-action-bar [data-action="bill"][data-bill-mode="bill"]:hover {
+  border-color: rgb(167 139 250 / 0.5) !important;
+  color: rgb(196 181 253) !important;
+}
+.ops-tables-root .table-detail-action-bar [data-action="bill"][data-bill-mode="send"] {
+  border-color: rgb(16 185 129 / 0.5) !important;
+  color: rgb(52 211 153) !important;
+}
+.ops-tables-root .table-detail-action-bar [data-action="bill"][data-bill-mode="send"]:hover {
+  border-color: rgb(52 211 153 / 0.5) !important;
+  color: rgb(134 239 172) !important;
+}
+.ops-tables-root .table-detail-action-bar [data-action="bill"][data-bill-mode="disabled"] {
+  border-color: rgb(139 92 246 / 0.2) !important;
+  color: rgb(167 139 250 / 0.4) !important;
+}
+
+/* Meal progress: Fire/Served buttons in wave timeline — match table-merge */
+.ops-tables-root [data-meal-btn="fire-outline"] {
+  border-color: rgb(245 158 11 / 0.35) !important;
+  background-color: transparent !important;
+  color: rgb(253 224 71) !important;
+}
+.ops-tables-root [data-meal-btn="fire-outline"]:hover {
+  border-color: rgb(251 191 36 / 0.55) !important;
+  color: rgb(254 240 138) !important;
+}
+.ops-tables-root [data-meal-btn="served-outline"] {
+  border-color: rgb(16 185 129 / 0.35) !important;
+  background-color: transparent !important;
+  color: rgb(110 231 183) !important;
+}
+.ops-tables-root [data-meal-btn="served-outline"]:hover {
+  border-color: rgb(52 211 153 / 0.55) !important;
+  color: rgb(167 243 208) !important;
+}
+.ops-tables-root [data-meal-btn="fire-filled"] {
+  background-color: rgb(249 115 22) !important;
+  color: white !important;
+  border-color: transparent !important;
+}
+.ops-tables-root [data-meal-btn="fire-filled"]:hover {
+  background-color: rgb(234 88 12) !important;
+  color: white !important;
+}
+.ops-tables-root [data-meal-btn="served-filled"] {
+  background-color: rgb(16 185 129) !important;
+  color: white !important;
+  border-color: transparent !important;
+}
+.ops-tables-root [data-meal-btn="served-filled"]:hover {
+  background-color: rgb(5 150 105) !important;
+  color: white !important;
+}
+
+html[data-ops-tables] [data-slot="dialog-overlay"],
+html[data-ops-tables] [data-slot="sheet-overlay"],
+html[data-ops-tables] [data-slot="alert-dialog-overlay"] {
+  z-index: 90 !important;
+  background: rgb(0 0 0 / 0.8) !important;
+}
+/* Payment modal: same size as table-merge — large dialog (64rem / 1024px) */
+html[data-ops-tables] [data-slot="dialog-content"].payment-modal-dialog {
+  width: min(96vw, 64rem) !important;
+  max-width: 64rem !important;
+  min-width: min(96vw, 64rem) !important;
+  min-height: min(80dvh, 32rem) !important;
+  background: hsl(222 24% 10% / 0.95) !important;
+}
+
+/* Payment modal: Tabs match table-merge (rounded-md, h-10, p-1, active bg-background) */
+html[data-ops-tables] .payment-modal-dialog [data-slot="tabs-list"] {
+  height: 2.5rem !important;
+  border-radius: 0.375rem !important;
+  padding: 0.25rem !important;
+  inline-size: 100% !important;
+}
+html[data-ops-tables] .payment-modal-dialog [data-slot="tabs-trigger"] {
+  border-radius: 0.125rem !important;
+  padding: 0.375rem 0.75rem !important;
+  border: none !important;
+  height: auto !important;
+  min-height: 0 !important;
+  background: transparent !important;
+  color: hsl(220 10% 48%) !important;
+}
+html[data-ops-tables] .payment-modal-dialog [data-slot="tabs-trigger"]:hover {
+  color: hsl(210 20% 95%) !important;
+}
+html[data-ops-tables] .payment-modal-dialog [data-slot="tabs-trigger"][data-state="active"] {
+  background: hsl(220 20% 4%) !important;
+  color: hsl(210 20% 95%) !important;
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05) !important;
+}
+
+/* Payment modal: native buttons (payer toggles, Split) use table-merge border/accent */
+html[data-ops-tables] .payment-modal-dialog button:not([data-slot="button"]) {
+  font-family: var(--font-inter-ops, var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif);
+}
+
+/* Payment modal: S1 S2 S3 S4 S5 payer chips (rounded-full cyan pills) — table-merge theme */
+html[data-ops-tables] .payment-modal-dialog [class*="rounded-full"][class*="border-cyan"] {
+  border-color: rgb(34 211 238 / 0.3) !important;
+  background-color: rgb(6 182 212 / 0.1) !important;
+  color: rgb(207 250 254) !important;
+}
+html[data-ops-tables] .payment-modal-dialog [class*="rounded-full"][class*="border-cyan"] span,
+html[data-ops-tables] .payment-modal-dialog [class*="rounded-full"][class*="border-cyan"] button {
+  color: inherit !important;
+}
+html[data-ops-tables] .payment-modal-dialog [class*="rounded-full"][class*="border-cyan"] button:hover {
+  color: rgb(207 250 254) !important;
+}
+
+/* Payment modal: seat/table chips on item lines (sky = table, indigo = S1,S2,...) — table-merge theme */
+html[data-ops-tables] .payment-modal-dialog [class*="border-sky-300"][class*="bg-sky-500"] {
+  border-color: rgb(125 211 252 / 0.45) !important;
+  background-color: rgb(14 165 233 / 0.15) !important;
+  color: rgb(186 230 253) !important;
+}
+html[data-ops-tables] .payment-modal-dialog [class*="border-indigo-300"][class*="bg-indigo-500"] {
+  border-color: rgb(129 140 248 / 0.4) !important;
+  background-color: rgb(99 102 241 / 0.15) !important;
+  color: rgb(165 180 252) !important;
+}
+
+/* Payment modal: S1 S2 … and Split toggle buttons (inactive) — table-merge border/muted */
+html[data-ops-tables] .payment-modal-dialog button.rounded-md.border-border {
+  border-color: hsl(220 15% 14%) !important;
+  color: hsl(220 10% 48%) !important;
+  background: transparent !important;
+}
+html[data-ops-tables] .payment-modal-dialog button.rounded-md.border-border:hover {
+  background-color: hsl(220 15% 14%) !important;
+  color: hsl(210 15% 90%) !important;
+  border-color: hsl(220 15% 14%) !important;
+}
+
+/* Payment modal: payer toggles when active (cyan selected); Split when active uses amber below */
+html[data-ops-tables] .payment-modal-dialog button.rounded-md[class*="bg-cyan-500/20"] {
+  border-color: rgb(34 211 238) !important;
+  background-color: rgb(6 182 212 / 0.2) !important;
+  color: rgb(207 250 254) !important;
+}
+/* Payment modal: Split button when active (amber) */
+html[data-ops-tables] .payment-modal-dialog button.rounded-md[class*="border-amber-300"] {
+  border-color: rgb(252 211 77) !important;
+  background-color: rgb(245 158 11 / 0.2) !important;
+  color: rgb(254 243 199) !important;
+}
+
+html[data-ops-tables] [data-slot="dialog-content"],
+html[data-ops-tables] [data-slot="sheet-content"],
+html[data-ops-tables] [data-slot="alert-dialog-content"] {
+  z-index: 90 !important;
+  --background: 220 20% 4%;
+  --foreground: 210 20% 95%;
+  --card: 220 18% 7%;
+  --primary: 185 85% 45%;
+  --primary-foreground: 220 20% 4%;
+  --accent: 220 15% 14%;
+  --accent-foreground: 210 15% 90%;
+  --secondary: 220 15% 12%;
+  --muted: 220 15% 12%;
+  --muted-foreground: 220 10% 48%;
+  --border: 220 15% 14%;
+  --input: 220 15% 14%;
+  --ring: 185 85% 45%;
+  background: hsl(220 20% 4%) !important;
+  color: hsl(210 20% 95%) !important;
+  border-color: hsl(220 15% 14%) !important;
+  font-family: var(--font-inter-ops, var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif) !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+html[data-ops-tables] [data-slot="alert-dialog-content"] [data-slot="alert-dialog-footer"] button {
+  height: 2.5rem !important;
+  min-height: 2.5rem !important;
+  padding: 0 1rem !important;
+  font-size: 0.875rem !important;
+  font-weight: 500 !important;
+  font-family: var(--font-inter-ops, var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif) !important;
+  border-radius: 0.375rem !important;
+}
+html[data-ops-tables] [data-slot="alert-dialog-content"] [data-slot="alert-dialog-footer"] button:last-child {
+  background: hsl(185 85% 45%) !important;
+  color: hsl(220 20% 4%) !important;
+  border: none !important;
+}
+html[data-ops-tables] [data-slot="alert-dialog-content"] [data-slot="alert-dialog-footer"] button:last-child:hover {
+  background: hsl(185 85% 40%) !important;
+  color: hsl(220 20% 4%) !important;
+}
+html[data-ops-tables] [data-slot="alert-dialog-content"] [data-slot="alert-dialog-footer"] button:first-child {
+  background: hsl(220 20% 4%) !important;
+  color: hsl(210 20% 95%) !important;
+  border: 1px solid hsl(220 15% 14%) !important;
+}
+html[data-ops-tables] [data-slot="alert-dialog-content"] [data-slot="alert-dialog-footer"] button:first-child:hover {
+  background: hsl(220 15% 14%) !important;
+  color: hsl(210 15% 90%) !important;
+  border-color: hsl(220 15% 14%) !important;
+}
+html[data-ops-tables] [data-slot="dialog-content"] [data-slot="input"],
+html[data-ops-tables] [data-slot="sheet-content"] [data-slot="input"] {
+  background: hsl(220 15% 14% / 0.5) !important;
+  border-color: hsl(220 15% 14%) !important;
+  color: hsl(210 20% 95%) !important;
+}
+html[data-ops-tables] [data-slot="dialog-content"] [data-slot="input"]::placeholder,
+html[data-ops-tables] [data-slot="sheet-content"] [data-slot="input"]::placeholder {
+  color: hsl(220 10% 48%) !important;
+}
+html[data-ops-tables] [data-slot="dialog-content"] [data-slot="textarea"] {
+  background: hsl(220 20% 4%) !important;
+  border-color: hsl(220 15% 14%) !important;
+  color: hsl(210 20% 95%) !important;
+  font-family: var(--font-inter-ops, var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif) !important;
+}
+html[data-ops-tables] [data-slot="dialog-content"] [data-slot="textarea"]::placeholder {
+  color: hsl(220 10% 48%) !important;
+}
+html[data-ops-tables] [data-slot="select-content"],
+html[data-ops-tables] [data-slot="popover-content"],
+html[data-ops-tables] [data-slot="dropdown-menu-content"] {
+  background: hsl(220 18% 9%) !important;
+  border-color: hsl(220 15% 22%) !important;
+  color: hsl(210 20% 95%) !important;
+  font-family: var(--font-inter-ops, ui-sans-serif, system-ui, sans-serif) !important;
+}
+html[data-ops-tables] [data-slot="select-item"]:focus,
+html[data-ops-tables] [data-slot="select-item"][data-highlighted],
+html[data-ops-tables] [data-slot="dropdown-menu-item"]:focus,
+html[data-ops-tables] [data-slot="dropdown-menu-item"][data-highlighted] {
+  background: hsl(220 15% 14%) !important;
+  color: hsl(210 15% 90%) !important;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;

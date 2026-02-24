@@ -14,7 +14,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { PaymentToggle } from "@/components/table-detail/payment-toggle"
+import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
 import { formatCurrency } from "@/lib/table-data"
 import type { OrderItem, Seat } from "@/lib/table-data"
@@ -674,8 +674,8 @@ export function PaymentModal({
 
   return (
     <Dialog open={open} onOpenChange={handleDialogOpenChange}>
-      <DialogContent className="payment-modal fixed left-1/2 top-1/2 z-50 w-[min(96vw,64rem)] max-w-[64rem] -translate-x-1/2 -translate-y-1/2 border-white/15 bg-[hsl(222,24%,10%)]/95 p-0 text-foreground">
-        <div className="max-h-[calc(100dvh-2rem)] overflow-y-auto px-6 pt-6 pb-4">
+      <DialogContent className="payment-modal-dialog payment-modal-content fixed left-1/2 top-1/2 z-50 w-[min(96vw,64rem)] max-w-[64rem] -translate-x-1/2 -translate-y-1/2 border-white/15 bg-[hsl(222,24%,10%)]/95 p-0 text-foreground">
+        <div className="payment-modal-inner max-h-[calc(100dvh-2rem)] overflow-y-auto px-6 pt-6 pb-4">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <span className="inline-flex h-7 items-center rounded-md border border-cyan-300/40 bg-cyan-500/15 px-2 text-xs font-semibold text-cyan-200">
@@ -766,7 +766,7 @@ export function PaymentModal({
                         {bySeatPrintReceipts ? "Show receipt step after each charge" : "Skip receipt step and continue"}
                       </div>
                     </div>
-                    <PaymentToggle checked={bySeatPrintReceipts} onCheckedChange={setBySeatPrintReceipts} />
+                    <Switch checked={bySeatPrintReceipts} onCheckedChange={setBySeatPrintReceipts} />
                   </div>
                 </div>
 
@@ -818,9 +818,9 @@ export function PaymentModal({
                   </div>
                   <div className="flex items-center gap-2">
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       size="icon"
-                      className="bg-transparent"
+                      className="border border-white/10 bg-transparent hover:bg-black/20"
                       onClick={() => setEqualPayers((n) => Math.max(1, n - 1))}
                     >
                       <Minus className="h-4 w-4" />
@@ -829,9 +829,9 @@ export function PaymentModal({
                       {equalPayers}
                     </span>
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       size="icon"
-                      className="bg-transparent"
+                      className="border border-white/10 bg-transparent hover:bg-black/20"
                       onClick={() => setEqualPayers((n) => Math.min(maxPayers, n + 1))}
                     >
                       <Plus className="h-4 w-4" />
@@ -873,9 +873,9 @@ export function PaymentModal({
                       </div>
                     ))}
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       size="sm"
-                      className="h-7 border-cyan-300/30 bg-transparent text-cyan-100"
+                      className="h-7 border border-cyan-300/30 bg-transparent text-cyan-100 hover:bg-cyan-500/20"
                       onClick={addPayer}
                       disabled={payers.length >= maxPayers}
                     >
@@ -883,16 +883,16 @@ export function PaymentModal({
                     </Button>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <Button size="sm" variant="outline" className="h-7 bg-transparent text-xs" onClick={applyBySeatPreset}>
+                    <Button size="sm" variant="ghost" className="h-7 border border-white/10 bg-transparent text-xs hover:bg-black/20" onClick={applyBySeatPreset}>
                       Preset: By Seat
                     </Button>
-                    <Button size="sm" variant="outline" className="h-7 bg-transparent text-xs" onClick={applyEqualPreset}>
+                    <Button size="sm" variant="ghost" className="h-7 border border-white/10 bg-transparent text-xs hover:bg-black/20" onClick={applyEqualPreset}>
                       Preset: Equal
                     </Button>
                     <Button
                       size="sm"
-                      variant="outline"
-                      className="h-7 border-red-400/35 bg-transparent text-xs text-red-200"
+                      variant="ghost"
+                      className="h-7 border border-red-400/35 bg-transparent text-xs text-red-200 hover:bg-red-500/15"
                       onClick={() => setItemAssignments({})}
                     >
                       Clear Assignments
@@ -999,9 +999,9 @@ export function PaymentModal({
                                   {selected ? (
                                     <div className="flex items-center gap-1">
                                       <Button
-                                        variant="outline"
+                                        variant="ghost"
                                         size="icon"
-                                        className="h-6 w-6 bg-transparent"
+                                        className="h-6 w-6 border border-white/10 bg-transparent hover:bg-black/20"
                                         onClick={() => changeSplitShare(line.id, payer.id, -1)}
                                       >
                                         <Minus className="h-3 w-3" />
@@ -1010,9 +1010,9 @@ export function PaymentModal({
                                         {pct}% · {formatCurrency((line.price * shares) / totalShares)}
                                       </span>
                                       <Button
-                                        variant="outline"
+                                        variant="ghost"
                                         size="icon"
-                                        className="h-6 w-6 bg-transparent"
+                                        className="h-6 w-6 border border-white/10 bg-transparent hover:bg-black/20"
                                         onClick={() => changeSplitShare(line.id, payer.id, 1)}
                                       >
                                         <Plus className="h-3 w-3" />
@@ -1520,10 +1520,10 @@ export function PaymentModal({
                     <span className="text-sm font-semibold text-cyan-100">{formatCurrency(charge.amount)}</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <Button variant="outline" className="bg-transparent">
+                    <Button variant="ghost" className="border border-white/10 bg-transparent hover:bg-black/20">
                       Print Receipt
                     </Button>
-                    <Button variant="outline" className="bg-transparent">
+                    <Button variant="ghost" className="border border-white/10 bg-transparent hover:bg-black/20">
                       Email Receipt
                     </Button>
                   </div>
@@ -1544,8 +1544,8 @@ export function PaymentModal({
                   </div>
                   {trackingUrl ? (
                     <Button
-                      variant="outline"
-                      className="h-7 border-sky-300/35 bg-transparent px-2.5 text-[11px] text-sky-100 hover:bg-sky-500/15"
+                      variant="ghost"
+                      className="h-7 border border-sky-300/35 bg-transparent px-2.5 text-[11px] text-sky-100 hover:bg-sky-500/15"
                       onClick={() => window.open(trackingUrl, "_blank", "noopener,noreferrer")}
                     >
                       Open

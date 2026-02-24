@@ -36,7 +36,7 @@ const items: OpsNavItem[] = [
     href: "/tables",
     label: "Tables",
     Icon: Table2,
-    active: (pathname) => pathname.startsWith("/tables"),
+    active: (pathname) => pathname.startsWith("/tables") || pathname.startsWith("/table/"),
   },
   {
     href: "/merge-split",
