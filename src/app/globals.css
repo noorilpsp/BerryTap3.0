@@ -549,6 +549,13 @@ html.liquid-glass-page.vivid {
   --glow-closed: 220 10% 30%;
   --surface-glass: 220 18% 8%;
   --surface-glass-border: 220 15% 18%;
+  /* Layout Builder canvas */
+  --canvas-bg: 220 20% 3%;
+  --canvas-grid: 185 85% 45%;
+  --canvas-grid-major: 185 60% 25%;
+  --canvas-grid-minor: 220 15% 8%;
+  --element-selected: 185 85% 45%;
+  --element-hover: 185 85% 45%;
 }
 .ops-tables-root .glow-free { box-shadow: 0 0 14px 2px hsl(var(--glow-free) / 0.35), inset 0 1px 0 hsl(var(--glow-free) / 0.1); }
 .ops-tables-root .glow-active { box-shadow: 0 0 14px 2px hsl(var(--glow-active) / 0.35), inset 0 1px 0 hsl(var(--glow-active) / 0.1); }
