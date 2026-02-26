@@ -11,9 +11,12 @@ import {
   jsonb,
   index,
   uniqueIndex,
+  check,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { merchantLocations } from "./merchant-locations";
+import { floorPlans } from "./floor-plans";
 import { staff } from "./staff";
 import { users } from "../../../db/schema";
 import { items, customizationGroups, customizationOptions } from "./menus";
@@ -86,6 +89,29 @@ export const paymentTransactionStatusEnum = pgEnum("payment_transaction_status",
   "refunded",
 ]);
 
+/** Session = one dining visit at a table. At most one active session per table. */
+export const sessionStatusEnum = pgEnum("session_status", [
+  "open",
+  "closed",
+  "cancelled",
+]);
+
+export const sessionSourceEnum = pgEnum("session_source", [
+  "walk_in",
+  "reservation",
+  "qr",
+  "pos",
+]);
+
+/** Wave/fire status for KDS and timing. */
+export const orderWaveStatusEnum = pgEnum("order_wave_status", [
+  "held",
+  "sent",
+  "preparing",
+  "ready",
+  "served",
+]);
+
 // =============================================================================
 // TABLE 1: TABLES (Physical restaurant tables)
 // =============================================================================
@@ -97,9 +123,27 @@ export const tables = pgTable(
     locationId: uuid("location_id")
       .notNull()
       .references(() => merchantLocations.id, { onDelete: "cascade" }),
-    tableNumber: varchar("table_number", { length: 20 }).notNull(),
+    floorPlanId: uuid("floor_plan_id").references(() => floorPlans.id, {
+      onDelete: "cascade",
+    }),
+    displayId: varchar("display_id", { length: 50 }), // e.g. "T1", "T2" - display label
+    tableNumber: varchar("table_number", { length: 20 }).notNull(), // e.g. "T1", "T2" - for future A1, A2 etc
     seats: integer("seats"),
+    /** Derived from open session in app; stored here for cache. Source of truth: sessions.status = 'open' per table. */
     status: tableStatusEnum("status").notNull().default("available"),
+    // Layout (POS model: operational state lives on session)
+    section: varchar("section", { length: 50 }),
+    shape: varchar("shape", { length: 50 }),
+    position: jsonb("position"),
+    width: integer("width"),
+    height: integer("height"),
+    rotation: integer("rotation"),
+    // Denormalized from active session for backward compat / quick reads
+    guests: integer("guests"),
+    serverId: uuid("server_id").references(() => staff.id),
+    seatedAt: timestamp("seated_at", { withTimezone: true }),
+    stage: varchar("stage", { length: 50 }),
+    alerts: jsonb("alerts"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -109,10 +153,46 @@ export const tables = pgTable(
   },
   (table) => ({
     locationIdIdx: index("tables_location_id_idx").on(table.locationId),
+    floorPlanIdIdx: index("tables_floor_plan_id_idx").on(table.floorPlanId),
     locationTableNumberUnique: uniqueIndex("tables_location_table_number_unique").on(
       table.locationId,
       table.tableNumber,
     ),
+    locationDisplayIdUnique: uniqueIndex("tables_location_display_id_unique").on(
+      table.locationId,
+      table.displayId,
+    ),
+  }),
+);
+
+// =============================================================================
+// TABLE: WAITLIST
+// =============================================================================
+
+export const waitlist = pgTable(
+  "waitlist",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    locationId: uuid("location_id")
+      .notNull()
+      .references(() => merchantLocations.id, { onDelete: "cascade" }),
+    guestName: varchar("guest_name", { length: 255 }).notNull(),
+    partySize: integer("party_size").notNull(),
+    phone: varchar("phone", { length: 50 }),
+    notes: text("notes"),
+    waitTime: varchar("wait_time", { length: 50 }),
+    addedAt: timestamp("added_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    locationIdIdx: index("waitlist_location_id_idx").on(table.locationId),
   }),
 );
 
@@ -154,6 +234,7 @@ export const reservations = pgTable(
       .references(() => merchantLocations.id, { onDelete: "cascade" }),
     customerId: uuid("customer_id").references(() => customers.id),
     tableId: uuid("table_id").references(() => tables.id),
+    sessionId: uuid("session_id"), // FK to sessions.id (added in migration to avoid circular ref)
     partySize: integer("party_size").notNull(),
     reservationDate: date("reservation_date").notNull(),
     reservationTime: varchar("reservation_time", { length: 10 }).notNull(), // TIME as VARCHAR
@@ -179,13 +260,140 @@ export const reservations = pgTable(
 );
 
 // =============================================================================
-// TABLE 4: ORDERS
+// TABLE 3b: SESSIONS (one dining visit per table; at most one active per table)
+// =============================================================================
+
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    locationId: uuid("location_id")
+      .notNull()
+      .references(() => merchantLocations.id, { onDelete: "cascade" }),
+    tableId: uuid("table_id")
+      .notNull()
+      .references(() => tables.id, { onDelete: "cascade" }),
+    serverId: uuid("server_id").references(() => staff.id),
+    guestCount: integer("guest_count").notNull().default(0),
+    openedAt: timestamp("opened_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    status: sessionStatusEnum("status").notNull().default("open"),
+    source: sessionSourceEnum("source").notNull().default("walk_in"),
+    reservationId: uuid("reservation_id").references(() => reservations.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    locationIdIdx: index("sessions_location_id_idx").on(table.locationId),
+    locationStatusIdx: index("sessions_location_id_status_idx").on(
+      table.locationId,
+      table.status
+    ),
+    tableIdIdx: index("sessions_table_id_idx").on(table.tableId),
+    statusIdx: index("sessions_status_idx").on(table.status),
+    openedAtIdx: index("sessions_opened_at_idx").on(table.openedAt),
+    /** Enforce at most one open session per table. */
+    oneOpenPerTable: uniqueIndex("sessions_one_open_per_table")
+      .on(table.tableId)
+      .where(sql`${table.status} = 'open'`),
+  }),
+);
+
+// =============================================================================
+// TABLE 3c: SESSION_EVENTS (operational events for analytics and audit)
+// =============================================================================
+
+export const sessionEventTypeEnum = pgEnum("session_event_type", [
+  "guest_seated",
+  "order_sent",
+  "item_ready",
+  "served",
+  "bill_requested",
+  "payment_completed",
+  "course_fired",
+  "course_completed",
+  "item_refired",
+  "item_voided",
+  "runner_assigned",
+  "table_cleaned",
+  "kitchen_delay",
+]);
+
+export const sessionEvents = pgTable(
+  "session_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    type: sessionEventTypeEnum("type").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    meta: jsonb("meta"),
+  },
+  (table) => ({
+    sessionIdIdx: index("session_events_session_id_idx").on(table.sessionId),
+    sessionIdTypeIdx: index("session_events_session_id_type_idx").on(
+      table.sessionId,
+      table.type
+    ),
+    createdAtIdx: index("session_events_created_at_idx").on(table.createdAt),
+    metaOrderItemIdIdx: index("session_events_meta_order_item").on(
+      sql`(${table.meta}->>'orderItemId')`
+    ),
+  })
+);
+
+// =============================================================================
+// TABLE 3d: SEATS (one per guest position in a session; seat_number 1..guestCount)
+// =============================================================================
+
+export const seats = pgTable(
+  "seats",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    seatNumber: integer("seat_number").notNull(),
+    guestName: varchar("guest_name", { length: 255 }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    sessionIdIdx: index("seats_session_id_idx").on(table.sessionId),
+    sessionSeatNumberUnique: uniqueIndex("seats_session_id_seat_number_key").on(
+      table.sessionId,
+      table.seatNumber
+    ),
+  })
+);
+
+// =============================================================================
+// TABLE 4: ORDERS (waves/fires within a session)
 // =============================================================================
 
 export const orders = pgTable(
   "orders",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id").references(() => sessions.id, {
+      onDelete: "cascade",
+    }),
+    wave: integer("wave").notNull().default(1),
+    firedAt: timestamp("fired_at", { withTimezone: true }),
+    station: varchar("station", { length: 50 }),
     locationId: uuid("location_id")
       .notNull()
       .references(() => merchantLocations.id, { onDelete: "cascade" }),
@@ -231,6 +439,7 @@ export const orders = pgTable(
       .defaultNow(),
   },
   (table) => ({
+    sessionIdIdx: index("orders_session_id_idx").on(table.sessionId),
     locationIdIdx: index("orders_location_id_idx").on(table.locationId),
     customerIdIdx: index("orders_customer_id_idx").on(table.customerId),
     statusIdx: index("orders_status_idx").on(table.status),
@@ -249,10 +458,12 @@ export const orderItems = pgTable(
     orderId: uuid("order_id")
       .notNull()
       .references(() => orders.id, { onDelete: "cascade" }),
-    itemId: uuid("item_id").references(() => items.id, { onDelete: "set null" }),
+    itemId: uuid("item_id").references(() => items.id, { onDelete: "set null" }), // menuItemId
     itemName: varchar("item_name", { length: 255 }).notNull(), // snapshot
     itemPrice: decimal("item_price", { precision: 10, scale: 2 }).notNull(), // snapshot
     quantity: integer("quantity").notNull().default(1),
+    seat: integer("seat").notNull().default(0), // 0 = shared; deprecated, use seat_id
+    seatId: uuid("seat_id").references(() => seats.id, { onDelete: "set null" }),
     customizationsTotal: decimal("customizations_total", {
       precision: 10,
       scale: 2,
@@ -262,12 +473,26 @@ export const orderItems = pgTable(
     lineTotal: decimal("line_total", { precision: 10, scale: 2 }).notNull(),
     notes: text("notes"),
     status: orderItemStatusEnum("status").notNull().default("pending"),
+    sentToKitchenAt: timestamp("sent_to_kitchen_at", { withTimezone: true }),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    readyAt: timestamp("ready_at", { withTimezone: true }),
+    servedAt: timestamp("served_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   (table) => ({
     orderIdIdx: index("order_items_order_id_idx").on(table.orderId),
+    statusIdx: index("order_items_status_idx").on(table.status),
+    /** Kitchen timestamps must be ordered: sentToKitchenAt <= startedAt <= readyAt <= servedAt. */
+    kitchenTimestampsOrder: check(
+      "order_items_kitchen_timestamps_order",
+      sql`(
+        (sent_to_kitchen_at IS NULL OR started_at IS NULL OR sent_to_kitchen_at <= started_at)
+        AND (started_at IS NULL OR ready_at IS NULL OR started_at <= ready_at)
+        AND (ready_at IS NULL OR served_at IS NULL OR ready_at <= served_at)
+      )`
+    ),
   }),
 );
 
@@ -335,9 +560,10 @@ export const payments = pgTable(
   "payments",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    orderId: uuid("order_id")
-      .notNull()
-      .references(() => orders.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id").references(() => sessions.id, {
+      onDelete: "cascade",
+    }),
+    orderId: uuid("order_id").references(() => orders.id, { onDelete: "cascade" }), // legacy / optional
     amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
     tipAmount: decimal("tip_amount", { precision: 10, scale: 2 })
       .notNull()
@@ -356,6 +582,7 @@ export const payments = pgTable(
       .defaultNow(),
   },
   (table) => ({
+    sessionIdIdx: index("payments_session_id_idx").on(table.sessionId),
     orderIdIdx: index("payments_order_id_idx").on(table.orderId),
     statusIdx: index("payments_status_idx").on(table.status),
   }),
@@ -406,7 +633,46 @@ export const tablesRelations = relations(tables, ({ one, many }) => ({
     references: [merchantLocations.id],
   }),
   reservations: many(reservations),
+  sessions: many(sessions),
   orders: many(orders),
+}));
+
+export const sessionsRelations = relations(sessions, ({ one, many }) => ({
+  location: one(merchantLocations, {
+    fields: [sessions.locationId],
+    references: [merchantLocations.id],
+  }),
+  table: one(tables, {
+    fields: [sessions.tableId],
+    references: [tables.id],
+  }),
+  server: one(staff, {
+    fields: [sessions.serverId],
+    references: [staff.id],
+  }),
+  reservation: one(reservations, {
+    fields: [sessions.reservationId],
+    references: [reservations.id],
+  }),
+  orders: many(orders),
+  payments: many(payments),
+  events: many(sessionEvents),
+  seats: many(seats),
+}));
+
+export const seatsRelations = relations(seats, ({ one, many }) => ({
+  session: one(sessions, {
+    fields: [seats.sessionId],
+    references: [sessions.id],
+  }),
+  orderItems: many(orderItems),
+}));
+
+export const sessionEventsRelations = relations(sessionEvents, ({ one }) => ({
+  session: one(sessions, {
+    fields: [sessionEvents.sessionId],
+    references: [sessions.id],
+  }),
 }));
 
 export const customersRelations = relations(customers, ({ one, many }) => ({
@@ -437,11 +703,19 @@ export const reservationsRelations = relations(
       fields: [reservations.tableId],
       references: [tables.id],
     }),
+    session: one(sessions, {
+      fields: [reservations.sessionId],
+      references: [sessions.id],
+    }),
     orders: many(orders),
   }),
 );
 
 export const ordersRelations = relations(orders, ({ one, many }) => ({
+  session: one(sessions, {
+    fields: [orders.sessionId],
+    references: [sessions.id],
+  }),
   location: one(merchantLocations, {
     fields: [orders.locationId],
     references: [merchantLocations.id],
@@ -475,6 +749,10 @@ export const orderItemsRelations = relations(orderItems, ({ one, many }) => ({
   order: one(orders, {
     fields: [orderItems.orderId],
     references: [orders.id],
+  }),
+  seat: one(seats, {
+    fields: [orderItems.seatId],
+    references: [seats.id],
   }),
   item: one(items, {
     fields: [orderItems.itemId],
@@ -517,6 +795,10 @@ export const orderTimelineRelations = relations(orderTimeline, ({ one }) => ({
 }));
 
 export const paymentsRelations = relations(payments, ({ one }) => ({
+  session: one(sessions, {
+    fields: [payments.sessionId],
+    references: [sessions.id],
+  }),
   order: one(orders, {
     fields: [payments.orderId],
     references: [orders.id],
@@ -527,6 +809,13 @@ export const orderDeliveryRelations = relations(orderDelivery, ({ one }) => ({
   order: one(orders, {
     fields: [orderDelivery.orderId],
     references: [orders.id],
+  }),
+}));
+
+export const waitlistRelations = relations(waitlist, ({ one }) => ({
+  location: one(merchantLocations, {
+    fields: [waitlist.locationId],
+    references: [merchantLocations.id],
   }),
 }));
 
@@ -542,6 +831,15 @@ export type NewCustomer = typeof customers.$inferInsert;
 
 export type Reservation = typeof reservations.$inferSelect;
 export type NewReservation = typeof reservations.$inferInsert;
+
+export type Session = typeof sessions.$inferSelect;
+export type NewSession = typeof sessions.$inferInsert;
+
+export type Seat = typeof seats.$inferSelect;
+export type NewSeat = typeof seats.$inferInsert;
+
+export type SessionEvent = typeof sessionEvents.$inferSelect;
+export type NewSessionEvent = typeof sessionEvents.$inferInsert;
 
 export type Order = typeof orders.$inferSelect;
 export type NewOrder = typeof orders.$inferInsert;
@@ -562,3 +860,6 @@ export type NewPayment = typeof payments.$inferInsert;
 
 export type OrderDelivery = typeof orderDelivery.$inferSelect;
 export type NewOrderDelivery = typeof orderDelivery.$inferInsert;
+
+export type Waitlist = typeof waitlist.$inferSelect;
+export type NewWaitlist = typeof waitlist.$inferInsert;

@@ -58,7 +58,9 @@ import { Progress } from "@/components/ui/progress"
 import { AlertBanner } from "@/components/ui/alert-banner"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { mockReservations, mockTables, mockStaffWorkload, mockWaitlist } from "@/lib/mockData"
+import { mockStaffWorkload } from "@/lib/mockData"
+import { useRestaurantStore } from "@/store/restaurantStore"
+import { SECTION_CONFIG } from "@/store/types"
 import { STATUS_COLORS } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from "recharts"
@@ -70,6 +72,10 @@ import ConnectedRecords from "@/components/connected/ConnectedRecords"
 type ViewMode = "list" | "timeline" | "calendar"
 
 export default function ReservationsPage() {
+  const reservations = useRestaurantStore((s) => s.reservations)
+  const tables = useRestaurantStore((s) => s.tables)
+  const waitlist = useRestaurantStore((s) => s.waitlist)
+
   const [viewMode, setViewMode] = useState<ViewMode>("list")
   const [selectedReservation, setSelectedReservation] = useState<string | null>(null)
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
@@ -166,7 +172,7 @@ export default function ReservationsPage() {
     ],
   }
 
-  const reservation = mockReservations.find((r) => r.id === selectedReservation)
+  const reservation = reservations.find((r) => r.id === selectedReservation)
 
   const hasActiveFilters =
     statusFilter !== "all" ||
@@ -187,7 +193,7 @@ export default function ReservationsPage() {
     setSearchQuery("")
   }
 
-  const filteredReservations = mockReservations.filter((res) => {
+  const filteredReservations = reservations.filter((res) => {
     // Status filter
     if (statusFilter !== "all" && res.status !== statusFilter) return false
 
@@ -242,11 +248,11 @@ export default function ReservationsPage() {
 
   // Calculate stats
   const stats = {
-    upcoming: mockReservations.filter((r) => r.status === "reserved" || r.status === "confirmed").length,
-    seated: mockReservations.filter((r) => r.status === "seated").length,
-    completed: mockReservations.filter((r) => r.status === "completed").length,
-    noShow: mockReservations.filter((r) => r.status === "noShow").length,
-    cancelled: mockReservations.filter((r) => r.status === "cancelled").length,
+    upcoming: reservations.filter((r) => r.status === "reserved" || r.status === "confirmed").length,
+    seated: reservations.filter((r) => r.status === "seated").length,
+    completed: reservations.filter((r) => r.status === "completed").length,
+    noShow: reservations.filter((r) => r.status === "noShow").length,
+    cancelled: reservations.filter((r) => r.status === "cancelled").length,
   }
 
   const getLoadPercentage = (load: string) => {
@@ -449,7 +455,7 @@ export default function ReservationsPage() {
           <CardTitle className="text-base">Waitlist</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {mockWaitlist.map((item) => (
+          {waitlist.map((item) => (
             <div key={item.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/50">
               <div>
                 <p className="text-sm font-medium">{item.guestName}</p>
@@ -1060,7 +1066,7 @@ export default function ReservationsPage() {
                       </div>
 
                       {/* Table rows */}
-                      {mockTables.slice(0, 10).map((table) => {
+                      {tables.slice(0, 10).map((table) => {
                         const tableReservations = filteredReservations.filter((r) => r.tableId === table.id)
                         return (
                           <div key={table.id} className="flex border-b relative h-16">
@@ -1636,7 +1642,7 @@ export default function ReservationsPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="auto">Auto-assign</SelectItem>
-                    {mockTables.slice(0, 10).map((table) => (
+                    {tables.slice(0, 10).map((table) => (
                       <SelectItem key={table.id} value={table.id}>
                         Table {table.number} ({table.capacity} seats)
                       </SelectItem>

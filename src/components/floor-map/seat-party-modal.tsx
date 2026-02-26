@@ -27,9 +27,8 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import type { FloorTable, SectionId, DietaryId, OccasionId, SeatPartyForm } from "@/lib/floor-map-data"
 import {
-  tables as allTables,
   currentServer,
-  sectionConfig,
+  defaultSectionConfig,
   dietaryOptions,
   occasionOptions,
   quickNoteSuggestions,
@@ -43,7 +42,9 @@ type Step = "size" | "table" | "review"
 type ModalState = "form" | "seating" | "success"
 
 interface SeatPartyModalProps {
+  sectionConfig?: Record<string, { name: string }>
   open: boolean
+  tables: FloorTable[]
   preSelectedTableId?: string | null
   onClose: () => void
   onSeated: (formData: SeatPartyForm) => void
@@ -70,7 +71,7 @@ const occasionIcons: Record<OccasionId, typeof Cake> = {
 
 // ── Main Component ───────────────────────────────────────────────────────────
 
-export function SeatPartyModal({ open, preSelectedTableId, onClose, onSeated }: SeatPartyModalProps) {
+export function SeatPartyModal({ sectionConfig = defaultSectionConfig, open, tables, preSelectedTableId, onClose, onSeated }: SeatPartyModalProps) {
   const isMobile = useIsMobile()
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -96,7 +97,7 @@ export function SeatPartyModal({ open, preSelectedTableId, onClose, onSeated }: 
   useEffect(() => {
     if (open) {
       const preTable = preSelectedTableId
-        ? allTables.find((t) => t.id === preSelectedTableId)
+        ? tables.find((t) => t.id === preSelectedTableId)
         : null
 
       setForm({
@@ -117,12 +118,12 @@ export function SeatPartyModal({ open, preSelectedTableId, onClose, onSeated }: 
       setTableFilter(null)
       setCustomSize("")
     }
-  }, [open, preSelectedTableId])
+  }, [open, preSelectedTableId, tables])
 
   // ── Available Tables ────────────────────────────────────────────────────────
   const available = useMemo(
-    () => getAvailableTables(allTables, form.partySize, currentServer),
-    [form.partySize]
+    () => getAvailableTables(tables, form.partySize, currentServer),
+    [tables, form.partySize]
   )
 
   const filteredAvailable = useMemo(
@@ -131,8 +132,8 @@ export function SeatPartyModal({ open, preSelectedTableId, onClose, onSeated }: 
   )
 
   const selectedTable = useMemo(
-    () => (form.tableId ? allTables.find((t) => t.id === form.tableId) ?? null : null),
-    [form.tableId]
+    () => (form.tableId ? tables.find((t) => t.id === form.tableId) ?? null : null),
+    [tables, form.tableId]
   )
 
   // ── Handlers ────────────────────────────────────────────────────────────────
@@ -306,7 +307,7 @@ export function SeatPartyModal({ open, preSelectedTableId, onClose, onSeated }: 
               Party seated at T{selectedTable?.number}!
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              {form.partySize} guests &middot; {selectedTable ? sectionConfig[selectedTable.section].name : ""}
+              {form.partySize} guests &middot; {selectedTable ? (sectionConfig[selectedTable.section]?.name ?? selectedTable.section) : ""}
             </p>
           </div>
           <div className="flex flex-col gap-2.5 w-full max-w-xs mt-2">
@@ -394,6 +395,7 @@ export function SeatPartyModal({ open, preSelectedTableId, onClose, onSeated }: 
         )}
         {step === "table" && (
           <StepTableSelection
+            sectionConfig={sectionConfig}
             available={filteredAvailable}
             selectedTableId={form.tableId}
             partySize={form.partySize}
@@ -404,6 +406,7 @@ export function SeatPartyModal({ open, preSelectedTableId, onClose, onSeated }: 
         )}
         {step === "review" && (
           <StepReview
+            sectionConfig={sectionConfig}
             form={form}
             selectedTable={selectedTable}
             showDietary={showDietary}
@@ -643,6 +646,7 @@ function StepPartySize({
 // ── Step 2: Table Selection ──────────────────────────────────────────────────
 
 function StepTableSelection({
+  sectionConfig,
   available,
   selectedTableId,
   partySize,
@@ -650,6 +654,7 @@ function StepTableSelection({
   onSelectTable,
   onSectionFilter,
 }: {
+  sectionConfig: Record<string, { name: string }>
   available: (FloorTable & { suggested: boolean; reason: string })[]
   selectedTableId: string | null
   partySize: number
@@ -692,7 +697,7 @@ function StepTableSelection({
                 : "bg-white/[0.04] text-muted-foreground/70 border border-transparent hover:bg-white/[0.06]"
             )}
           >
-            {s ? sectionConfig[s].name : "All"}
+            {s ? (sectionConfig[s]?.name ?? s) : "All"}
           </button>
         ))}
       </div>
@@ -717,6 +722,7 @@ function StepTableSelection({
                 {suggested.map((t) => (
                   <TablePickCard
                     key={t.id}
+                    sectionConfig={sectionConfig}
                     table={t}
                     selected={selectedTableId === t.id}
                     suggested
@@ -737,6 +743,7 @@ function StepTableSelection({
                 {others.map((t) => (
                   <TablePickCard
                     key={t.id}
+                    sectionConfig={sectionConfig}
                     table={t}
                     selected={selectedTableId === t.id}
                     suggested={false}
@@ -755,11 +762,13 @@ function StepTableSelection({
 // ── Table Pick Card ──────────────────────────────────────────────────────────
 
 function TablePickCard({
+  sectionConfig,
   table,
   selected,
   suggested,
   onSelect,
 }: {
+  sectionConfig: Record<string, { name: string }>
   table: FloorTable & { reason: string }
   selected: boolean
   suggested: boolean
@@ -779,7 +788,7 @@ function TablePickCard({
             : "border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06]",
         "active:scale-95"
       )}
-      aria-label={`Table ${table.number}, ${table.capacity}-top, ${sectionConfig[table.section].name}`}
+      aria-label={`Table ${table.number}, ${table.capacity}-top, ${sectionConfig[table.section]?.name ?? table.section}`}
       aria-pressed={selected}
     >
       {selected && (
@@ -803,7 +812,7 @@ function TablePickCard({
         <span className="font-mono text-[10px] text-emerald-400/80">Free</span>
       </span>
       <span className="mt-1.5 text-[11px] text-muted-foreground/60">{table.capacity}-top</span>
-      <span className="text-[10px] text-muted-foreground/40">{sectionConfig[table.section].name}</span>
+      <span className="text-[10px] text-muted-foreground/40">{sectionConfig[table.section]?.name ?? table.section}</span>
       {table.section === currentServer.section && (
         <span className="mt-1 font-mono text-[9px] font-semibold text-primary/50 tracking-wider">YOUR SECTION</span>
       )}
@@ -814,6 +823,7 @@ function TablePickCard({
 // ── Step 3: Review ───────────────────────────────────────────────────────────
 
 function StepReview({
+  sectionConfig,
   form,
   selectedTable,
   showDietary,
@@ -829,6 +839,7 @@ function StepReview({
   onOccasionNotesChange,
   onEditStep,
 }: {
+  sectionConfig: Record<string, { name: string }>
   form: SeatPartyForm
   selectedTable: FloorTable | null
   showDietary: boolean
@@ -876,7 +887,7 @@ function StepReview({
                 Table {selectedTable?.number}
               </span>
               <span className="text-xs text-muted-foreground/50 ml-2">
-                {selectedTable ? `${selectedTable.capacity}-top, ${sectionConfig[selectedTable.section].name}` : ""}
+                {selectedTable ? `${selectedTable.capacity}-top, ${sectionConfig[selectedTable.section]?.name ?? selectedTable.section}` : ""}
               </span>
             </div>
           </div>

@@ -1,5 +1,7 @@
 // ── Types ────────────────────────────────────────────────────────────────────
 
+import type { StoreTable } from "@/store/types"
+
 export type ItemStatus = "held" | "sent" | "cooking" | "ready" | "served" | "void"
 export type WaveType = "drinks" | "food" | "dessert"
 export type WaveStatus = "held" | "fired" | "preparing" | "ready" | "served"
@@ -32,6 +34,8 @@ export interface Seat {
   dietary: string[]
   notes: string[]
   items: OrderItem[]
+  /** From DB seats table when loading from session */
+  guestName?: string | null
 }
 
 export interface Wave {
@@ -138,6 +142,89 @@ export const waveIcons: Record<WaveType, string> = {
   drinks: "\u{1F377}",
   food: "\u{1F37D}\uFE0F",
   dessert: "\u{1F370}",
+}
+
+// ── Build TableDetail from store (single source of truth for table identity) ──
+
+const SECTION_LABELS: Record<string, string> = {
+  main: "Main Dining",
+  patio: "Patio",
+  bar: "Bar Area",
+  private: "Private Room",
+}
+
+function mapStoreStatusToTableStatus(s: StoreTable["status"]): TableStatus {
+  switch (s) {
+    case "free":
+    case "reserved":
+    case "cleaning":
+      return "available"
+    case "active":
+    case "urgent":
+      return "seated"
+    case "billing":
+      return "bill_requested"
+    case "closed":
+      return "served"
+    default:
+      return "available"
+  }
+}
+
+function mapStoreShapeToTableShape(s: StoreTable["shape"]): TableDetail["shape"] {
+  if (s === "rectangle" || s === "booth") return "rectangular"
+  if (s === "round") return "round"
+  return "square"
+}
+
+function cloneOrderItems(items: NonNullable<StoreTable["session"]>["tableItems"]): OrderItem[] {
+  return items.map((item) => ({
+    ...item,
+    mods: item.mods ? [...item.mods] : undefined,
+  }))
+}
+
+function cloneSeats(seats: NonNullable<StoreTable["session"]>["seats"]): Seat[] {
+  return seats.map((seat) => ({
+    number: seat.number,
+    dietary: [...seat.dietary],
+    notes: [...seat.notes],
+    items: cloneOrderItems(seat.items),
+    ...(seat.guestName != null && { guestName: seat.guestName }),
+  }))
+}
+
+/** Build TableDetail from StoreTable so table detail page uses central store data. Seats array length = store capacity (empty order seats). No mock merge. */
+export function buildTableDetailFromStore(st: StoreTable): TableDetail {
+  const session = st.session ?? null
+  const capacity = Math.max(1, st.capacity)
+  const fallbackSeats: Seat[] = Array.from({ length: capacity }, (_, i) => ({
+    number: i + 1,
+    dietary: [],
+    notes: [],
+    items: [],
+  }))
+  const seats = session?.seats?.length ? cloneSeats(session.seats) : fallbackSeats
+  return {
+    id: st.id,
+    number: st.number,
+    shape: mapStoreShapeToTableShape(st.shape),
+    section: SECTION_LABELS[st.section] ?? st.section,
+    server:
+      st.serverId && st.serverName
+        ? { id: st.serverId, name: st.serverName, avatar: "👤" }
+        : null,
+    seatedAt: st.seatedAt ?? "",
+    lastCheckIn: session?.lastCheckIn ?? st.seatedAt ?? "",
+    guestCount: session?.guestCount ?? st.guests ?? 0,
+    status: session?.status ?? mapStoreStatusToTableStatus(st.status),
+    pacing: session?.pacing ?? "quick",
+    returningGuest: null,
+    notes: session?.notes?.map((note) => ({ ...note })) ?? [],
+    seats,
+    waves: [],
+    bill: session?.bill ? { ...session.bill } : { subtotal: 0, tax: 0, total: 0 },
+  }
 }
 
 // ── Mock Data ────────────────────────────────────────────────────────────────

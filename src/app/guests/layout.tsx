@@ -8,9 +8,9 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-inter-ops" })
 
 export default function GuestsLayout({ children }: { children: ReactNode }) {
   return (
-    <div className={`ops-tables-root dark min-h-dvh bg-zinc-950 text-zinc-100 font-sans antialiased ${inter.variable}`}>
+    <div className={`ops-tables-root dark h-dvh bg-zinc-950 text-zinc-100 font-sans antialiased ${inter.variable}`}>
       <OpsTablesAttr fontVariableClass={inter.variable} />
-      <div className="h-dvh min-h-0 overflow-hidden pb-[calc(4.5rem+env(safe-area-inset-bottom))]">
+      <div className="ops-bottom-nav-content">
         {children}
       </div>
       <OpsBottomNav />

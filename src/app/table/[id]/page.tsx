@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useCallback, use, useMemo, useEffect, useRef } from "react"
+import { useRouter } from "next/navigation"
 import { AlertTriangle, Trash2, Users } from "lucide-react"
 import { TopBar } from "@/components/table-detail/top-bar"
 import { TableVisual } from "@/components/table-detail/table-visual"
@@ -32,7 +33,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { getTableById, getReadyItems } from "@/lib/table-data"
+import { getTableById, getReadyItems, buildTableDetailFromStore } from "@/lib/table-data"
 import type {
   TableDetail,
   ItemStatus,
@@ -46,6 +47,29 @@ import {
   takeOrderData,
 } from "@/lib/take-order-data"
 import type { MenuItem, OrderItem as TakeOrderItem } from "@/lib/take-order-data"
+import { useLocationMenu } from "@/lib/hooks/useLocationMenu"
+import { useRestaurantStore } from "@/store/restaurantStore"
+import { useLocation } from "@/lib/contexts/LocationContext"
+import {
+  advanceOrderWaveStatus,
+  getOrderForTable,
+  getSeatsForSession,
+  syncOrderToDb,
+  closeOrderForTable,
+  ensureSessionForTable,
+  type OrderForTableItem,
+  type OrderForTableResult,
+} from "@/app/actions/orders"
+import { updateTable } from "@/app/actions/tables"
+import { recordSessionEvent, recordSessionEventByTable } from "@/app/actions/session-events"
+import type {
+  StoreAlertType,
+  StoreMealStage,
+  StoreTable,
+  StoreTableSessionState,
+  StoreTableStatus,
+} from "@/store/types"
+import { storeTablesToFloorTables } from "@/lib/floor-map-data"
 
 function getAutoSelectedOptions(item: MenuItem): Record<string, string> {
   const options: Record<string, string> = {}
@@ -201,9 +225,253 @@ function buildMealProgressState(
   return { waves, waveItemsById, waveLabelsById, nextFireableWaveNumber }
 }
 
+function cloneTableItems(items: StoreTableSessionState["tableItems"] | undefined): TableOrderItem[] {
+  if (!items) return []
+  return items.map((item) => ({
+    ...item,
+    mods: item.mods ? [...item.mods] : undefined,
+  }))
+}
+
+function mapTableStatusToStoreStatus(
+  status: TableDetail["status"],
+  currentStatus?: StoreTableStatus
+): StoreTableStatus {
+  switch (status) {
+    case "available":
+      return "free"
+    case "bill_requested":
+      return "billing"
+    case "served":
+      return "closed"
+    case "food_ready":
+    case "needs_attention":
+      return "urgent"
+    case "seated":
+    case "ordering":
+    case "in_kitchen":
+      if (currentStatus === "urgent") return "urgent"
+      return "active"
+    default:
+      return currentStatus ?? "active"
+  }
+}
+
+function getAllActiveItems(table: TableDetail, tableItems: TableOrderItem[]): TableOrderItem[] {
+  return [
+    ...table.seats.flatMap((seat) => seat.items),
+    ...tableItems,
+  ].filter((item) => item.status !== "void")
+}
+
+function deriveStoreStage(
+  table: TableDetail,
+  tableItems: TableOrderItem[],
+  fallbackStage: StoreMealStage | null = null
+): StoreMealStage | null {
+  if (table.status === "available" || table.guestCount <= 0) return null
+  if (table.status === "bill_requested") return "bill"
+
+  const activeItems = getAllActiveItems(table, tableItems)
+  if (activeItems.length === 0) return fallbackStage ?? "drinks"
+  if (activeItems.some((item) => item.wave === "dessert" && item.status !== "held")) return "dessert"
+  return "food"
+}
+
+function deriveStoreAlerts(table: TableDetail, tableItems: TableOrderItem[]): StoreAlertType[] | undefined {
+  const alerts = new Set<StoreAlertType>()
+  if (getAllActiveItems(table, tableItems).some((item) => item.status === "ready")) {
+    alerts.add("food_ready")
+  }
+  if (table.status === "needs_attention") {
+    alerts.add("no_checkin")
+  }
+  return alerts.size > 0 ? Array.from(alerts) : undefined
+}
+
+function buildStoreSession(
+  table: TableDetail,
+  tableItems: TableOrderItem[],
+  waveCount: number
+): StoreTableSessionState {
+  return {
+    status: table.status,
+    guestCount: table.guestCount,
+    lastCheckIn: table.lastCheckIn,
+    pacing: table.pacing,
+    notes: table.notes.map((note) => ({ ...note })),
+    seats: table.seats.map((seat) => ({
+      number: seat.number,
+      dietary: [...seat.dietary],
+      notes: [...seat.notes],
+      items: cloneTableItems(seat.items),
+      ...(seat.guestName != null && { guestName: seat.guestName }),
+    })),
+    tableItems: cloneTableItems(tableItems),
+    waveCount: Math.max(1, waveCount),
+    bill: { ...table.bill },
+  }
+}
+
+/** Map DB item status to store item status */
+function dbItemStatusToStore(
+  status: OrderForTableItem["status"]
+): TableOrderItem["status"] {
+  switch (status) {
+    case "pending":
+      return "sent"
+    case "preparing":
+      return "cooking"
+    case "ready":
+      return "ready"
+    case "served":
+      return "served"
+    default:
+      return "sent"
+  }
+}
+
+/** Parse "Seat 2 · Wave 1" or "Shared · Wave 2" from notes */
+function parseSeatAndWave(notes: string | null): { seatNumber: number; waveNumber: number } {
+  let seatNumber = 0
+  let waveNumber = 1
+  if (notes) {
+    const parts = notes.split("·").map((p) => p.trim())
+    for (const part of parts) {
+      const seatMatch = part.match(/^Seat\s+(\d+)$/i)
+      if (seatMatch) seatNumber = parseInt(seatMatch[1], 10) || 0
+      const waveMatch = part.match(/^Wave\s+(\d+)$/i)
+      if (waveMatch) waveNumber = parseInt(waveMatch[1], 10) || 1
+    }
+  }
+  return { seatNumber, waveNumber }
+}
+
+/** Wave number to type: 1->drinks, 2->food, 3->dessert, then cycle */
+function waveNumberToType(n: number): "drinks" | "food" | "dessert" {
+  const i = ((n - 1) % 3) + 1
+  return i === 1 ? "drinks" : i === 2 ? "food" : "dessert"
+}
+
+/** Seat from DB (getSeatsForSession) for building table state from database */
+type SeatFromDb = { seatNumber: number; guestName: string | null }
+
+/**
+ * Convert getOrderForTable result into session + per-seat items and shared items for local state.
+ * Uses DB seat number per item when present; optionally uses seatsFromDb for seat list and guest names.
+ */
+function orderForTableToSession(
+  data: NonNullable<OrderForTableResult>,
+  tableId: string,
+  capacity: number,
+  seatsFromDb?: SeatFromDb[]
+): {
+  session: StoreTableSessionState
+  tableItems: TableOrderItem[]
+  seatsByNumber: Map<number, TableOrderItem[]>
+  waveCount: number
+  seats: Array<{ number: number; dietary: string[]; notes: string[]; items: TableOrderItem[]; guestName?: string | null }>
+} {
+  const seatsByNumber = new Map<number, TableOrderItem[]>()
+  const sharedItems: TableOrderItem[] = []
+  let maxWave = 1
+
+  data.items.forEach((row, index) => {
+    const seatNumber =
+      typeof row.seatNumber === "number" && Number.isFinite(row.seatNumber)
+        ? row.seatNumber
+        : parseSeatAndWave(row.notes).seatNumber
+    const waveNumber = parseSeatAndWave(row.notes).waveNumber
+    maxWave = Math.max(maxWave, waveNumber)
+    const item: TableOrderItem = {
+      id: `db-${tableId}-${index}`,
+      name: row.name,
+      price: row.price,
+      status: dbItemStatusToStore(row.status),
+      wave: waveNumberToType(waveNumber),
+      waveNumber,
+      mods: row.notes ? [`Wave ${waveNumber}`] : undefined,
+    }
+    if (seatNumber > 0) {
+      const list = seatsByNumber.get(seatNumber) ?? []
+      list.push(item)
+      seatsByNumber.set(seatNumber, list)
+    } else {
+      sharedItems.push(item)
+    }
+  })
+
+  const waveCount = Math.max(1, maxWave)
+  const seatNumbersFromItems = Array.from(seatsByNumber.keys())
+  const allSeatNumbers = new Set(seatNumbersFromItems)
+  seatsFromDb?.forEach((s) => allSeatNumbers.add(s.seatNumber))
+  const maxSeat = Math.max(capacity, ...Array.from(allSeatNumbers), 1)
+  const seatNumbersSorted =
+    (seatsFromDb?.length ?? 0) > 0
+      ? Array.from(allSeatNumbers).sort((a, b) => a - b)
+      : Array.from({ length: maxSeat }, (_, i) => i + 1)
+
+  const seats = seatNumbersSorted.map((seatNum) => {
+    const fromDb = seatsFromDb?.find((s) => s.seatNumber === seatNum)
+    return {
+      number: seatNum,
+      dietary: [] as string[],
+      notes: [] as string[],
+      items: cloneTableItems(seatsByNumber.get(seatNum) ?? []),
+      ...(fromDb && { guestName: fromDb.guestName }),
+    }
+  })
+
+  const session: StoreTableSessionState = {
+    status: "ordering",
+    guestCount: data.guestCount,
+    notes: [],
+    seats,
+    tableItems: cloneTableItems(sharedItems),
+    waveCount,
+    bill: { subtotal: 0, tax: 0, total: 0 },
+  }
+
+  return {
+    session,
+    tableItems: sharedItems,
+    seatsByNumber,
+    waveCount,
+    seats,
+  }
+}
+
 export default function TableDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
-  const [table, setTable] = useState<TableDetail>(() => getTableById(id))
+  const router = useRouter()
+  const { currentLocationId } = useLocation()
+  const { menuItems: locationMenuItems, categories: locationCategories, loading: menuLoading } = useLocationMenu(currentLocationId)
+  const storeTables = useRestaurantStore((s) => s.tables)
+  const updateStoreTable = useRestaurantStore((s) => s.updateTable)
+  const openOrderForTable = useRestaurantStore((s) => s.openOrderForTable)
+  const syncOrderSession = useRestaurantStore((s) => s.syncOrderSession)
+  const closeOrder = useRestaurantStore((s) => s.closeOrder)
+  const activeStoreTable = useMemo<StoreTable | undefined>(
+    () => storeTables.find((t) => t.id === id || t.id === id.toLowerCase()),
+    [id, storeTables]
+  )
+  const persistedSession = activeStoreTable?.session ?? null
+  const floorTablesForModal = useMemo(
+    () => storeTablesToFloorTables(storeTables),
+    [storeTables]
+  )
+  const tableFromStore = useMemo(() => {
+    if (activeStoreTable) return buildTableDetailFromStore(activeStoreTable)
+    return getTableById(id)
+  }, [activeStoreTable, id])
+  const [table, setTable] = useState<TableDetail>(tableFromStore)
+  const prevTableIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (prevTableIdRef.current !== id) {
+      prevTableIdRef.current = id
+      setTable(tableFromStore)
+    }
+  }, [id, tableFromStore])
   const [selectedSeat, setSelectedSeat] = useState<number | null>(null)
   const [infoOpen, setInfoOpen] = useState(false)
   const [alertDismissed, setAlertDismissed] = useState(false)
@@ -216,9 +484,13 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   const [customizeDefaults, setCustomizeDefaults] = useState<{ seat: number; wave: number } | null>(null)
   const [editingOrderItemId, setEditingOrderItemId] = useState<string | null>(null)
   const [orderItems, setOrderItems] = useState<TakeOrderItem[]>([])
-  const [tableItems, setTableItems] = useState<TableOrderItem[]>([])
+  const [tableItems, setTableItems] = useState<TableOrderItem[]>(() =>
+    cloneTableItems(persistedSession?.tableItems)
+  )
   const [selectedWaveNumber, setSelectedWaveNumber] = useState(1)
-  const [waveCount, setWaveCount] = useState(() => Math.max(1, getTableById(id).waves.length))
+  const [waveCount, setWaveCount] = useState(() =>
+    Math.max(1, persistedSession?.waveCount ?? tableFromStore.waves.length)
+  )
   const [summaryScope, setSummaryScope] = useState<"seat" | "all">("all")
   const [warningDialog, setWarningDialog] = useState<{
     open: boolean
@@ -250,6 +522,183 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     [table, tableItems, waveCount]
   )
   const hasMealProgress = mealProgress.waves.length > 0
+
+  useEffect(() => {
+    if (persistedSession) {
+      setTableItems(cloneTableItems(persistedSession.tableItems))
+      const persistedWaveCount = Math.max(1, persistedSession.waveCount || 1)
+      setWaveCount(persistedWaveCount)
+      setSelectedWaveNumber((prev) => Math.min(Math.max(1, prev), persistedWaveCount))
+      return
+    }
+
+    setTableItems([])
+    const defaultWaveCount = Math.max(1, tableFromStore.waves.length)
+    setWaveCount(defaultWaveCount)
+    setSelectedWaveNumber((prev) => Math.min(Math.max(1, prev), defaultWaveCount))
+  }, [id, persistedSession, tableFromStore.waves.length])
+
+  // Hydrate from DB when opening table (e.g. after refresh) if store has no session data
+  const hasSessionData =
+    persistedSession &&
+    (persistedSession.tableItems.length > 0 ||
+      persistedSession.seats.some((s) => s.items.length > 0))
+  useEffect(() => {
+    if (!currentLocationId || !id || !activeStoreTable) return
+    if (hasSessionData) return
+
+    let cancelled = false
+    getOrderForTable(currentLocationId, id).then(async (data) => {
+      if (cancelled || !data) return
+      if (data.guestCount <= 0 && data.items.length === 0) return
+
+      const capacity = Math.max(1, activeStoreTable.capacity ?? tableFromStore.seats.length)
+      const seatsFromDb =
+        data.sessionId != null
+          ? await getSeatsForSession(data.sessionId).catch(() => undefined)
+          : undefined
+      const seatsPayload =
+        seatsFromDb != null
+          ? seatsFromDb.map((s) => ({ seatNumber: s.seatNumber, guestName: s.guestName }))
+          : undefined
+      const { session, tableItems: sharedItems, waveCount: wc, seats } = orderForTableToSession(
+        data,
+        id,
+        capacity,
+        seatsPayload
+      )
+
+      if (cancelled) return
+      openOrderForTable(activeStoreTable.id, data.guestCount)
+      syncOrderSession(activeStoreTable.id, session)
+      updateStoreTable(activeStoreTable.id, {
+        guests: data.guestCount,
+        seatedAt: data.seatedAt ?? undefined,
+      })
+
+      setTable((prev) => ({
+        ...prev,
+        guestCount: data.guestCount,
+        seatedAt: data.seatedAt ?? prev.seatedAt ?? "",
+        status: prev.status === "available" ? "seated" : prev.status,
+        seats,
+      }))
+      setTableItems(sharedItems)
+      setWaveCount(wc)
+      setSelectedWaveNumber((prev) => Math.min(Math.max(1, prev), wc))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [currentLocationId, id, activeStoreTable?.id, activeStoreTable?.capacity, hasSessionData, openOrderForTable, syncOrderSession, updateStoreTable, tableFromStore.seats.length])
+
+  const shouldPersistSession = useMemo(
+    () =>
+      table.guestCount > 0 ||
+      tableItems.length > 0 ||
+      table.seats.some((seat) => seat.items.some((item) => item.status !== "void")),
+    [table.guestCount, table.seats, tableItems]
+  )
+  const nextStoreAlerts = useMemo(
+    () => deriveStoreAlerts(table, tableItems),
+    [table, tableItems]
+  )
+  const nextStoreStatus = useMemo(() => {
+    const mapped = mapTableStatusToStoreStatus(table.status, activeStoreTable?.status)
+    if (mapped === "active" && nextStoreAlerts?.includes("food_ready")) return "urgent"
+    return mapped
+  }, [activeStoreTable?.status, nextStoreAlerts, table.status])
+  const nextStoreStage = useMemo(
+    () => deriveStoreStage(table, tableItems, activeStoreTable?.stage ?? null),
+    [activeStoreTable?.stage, table, tableItems]
+  )
+  const nextStoreSession = useMemo(
+    () => (shouldPersistSession ? buildStoreSession(table, tableItems, waveCount) : null),
+    [shouldPersistSession, table, tableItems, waveCount]
+  )
+
+  useEffect(() => {
+    if (!activeStoreTable) return
+
+    if (nextStoreSession) {
+      syncOrderSession(activeStoreTable.id, nextStoreSession)
+    }
+
+    const nextSeatedAt =
+      table.guestCount > 0
+        ? table.seatedAt || activeStoreTable.seatedAt || new Date().toISOString()
+        : null
+
+    const currentSnapshot = JSON.stringify({
+      status: activeStoreTable.status,
+      guests: activeStoreTable.guests ?? 0,
+      seatedAt: activeStoreTable.seatedAt ?? null,
+      stage: activeStoreTable.stage ?? null,
+      alerts: activeStoreTable.alerts ?? [],
+      session: activeStoreTable.session ?? null,
+    })
+    const nextSnapshot = JSON.stringify({
+      status: nextStoreStatus,
+      guests: table.guestCount,
+      seatedAt: nextSeatedAt,
+      stage: nextStoreStage ?? null,
+      alerts: nextStoreAlerts ?? [],
+      session: nextStoreSession,
+    })
+    if (currentSnapshot === nextSnapshot) return
+
+    updateStoreTable(activeStoreTable.id, {
+      status: nextStoreStatus,
+      guests: table.guestCount,
+      seatedAt: nextSeatedAt,
+      stage: nextStoreStage,
+      alerts: nextStoreAlerts,
+      session: nextStoreSession,
+    })
+
+    if (currentLocationId) {
+      updateTable(currentLocationId, activeStoreTable.id, {
+        status: nextStoreStatus,
+        guests: table.guestCount,
+        seatedAt: nextSeatedAt,
+        stage: nextStoreStage,
+        alerts: nextStoreAlerts,
+      }).catch((err) => console.error("[TableDetail] Failed to persist table:", err))
+
+      if (nextStoreSession) {
+        syncOrderToDb(currentLocationId, activeStoreTable.id, nextStoreSession)
+          .then((r) => {
+            if (r?.ok && r?.sessionId) {
+              recordSessionEvent(currentLocationId, r.sessionId, "order_sent", { wave: 1 }).catch(
+                () => {}
+              )
+            }
+          })
+          .catch((err) =>
+            console.error("[TableDetail] Failed to persist order items:", err)
+          )
+      }
+    }
+  }, [
+    activeStoreTable,
+    currentLocationId,
+    nextStoreAlerts,
+    nextStoreSession,
+    nextStoreStage,
+    nextStoreStatus,
+    syncOrderSession,
+    table.guestCount,
+    table.seatedAt,
+    updateStoreTable,
+  ])
+
+  // Use real menu from location when available; otherwise placeholder for demo/no-location
+  const menuSource = useMemo(() => {
+    if (currentLocationId && !menuLoading) {
+      return { menuItems: locationMenuItems, categories: locationCategories }
+    }
+    return { menuItems: takeOrderData.menuItems, categories: takeOrderData.categories }
+  }, [currentLocationId, menuLoading, locationMenuItems, locationCategories])
 
   const orderSeats = useMemo(() => {
     const seats = table.seats.map((seat) => {
@@ -283,7 +732,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   }, [orderItems, table.seats])
 
   const filteredMenuItems = useMemo(() => {
-    let items = takeOrderData.menuItems
+    let items = menuSource.menuItems
 
     if (selectedCategory && !searchQuery.trim()) {
       items = items.filter((item) => item.category === selectedCategory)
@@ -294,12 +743,12 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       items = items.filter(
         (item) =>
           item.name.toLowerCase().includes(query) ||
-          item.description.toLowerCase().includes(query)
+          (item.description ?? "").toLowerCase().includes(query)
       )
     }
 
     return items
-  }, [selectedCategory, searchQuery])
+  }, [menuSource.menuItems, selectedCategory, searchQuery])
   const matchedCategoryIds = useMemo(
     () => Array.from(new Set(filteredMenuItems.map((item) => item.category))),
     [filteredMenuItems]
@@ -585,8 +1034,24 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         })),
       }))
       setTableItems((prev) => prev.map(advanceItem))
+
+      const dbStatus: "preparing" | "ready" | "served" =
+        nextStatus === "cooking" ? "preparing" : nextStatus === "ready" ? "ready" : "served"
+      if (currentLocationId && activeStoreTable?.id) {
+        advanceOrderWaveStatus(currentLocationId, activeStoreTable.id, waveNumber, dbStatus).catch(
+          () => {}
+        )
+        if (nextStatus === "ready" || nextStatus === "served") {
+          recordSessionEventByTable(
+            currentLocationId,
+            activeStoreTable.id,
+            nextStatus === "ready" ? "item_ready" : "served",
+            { waveNumber }
+          ).catch(() => {})
+        }
+      }
     },
-    []
+    [currentLocationId, activeStoreTable?.id]
   )
 
   const handleMarkWaveServed = useCallback((waveId: string) => {
@@ -661,7 +1126,9 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       .filter((wave): wave is number => Number.isFinite(wave) && wave > 0)
 
     const allHeldWaveNumbers = [...existingHeldWaveNumbers, ...draftHeldWaveNumbers]
-    const waveToSend = allHeldWaveNumbers.length > 0 ? Math.min(...allHeldWaveNumbers) : null
+    const lowestHeld = allHeldWaveNumbers.length > 0 ? Math.min(...allHeldWaveNumbers) : null
+    // Only auto-fire the first wave; waves 2+ stay held until user explicitly fires them
+    const waveToSend = lowestHeld === 1 ? 1 : null
 
     const draftSeatItems: Array<{ seat: number; item: TableOrderItem }> = []
     const draftSharedItems: TableOrderItem[] = []
@@ -740,7 +1207,47 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     handleExitOrderingView()
   }, [handleExitOrderingView, nextSendableWaveNumber, orderItems, table.seats, tableItems])
 
-  const handlePaymentComplete = useCallback(() => {
+  const handleCloseTable = useCallback(() => {
+    if (currentLocationId && activeStoreTable?.id) {
+      recordSessionEventByTable(currentLocationId, activeStoreTable.id, "payment_completed").catch(
+        () => {}
+      )
+    }
+    if (activeStoreTable?.orderId) {
+      closeOrder(activeStoreTable.orderId, table.bill)
+    }
+    if (activeStoreTable) {
+      updateStoreTable(activeStoreTable.id, {
+        status: "free",
+        guests: 0,
+        seatedAt: null,
+        stage: null,
+        session: null,
+      })
+      if (currentLocationId) {
+        updateTable(currentLocationId, activeStoreTable.id, {
+          status: "free",
+          guests: 0,
+          seatedAt: null,
+          stage: null,
+        }).catch((err) => console.error("[TableDetail] Failed to persist close table:", err))
+        closeOrderForTable(currentLocationId, activeStoreTable.id, {
+          amount: table.bill?.total ?? 0,
+          tipAmount: 0,
+          method: "other",
+        }).catch((err) =>
+          console.error("[TableDetail] Failed to close order in DB:", err)
+        )
+      }
+      // Sync local state from store so meal progress / waves / orders clear immediately
+      const closedTable = useRestaurantStore.getState().tables.find(
+        (t) => t.id === activeStoreTable.id || t.id === activeStoreTable.id.toLowerCase()
+      )
+      if (closedTable) {
+        setTable(buildTableDetailFromStore(closedTable))
+      }
+    }
+
     setTable((prev) => ({
       ...prev,
       status: "available",
@@ -763,10 +1270,13 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     setPaymentOpen(false)
     setInfoOpen(false)
     setAlertDismissed(false)
-  }, [])
+    router.push("/floor-map")
+  }, [activeStoreTable, closeOrder, currentLocationId, table.bill, updateStoreTable, router])
+
+  const handlePaymentComplete = handleCloseTable
 
   const handleAddToOrder = useCallback((customization: ItemCustomization) => {
-    const menuItem = takeOrderData.menuItems.find((m) => m.id === customization.menuItemId)
+    const menuItem = menuSource.menuItems.find((m) => m.id === customization.menuItemId)
     const draftId = editingOrderItemId ?? `to-${Date.now()}`
     const newOrderItem: TakeOrderItem = {
       id: draftId,
@@ -870,14 +1380,23 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     setArmedSeatDelete(null)
     setIsOrderingInline(false)
     setSeatPartyOpen(false)
-  }, [])
+    openOrderForTable(activeStoreTable?.id ?? id, formData.partySize)
+    ensureSessionForTable(currentLocationId ?? "", id, formData.partySize).then((sessionId) => {
+      if (sessionId) {
+        recordSessionEvent(currentLocationId!, sessionId, "guest_seated", {
+          guestCount: formData.partySize,
+        }).catch(() => {})
+      }
+    })
+  }, [currentLocationId, activeStoreTable?.id, id, openOrderForTable])
 
   return (
-    <div className="flex h-full flex-col bg-background pb-14">
+    <div className="flex h-full min-h-0 flex-col bg-background pb-14">
       {/* Top Bar */}
       <TopBar
         table={table}
         onToggleInfo={() => setInfoOpen((v) => !v)}
+        onCloseTable={handleCloseTable}
       />
 
       {/* Food Ready Alert */}
@@ -1098,7 +1617,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                   <div className="flex min-h-0 flex-1">
                     <aside className="hidden w-48 shrink-0 border-r border-border bg-card lg:block">
                       <CategoryNav
-                        categories={takeOrderData.categories}
+                        categories={menuSource.categories}
                         selectedCategory={selectedCategory}
                         selectedCategories={searchQuery.trim() ? matchedCategoryIds : undefined}
                         onSelectCategory={setSelectedCategory}
@@ -1126,7 +1645,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                       )}
                       <div className="lg:hidden">
                         <CategoryNav
-                          categories={takeOrderData.categories}
+                          categories={menuSource.categories}
                           selectedCategory={selectedCategory}
                           selectedCategories={searchQuery.trim() ? matchedCategoryIds : undefined}
                           onSelectCategory={setSelectedCategory}
@@ -1141,7 +1660,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                               item={item}
                               categoryLabel={
                                 searchQuery.trim()
-                                  ? takeOrderData.categories.find((c) => c.id === item.category)?.name ??
+                                  ? menuSource.categories.find((c) => c.id === item.category)?.name ??
                                     item.category
                                   : undefined
                               }
@@ -1216,7 +1735,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                 onEditItem={(itemId) => {
                   const item = orderItems.find((i) => i.id === itemId)
                   if (!item) return
-                  const menuItem = takeOrderData.menuItems.find((m) => m.id === item.menuItemId)
+                  const menuItem = menuSource.menuItems.find((m) => m.id === item.menuItemId)
                   if (menuItem) {
                     setCustomizeDefaults({
                       seat: item.seat,
@@ -1266,7 +1785,12 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         }
         onFireNextWave={handleFireNextWave}
         onSend={handleSendCurrentOrder}
-        onBill={() => setPaymentOpen(true)}
+        onBill={() => {
+          if (currentLocationId) {
+            recordSessionEventByTable(currentLocationId, id, "bill_requested").catch(() => {})
+          }
+          setPaymentOpen(true)
+        }}
         onAddItems={() => {
           if (isOrderingInline) {
             if (orderItems.length > 0) {
@@ -1313,7 +1837,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                 onEditItem={(itemId) => {
                   const item = orderItems.find((i) => i.id === itemId)
                   if (!item) return
-                  const menuItem = takeOrderData.menuItems.find((m) => m.id === item.menuItemId)
+                  const menuItem = menuSource.menuItems.find((m) => m.id === item.menuItemId)
                   if (menuItem) {
                     setCustomizeDefaults({
                       seat: item.seat,
@@ -1413,6 +1937,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       {/* Seat Party Modal */}
       <SeatPartyModal
         open={seatPartyOpen}
+        tables={floorTablesForModal}
         preSelectedTableId={table.id}
         onClose={() => setSeatPartyOpen(false)}
         onSeated={handleSeated}

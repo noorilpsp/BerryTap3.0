@@ -59,137 +59,57 @@ import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts"
 import { useSearchParams } from "next/navigation"
 import { useToast } from "@/components/ui/use-toast"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { useRestaurantStore } from "@/store/restaurantStore"
+import { SECTION_CONFIG } from "@/store/types"
+import type { StoreTable } from "@/store/types"
+import {
+  buildTableLiveMetricsMap,
+  calculateDashboardOrderMetrics,
+  type DashboardOrderMetrics,
+  type TableLiveMetrics,
+} from "@/lib/store/order-analytics"
 
 type ViewMode = "grid" | "list"
 type TableStatus = "all" | "available" | "occupied" | "reserved" | "cleaning"
 
-const mockTables = [
-  {
-    id: "1",
-    number: "1",
-    section: "Main Hall",
-    status: "available",
-    capacity: 4,
-    shape: "square",
-  },
-  {
-    id: "2",
-    number: "2",
-    section: "Main Hall",
-    status: "occupied",
-    capacity: 2,
-    guests: 2,
-    server: "John Smith",
-    duration: 45,
-    orderId: "ORD-1234",
-    shape: "square",
-    seatedAt: "6:15 PM",
-  },
-  {
-    id: "3",
-    number: "3",
-    section: "Main Hall",
-    status: "reserved",
-    capacity: 6,
-    guestName: "Jane Doe",
-    reservationTime: "7:00 PM",
-    timeUntil: "30 min",
-    partySize: 6,
-    shape: "rectangle",
-  },
-  {
-    id: "4",
-    number: "4",
-    section: "Main Hall",
-    status: "available",
-    capacity: 4,
-    shape: "square",
-  },
-  {
-    id: "5",
-    number: "5",
-    section: "Patio",
-    status: "occupied",
-    capacity: 4,
-    guests: 4,
-    server: "Maria Garcia",
-    duration: 20,
-    orderId: "ORD-1235",
-    shape: "square",
-    seatedAt: "6:40 PM",
-  },
-  {
-    id: "6",
-    number: "6",
-    section: "Patio",
-    status: "cleaning",
-    capacity: 2,
-    cleaningStarted: "5 min ago",
-    shape: "square",
-  },
-  {
-    id: "7",
-    number: "7",
-    section: "Patio",
-    status: "available",
-    capacity: 8,
-    shape: "rectangle",
-  },
-  {
-    id: "8",
-    number: "8",
-    section: "Patio",
-    status: "occupied",
-    capacity: 4,
-    guests: 4,
-    server: "David Lee",
-    duration: 70,
-    orderId: "ORD-1236",
-    shape: "square",
-    seatedAt: "5:50 PM",
-  },
-  {
-    id: "9",
-    number: "9",
-    section: "Private",
-    status: "available",
-    capacity: 2,
-    shape: "round",
-  },
-  {
-    id: "10",
-    number: "10",
-    section: "Private",
-    status: "reserved",
-    capacity: 4,
-    guestName: "Robert Johnson",
-    reservationTime: "8:30 PM",
-    timeUntil: "1h 30min",
-    partySize: 4,
-    shape: "square",
-  },
-  {
-    id: "11",
-    number: "11",
-    section: "Private",
-    status: "available",
-    capacity: 6,
-    shape: "rectangle",
-  },
-  {
-    id: "12",
-    number: "12",
-    section: "Private",
-    status: "occupied",
-    capacity: 2,
-    guests: 2,
-    server: "Sarah Williams",
-    duration: 35,
-    orderId: "ORD-1237",
-    shape: "round",
-    seatedAt: "6:25 PM",
-  },
-]
+function storeTableToDisplay(t: StoreTable) {
+  const seatedAtMillis = t.seatedAt ? new Date(t.seatedAt).getTime() : null
+  const fallbackDuration =
+    seatedAtMillis && Number.isFinite(seatedAtMillis)
+      ? Math.max(0, Math.round((Date.now() - seatedAtMillis) / 60000))
+      : undefined
+  const status =
+    t.status === "free" || t.status === "closed"
+      ? "available"
+      : t.status === "active" || t.status === "urgent" || t.status === "billing"
+        ? "occupied"
+        : t.status
+  return {
+    id: t.id,
+    number: String(t.number),
+    section: SECTION_CONFIG[t.section],
+    status,
+    capacity: t.capacity,
+    guests: t.guests,
+    server: t.serverName ?? undefined,
+    orderId: t.orderId ?? undefined,
+    seatedAt: t.seatedAt ?? undefined,
+    shape: t.shape,
+    duration: fallbackDuration,
+    ticketTotal: 0,
+    waveCount: t.session?.waveCount ?? 0,
+  }
+}
+
+function formatMinutes(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes <= 0) return "0 min"
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60)
+    const mins = minutes % 60
+    return `${hours}h ${mins} min`
+  }
+  return `${minutes} min`
+}
 
 const mockStaffWorkload = [
   { id: "S1", name: "John Smith", load: "high", activeOrders: 5 },
@@ -198,6 +118,31 @@ const mockStaffWorkload = [
 ]
 
 export default function TablesPage() {
+  const storeTables = useRestaurantStore((s) => s.tables)
+  const storeOrders = useRestaurantStore((s) => s.orders)
+  const tableMetricsById = useMemo(
+    () => buildTableLiveMetricsMap(storeTables, storeOrders),
+    [storeOrders, storeTables],
+  )
+  const dashboardMetrics = useMemo(
+    () => calculateDashboardOrderMetrics(storeOrders),
+    [storeOrders],
+  )
+  const tables = useMemo(
+    () =>
+      storeTables.map((table) => {
+        const metrics = tableMetricsById.get(table.id) as TableLiveMetrics | undefined
+        const display = storeTableToDisplay(table)
+        return {
+          ...display,
+          duration: metrics?.durationMinutes ?? display.duration,
+          ticketTotal: metrics?.ticketTotal ?? display.ticketTotal,
+          waveCount: metrics?.waveCount ?? display.waveCount,
+        }
+      }),
+    [storeTables, tableMetricsById],
+  )
+
   const [viewMode, setViewMode] = useState<ViewMode>("grid")
   const [statusFilter, setStatusFilter] = useState<TableStatus>("all")
   const [floorFilter, setFloorFilter] = useState("all")
@@ -220,7 +165,7 @@ export default function TablesPage() {
   }
 
   // Filter tables
-  const filteredTables = mockTables.filter((table) => {
+  const filteredTables = tables.filter((table) => {
     const matchesStatus = statusFilter === "all" || table.status === statusFilter
     const matchesFloor = floorFilter === "all" || table.section === floorFilter
     const matchesSearch =
@@ -231,12 +176,17 @@ export default function TablesPage() {
   })
 
   // Calculate stats
-  const occupiedCount = mockTables.filter((t) => t.status === "occupied").length
-  const reservedCount = mockTables.filter((t) => t.status === "reserved").length
-  const availableCount = mockTables.filter((t) => t.status === "available").length
-  const cleaningCount = mockTables.filter((t) => t.status === "cleaning").length
-  const totalTables = mockTables.length
-  const occupancyPercent = Math.round((occupiedCount / totalTables) * 100)
+  const occupiedCount = tables.filter((t) => t.status === "occupied").length
+  const reservedCount = tables.filter((t) => t.status === "reserved").length
+  const availableCount = tables.filter((t) => t.status === "available").length
+  const cleaningCount = tables.filter((t) => t.status === "cleaning").length
+  const totalTables = tables.length
+  const occupancyPercent = totalTables > 0 ? Math.round((occupiedCount / totalTables) * 100) : 0
+  const turnoversPerTable = totalTables > 0 ? dashboardMetrics.closedOrders / totalTables : 0
+  const sectionOptions = useMemo(
+    () => Array.from(new Set(tables.map((table) => table.section))).sort(),
+    [tables],
+  )
 
   // Chart data
   const chartData = [
@@ -246,7 +196,7 @@ export default function TablesPage() {
     { name: "Cleaning", value: cleaningCount, fill: "#6B7280" },
   ]
 
-  const selectedTableData = mockTables.find((t) => t.id === selectedTable)
+  const selectedTableData = tables.find((t) => t.id === selectedTable)
 
   const searchParams = useSearchParams()
   const sessionId = searchParams.get("sessionId") ?? undefined
@@ -399,7 +349,8 @@ export default function TablesPage() {
 
             <div className="text-sm text-muted-foreground">
               <Clock className="inline h-4 w-4 mr-1" />
-              Average Session Time: <span className="font-medium">42 min</span>
+              Average Session Time:{" "}
+              <span className="font-medium">{formatMinutes(Math.round(dashboardMetrics.avgOpenSessionMinutes))}</span>
             </div>
             {/* Unified compact control bar */}
             <div className="space-y-2 md:space-y-0">
@@ -447,9 +398,11 @@ export default function TablesPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All Floors</SelectItem>
-                      <SelectItem value="Main Hall">Main Hall</SelectItem>
-                      <SelectItem value="Patio">Patio</SelectItem>
-                      <SelectItem value="Private">Private</SelectItem>
+                      {sectionOptions.map((section) => (
+                        <SelectItem key={section} value={section}>
+                          {section}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -475,9 +428,11 @@ export default function TablesPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Floors</SelectItem>
-                    <SelectItem value="Main Hall">Main Hall</SelectItem>
-                    <SelectItem value="Patio">Patio</SelectItem>
-                    <SelectItem value="Private">Private</SelectItem>
+                    {sectionOptions.map((section) => (
+                      <SelectItem key={section} value={section}>
+                        {section}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
 
@@ -547,7 +502,7 @@ export default function TablesPage() {
           {/* Main Content */}
           {viewMode === "grid" ? (
             <div className="space-y-8">
-              {["Main Hall", "Patio", "Private"].map((section) => {
+              {sectionOptions.map((section) => {
                 const sectionTables = filteredTables.filter((t) => t.section === section)
                 if (sectionTables.length === 0) return null
 
@@ -671,15 +626,17 @@ export default function TablesPage() {
                 }
               }}
             >
-              <InsightsContent
-                occupancyPercent={occupancyPercent}
-                occupiedCount={occupiedCount}
-                totalTables={totalTables}
-                chartData={chartData}
-                mockStaffWorkload={mockStaffWorkload}
-              />
-            </SidebarPanel>
-          </aside>
+                <InsightsContent
+                  occupancyPercent={occupancyPercent}
+                  occupiedCount={occupiedCount}
+                  totalTables={totalTables}
+                  chartData={chartData}
+                  mockStaffWorkload={mockStaffWorkload}
+                  dashboardMetrics={dashboardMetrics}
+                  turnoversPerTable={turnoversPerTable}
+                />
+              </SidebarPanel>
+            </aside>
         )}
       </div>
 
@@ -701,6 +658,8 @@ export default function TablesPage() {
                   totalTables={totalTables}
                   chartData={chartData}
                   mockStaffWorkload={mockStaffWorkload}
+                  dashboardMetrics={dashboardMetrics}
+                  turnoversPerTable={turnoversPerTable}
                 />
               </div>
             </div>
@@ -1230,7 +1189,10 @@ function TableTile({ table, onClick }: { table: any; onClick: () => void }) {
     }
   }
 
-  const orderTotal = table.status === "occupied" ? "$67.50" : "$0.00"
+  const orderTotal =
+    table.status === "occupied"
+      ? `$${Number(table.ticketTotal ?? 0).toFixed(2)}`
+      : "$0.00"
   const durationMinutes = typeof table.duration === "number" ? table.duration : null
 
   const formatDuration = (minutes: number) => {
@@ -1505,7 +1467,9 @@ function TableDetails({ table }: { table: any }) {
                   <p className="text-sm text-muted-foreground">
                     {table.guests} Guests • Server: {table.server}
                   </p>
-                  <p className="text-sm text-muted-foreground">Order {table.orderId}</p>
+                  <p className="text-sm text-muted-foreground">
+                    Order {table.orderId} • {table.waveCount ?? 0} waves • ${Number(table.ticketTotal ?? 0).toFixed(2)}
+                  </p>
                 </div>
               </div>
               <div className="flex gap-2">
@@ -1618,6 +1582,12 @@ function TableDetails({ table }: { table: any }) {
 
 // Assignment Form Component
 function AssignmentForm() {
+  const storeTables = useRestaurantStore((s) => s.tables)
+  const availableTables = useMemo(
+    () => storeTables.map(storeTableToDisplay).filter((table) => table.status === "available"),
+    [storeTables],
+  )
+
   return (
     <div className="space-y-4">
       <div className="space-y-2">
@@ -1645,13 +1615,11 @@ function AssignmentForm() {
             <SelectValue placeholder="Choose a table" />
           </SelectTrigger>
           <SelectContent>
-            {mockTables
-              .filter((t) => t.status === "available")
-              .map((table) => (
-                <SelectItem key={table.id} value={table.id}>
-                  Table {table.number} - {table.section} (Seats {table.capacity})
-                </SelectItem>
-              ))}
+            {availableTables.map((table) => (
+              <SelectItem key={table.id} value={table.id}>
+                Table {table.number} - {table.section} (Seats {table.capacity})
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>
@@ -1746,12 +1714,16 @@ function InsightsContent({
   totalTables,
   chartData,
   mockStaffWorkload,
+  dashboardMetrics,
+  turnoversPerTable,
 }: {
   occupancyPercent: number
   occupiedCount: number
   totalTables: number
   chartData: any[]
   mockStaffWorkload: any[]
+  dashboardMetrics: DashboardOrderMetrics
+  turnoversPerTable: number
 }) {
   return (
     <div className="space-y-6 pb-6">
@@ -1823,11 +1795,27 @@ function InsightsContent({
         <div className="space-y-2 text-sm">
           <div className="flex justify-between">
             <span className="text-muted-foreground">Avg Session:</span>
-            <span className="font-medium">42 min</span>
+            <span className="font-medium">{formatMinutes(Math.round(dashboardMetrics.avgOpenSessionMinutes))}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Avg Turn Time:</span>
+            <span className="font-medium">{formatMinutes(Math.round(dashboardMetrics.avgTurnMinutes))}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Avg Ticket:</span>
+            <span className="font-medium">${dashboardMetrics.avgTicketTotal.toFixed(2)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">First Fire:</span>
+            <span className="font-medium">
+              {dashboardMetrics.avgMinutesToFirstFire == null
+                ? "--"
+                : formatMinutes(Math.round(dashboardMetrics.avgMinutesToFirstFire))}
+            </span>
           </div>
           <div className="flex justify-between">
             <span className="text-muted-foreground">Turnovers:</span>
-            <span className="font-medium">3.2 / table</span>
+            <span className="font-medium">{turnoversPerTable.toFixed(1)} / table</span>
           </div>
           <div className="flex justify-between">
             <span className="text-muted-foreground">Peak Occupancy:</span>

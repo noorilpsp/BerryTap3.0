@@ -197,6 +197,12 @@ function SceneElement({
   const Tag = isInteractive ? "button" : "div"
   const [isHovered, setIsHovered] = React.useState(false)
 
+  // When occupied, show only as many chairs as seated guests; when free/closed, use capacity
+  const chairCountOverride =
+    statusInfo && (status === "active" || status === "urgent" || status === "billing")
+      ? Math.max(1, statusInfo.guests ?? 0)
+      : undefined
+
   return (
     <Tag
       {...(isInteractive
@@ -250,6 +256,7 @@ function SceneElement({
         width={element.width}
         height={element.height}
         colorOverride={isInteractive && statusInfo ? statusFillColors[status] : undefined}
+        chairCountOverride={chairCountOverride}
       />
 
       {/* Rich status overlay (view mode only) */}
@@ -282,6 +289,7 @@ const waveDotColors: Record<WaveStatus, string> = {
   served: "bg-emerald-400",
   ready: "bg-red-400 animate-pulse",
   cooking: "bg-amber-400",
+  fired: "bg-orange-400",
   held: "bg-muted-foreground/30",
   not_started: "bg-muted-foreground/15",
 }
@@ -368,7 +376,7 @@ function RichTableOverlay({
           className="flex flex-col items-center">
           <span className={cn("font-mono font-bold drop-shadow-lg leading-none", numberColors[status])}
             style={{ fontSize: numFont }}>
-            {statusInfo.tableNumber}
+            T{statusInfo.tableNumber}
           </span>
           {showGuests && (
             <span className="font-mono text-emerald-400/50 drop-shadow leading-none"
@@ -398,7 +406,7 @@ function RichTableOverlay({
               <div className="flex items-center" style={{ gap: gap * 0.4 }}>
                 <Users className="text-white/40 shrink-0" style={{ width: iconSize * 0.8, height: iconSize * 0.8 }} />
                 <span className="font-mono text-white/50 leading-none" style={{ fontSize: microFont }}>
-                  {statusInfo.guests}
+                  {statusInfo.guests}/{statusInfo.capacity}
                 </span>
               </div>
             )}
@@ -410,10 +418,10 @@ function RichTableOverlay({
           {/* Waves */}
           {showWaves && (
             <div className="flex items-center shrink-0" style={{ gap: gap * 1.2 }}>
-              {waves.map((wv) => {
+              {waves.map((wv, index) => {
                 const WIcon = waveIcons[wv.type]
                 return WIcon ? (
-                  <div key={wv.type} className="flex flex-col items-center" style={{ gap: gap * 0.3 }}>
+                  <div key={`${wv.type}-${index}`} className="flex flex-col items-center" style={{ gap: gap * 0.3 }}>
                     <WIcon className="text-white/40 shrink-0" style={{ width: iconSize, height: iconSize }} />
                     <span className={cn("rounded-full shrink-0", waveDotColors[wv.status])}
                       style={{ width: dotSize, height: dotSize }} />
@@ -474,7 +482,7 @@ function RichTableOverlay({
             <div className="flex items-center" style={{ gap: gap * 0.3 }}>
               <Users className="text-white/40 shrink-0" style={{ width: iconSize * 0.8, height: iconSize * 0.8 }} />
               <span className="font-mono text-white/50 leading-none" style={{ fontSize: microFont }}>
-                {statusInfo.guests}
+                {statusInfo.guests}/{statusInfo.capacity}
               </span>
             </div>
           )}
@@ -493,10 +501,10 @@ function RichTableOverlay({
         {/* Waves */}
         {showWaves && (
           <div className="flex items-center" style={{ gap: gap * 0.8 }}>
-            {waves.map((wv) => {
+            {waves.map((wv, index) => {
               const WIcon = waveIcons[wv.type]
               return WIcon ? (
-                <div key={wv.type} className="flex items-center" style={{ gap: gap * 0.3 }}>
+                <div key={`${wv.type}-${index}`} className="flex items-center" style={{ gap: gap * 0.3 }}>
                   <WIcon className="text-white/40 shrink-0" style={{ width: iconSize * 0.85, height: iconSize * 0.85 }} />
                   <span className={cn("rounded-full shrink-0", waveDotColors[wv.status])}
                     style={{ width: dotSize, height: dotSize }} />

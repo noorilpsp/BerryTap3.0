@@ -21,22 +21,19 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import type { FloorTable, FloorTableStatus, SectionId } from "@/lib/floor-map-data"
+import type { FloorTable, FloorTableStatus } from "@/lib/floor-map-data"
 import {
   floorStatusConfig,
-  stageConfig,
-  alertMessages,
   minutesAgo,
-  sectionConfig,
+  defaultSectionConfig,
   currentServer,
 } from "@/lib/floor-map-data"
-import {
-  getTableDetailById,
-  getTableDetailFallback,
-} from "@/lib/table-detail-data"
 import type { Wave, WaveStatus, DetailAlert } from "@/lib/table-detail-data"
+import { useRestaurantStore } from "@/store/restaurantStore"
+import { buildFloorMapLiveDetail, type FloorMapLiveDetail } from "@/lib/floor-map-live-detail"
 
 interface GridViewProps {
+  sectionConfig?: Record<string, { name: string }>
   tables: FloorTable[]
   ownTableIds: string[]
   onTableTap: (tableId: string) => void
@@ -90,6 +87,7 @@ const waveStatusColors: Record<WaveStatus, string> = {
   served: "text-emerald-400",
   ready: "text-red-400",
   cooking: "text-amber-400",
+  fired: "text-orange-400",
   held: "text-muted-foreground/50",
   not_started: "text-muted-foreground/30",
 }
@@ -98,6 +96,7 @@ const waveStatusDot: Record<WaveStatus, string> = {
   served: "bg-emerald-400",
   ready: "bg-red-400 animate-pulse",
   cooking: "bg-amber-400",
+  fired: "bg-orange-400",
   held: "bg-muted-foreground/40",
   not_started: "bg-muted-foreground/20",
 }
@@ -106,6 +105,7 @@ const waveStatusLabel: Record<WaveStatus, string> = {
   served: "Served",
   ready: "Ready",
   cooking: "Cooking",
+  fired: "New",
   held: "Held",
   not_started: "--",
 }
@@ -114,25 +114,9 @@ const waveStatusChip: Record<WaveStatus, string> = {
   served: "border-emerald-400/55 bg-emerald-500/14 text-emerald-300",
   ready: "border-red-400/55 bg-red-500/14 text-red-300",
   cooking: "border-amber-400/55 bg-amber-500/14 text-amber-300",
+  fired: "border-orange-400/55 bg-orange-500/14 text-orange-300",
   held: "border-white/15 bg-white/[0.04] text-muted-foreground",
   not_started: "border-white/10 bg-white/[0.02] text-muted-foreground/60",
-}
-
-// ── Get rich data for a table ──────────────────────────────────────────────
-function getCardData(table: FloorTable) {
-  const detail = getTableDetailById(table.id) ??
-    (table.status !== "free"
-      ? getTableDetailFallback(
-          table.id,
-          table.number,
-          table.section,
-          sectionConfig[table.section].name,
-          table.guests,
-          table.status,
-          table.seatedAt,
-        )
-      : null)
-  return detail
 }
 
 // ── Quick action buttons logic ─────────────────────────────────────────────
@@ -248,26 +232,27 @@ function WaveProgress({ waves, compact = false }: { waves: Wave[]; compact?: boo
 // ── Table Card ─────────────────────────────────────────────────────────────
 const TableCard = React.memo(function TableCard({
   table,
+  detail,
   isOwn,
   onTap,
   cardIndex,
+  sectionConfig,
 }: {
   table: FloorTable
+  detail: FloorMapLiveDetail | null
   isOwn: boolean
   onTap: () => void
   cardIndex: number
+  sectionConfig?: Record<string, { name: string }>
 }) {
   const [hovered, setHovered] = useState(false)
-  const detail = useMemo(() => getCardData(table), [table])
   const elapsed = table.seatedAt ? minutesAgo(table.seatedAt) : null
   const isUrgent = table.status === "urgent"
   const isFree = table.status === "free"
 
   const waves = detail?.waves ?? []
   const alerts = detail?.alerts ?? []
-  const billTotal = detail
-    ? detail.seats.reduce((sum, s) => sum + s.orderTotal, 0)
-    : 0
+  const billTotal = detail?.billTotal ?? 0
   const serverName = detail?.server?.name ?? null
   const serverIsYou = detail?.server?.id === currentServer.id
   const hasDietary = detail?.seats.some((s) => s.dietary.length > 0)
@@ -302,7 +287,7 @@ const TableCard = React.memo(function TableCard({
         "--node-index": cardIndex,
         animationDelay: `${cardIndex * 30}ms`,
       } as React.CSSProperties}
-      aria-label={`Table ${table.number}, ${sectionConfig[table.section].name}, ${table.guests} guests, ${table.status} status${billTotal > 0 ? `, bill total ${billTotal.toFixed(2)} euros` : ""}`}
+      aria-label={`Table ${table.number}, ${sectionConfig[table.section]?.name ?? table.section}, ${table.guests} guests, ${table.status} status${billTotal > 0 ? `, bill total ${billTotal.toFixed(2)} euros` : ""}`}
     >
       {/* ── Card Header ─────────────────────────────────────────── */}
       <div className="flex items-center gap-3 px-4 pt-3.5 pb-2.5">
@@ -322,7 +307,7 @@ const TableCard = React.memo(function TableCard({
         {table.guests > 0 && (
           <span className="flex items-center gap-1 text-[11px] text-muted-foreground/70">
             <Users className="h-3 w-3" />
-            {table.guests}
+            {table.guests}/{table.capacity}
           </span>
         )}
         {elapsed !== null && (
@@ -344,7 +329,7 @@ const TableCard = React.memo(function TableCard({
             <Sparkles className="h-3 w-3 text-pink-400/60" />
           )}
           <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/40 hidden sm:inline">
-            {sectionConfig[table.section].name}
+            {(sectionConfig ?? defaultSectionConfig)[table.section]?.name ?? table.section}
           </span>
         </div>
       </div>
@@ -456,7 +441,41 @@ function UrgentBanner({
 }
 
 // ── Main GridView ──────────────────────────────────────────────────────────
-export function GridView({ tables, ownTableIds, onTableTap }: GridViewProps) {
+export function GridView({
+  sectionConfig = defaultSectionConfig, tables, ownTableIds, onTableTap }: GridViewProps) {
+  const storeTables = useRestaurantStore((s) => s.tables)
+  const storeOrders = useRestaurantStore((s) => s.orders)
+  const storeById = useMemo(
+    () => new Map(storeTables.map((table) => [table.id, table])),
+    [storeTables]
+  )
+  const orderById = useMemo(
+    () => new Map(storeOrders.map((order) => [order.id, order])),
+    [storeOrders]
+  )
+  const openOrderByTableId = useMemo(() => {
+    const map = new Map<string, (typeof storeOrders)[number]>()
+    for (const order of storeOrders) {
+      if (order.status !== "open" || map.has(order.tableId)) continue
+      map.set(order.tableId, order)
+    }
+    return map
+  }, [storeOrders])
+  const liveDetailByTableId = useMemo(() => {
+    const detailMap = new Map<string, FloorMapLiveDetail | null>()
+    for (const table of tables) {
+      const storeTable = storeById.get(table.id) ?? storeById.get(table.id.toLowerCase())
+      const linkedOrder =
+        storeTable?.orderId ? orderById.get(storeTable.orderId) : undefined
+      const openOrder =
+        linkedOrder?.status === "open"
+          ? linkedOrder
+          : openOrderByTableId.get(table.id) ?? openOrderByTableId.get(table.id.toLowerCase())
+      detailMap.set(table.id, buildFloorMapLiveDetail(table, storeTable, openOrder))
+    }
+    return detailMap
+  }, [openOrderByTableId, orderById, storeById, tables])
+
   const [collapsedGroups, setCollapsedGroups] = useState<Set<FloorTableStatus>>(() => {
     const initial = new Set<FloorTableStatus>()
     for (const s of statusOrder) {
@@ -586,9 +605,11 @@ export function GridView({ tables, ownTableIds, onTableTap }: GridViewProps) {
                         <TableCard
                           key={table.id}
                           table={table}
+                          detail={liveDetailByTableId.get(table.id) ?? null}
                           isOwn={isOwn}
                           onTap={() => onTableTap(table.id)}
                           cardIndex={idx}
+                          sectionConfig={sectionConfig}
                         />
                       )
                     })}

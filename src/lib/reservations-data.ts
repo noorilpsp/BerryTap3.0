@@ -1,5 +1,9 @@
 // ── Reservations Dashboard Data ──────────────────────────────────────────────
 
+import { useMemo } from "react"
+import { useRestaurantStore } from "@/store/restaurantStore"
+import type { StoreReservation, WaitlistEntry as StoreWaitlistEntry } from "@/store/types"
+
 export type ReservationStatus =
   | "confirmed"
   | "seated"
@@ -33,6 +37,7 @@ export interface Reservation {
   guestName: string
   partySize: number
   time: string // "HH:MM" format
+  date?: string // ISO date "YYYY-MM-DD" when from store
   status: ReservationStatus
   risk: RiskLevel
   riskScore?: number // percentage for high-risk
@@ -119,8 +124,74 @@ export const restaurantConfig = {
   currentDate: "Friday, Jan 17, 2025",
 }
 
-// ── Mock Reservations (18 total) ─────────────────────────────────────────────
+// ── Adapter: store → reservations-data shape ───────────────────────────────────
 
+function mapStoreStatusToReservationStatus(s: StoreReservation["status"]): ReservationStatus {
+  if (s === "noShow") return "no-show"
+  if (s === "reserved" || s === "waitlist") return "confirmed"
+  return s as ReservationStatus
+}
+
+function storeReservationToReservation(r: StoreReservation): Reservation {
+  let time24 = r.time
+  if (r.time.includes("PM") || r.time.includes("AM")) {
+    const [hourStr, rest] = r.time.split(":")
+    const hour = Number.parseInt(hourStr ?? "0", 10)
+    const isPM = r.time.includes("PM")
+    const hour24 = isPM && hour !== 12 ? hour + 12 : !isPM && hour === 12 ? 0 : hour
+    const minStr = (rest ?? "00").replace(/\s*(AM|PM).*$/i, "").trim() || "00"
+    time24 = `${hour24.toString().padStart(2, "0")}:${minStr.padStart(2, "0")}`
+  }
+  return {
+    id: r.id,
+    guestName: r.guestName,
+    partySize: r.partySize,
+    time: time24,
+    date: r.date,
+    status: mapStoreStatusToReservationStatus(r.status),
+    risk: "low",
+    table: r.table ?? r.tableId ?? null,
+    tags: (r.tags ?? []).map((t) => ({ type: t.toLowerCase().replace(/\s/g, "-") as TagType, label: t })),
+    notes: r.notes,
+    visitCount: r.visitCount,
+    bookedVia: r.source ?? undefined,
+    confirmationSent: true,
+    phone: r.phone,
+  }
+}
+
+function storeWaitlistToWaitlistParty(w: StoreWaitlistEntry): WaitlistParty {
+  const quoted = Number.parseInt(w.waitTime.replace(/\D/g, ""), 10) || 0
+  return {
+    id: w.id,
+    name: w.guestName,
+    partySize: w.partySize,
+    quotedWait: quoted,
+    elapsedWait: 0,
+    notes: w.notes,
+  }
+}
+
+/** Reservations and waitlist from the central store, mapped to reservations-data types. Use in components that need reactivity. */
+export function useReservationsFromStore(): {
+  reservations: Reservation[]
+  waitlistParties: WaitlistParty[]
+} {
+  const storeReservations = useRestaurantStore((s) => s.reservations)
+  const storeWaitlist = useRestaurantStore((s) => s.waitlist)
+  const reservations = useMemo(
+    () => storeReservations.map(storeReservationToReservation),
+    [storeReservations]
+  )
+  const waitlistParties = useMemo(
+    () => storeWaitlist.map(storeWaitlistToWaitlistParty),
+    [storeWaitlist]
+  )
+  return { reservations, waitlistParties }
+}
+
+// Legacy static data: same shape for components that have not yet switched to useReservationsFromStore.
+// Prefer useReservationsFromStore() so data stays in sync with the rest of the app.
 export const reservations: Reservation[] = [
   {
     id: "r1",
@@ -532,7 +603,10 @@ export function formatTime12h(time24: string): string {
   return `${hour}:${m.toString().padStart(2, "0")} ${ampm}`
 }
 
-export function getHeroStats(allReservations: Reservation[]) {
+export function getHeroStats(
+  allReservations: Reservation[],
+  waitlistPartiesList: WaitlistParty[] = []
+) {
   const totalCapacity = restaurantConfig.totalSeats
   const tonightReservations = allReservations.filter(
     (r) => r.status !== "cancelled"
@@ -556,7 +630,7 @@ export function getHeroStats(allReservations: Reservation[]) {
     .filter((r) => r.status === "seated")
     .reduce((sum, r) => sum + r.partySize, 0)
   const walkIns = 8
-  const waitlist = waitlistParties.length
+  const waitlist = waitlistPartiesList.length
   const noShows = allReservations.filter((r) => r.status === "no-show").length
   const noShowPct = tonightReservations.length > 0
     ? ((noShows / tonightReservations.length) * 100).toFixed(1)

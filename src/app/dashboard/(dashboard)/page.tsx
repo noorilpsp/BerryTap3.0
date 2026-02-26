@@ -28,7 +28,6 @@ import { StatusBadge } from "@/components/ui/status-badge"
 import { DashboardToolbar } from "@/components/dashboard-toolbar"
 import {
   mockOrders,
-  mockReservations,
   mockRevenue,
   mockOrdersByHour,
   mockTableUtilization,
@@ -36,6 +35,7 @@ import {
   mockActivityFeed,
   mockAlerts,
 } from "@/lib/mockData"
+import { useRestaurantStore } from "@/store/restaurantStore"
 import { CHART_COLORS } from "@/lib/constants"
 import { LineChart, Line, ResponsiveContainer } from "recharts"
 import { cn } from "@/lib/utils"
@@ -44,6 +44,7 @@ import OrdersByHour from "@/components/charts/OrdersByHour"
 import TableUtilization from "@/components/charts/TableUtilization"
 
 export default function DashboardPage() {
+  const reservations = useRestaurantStore((s) => s.reservations)
   const [timeRange, setTimeRange] = useState<"today" | "week" | "month">("today")
   const [showComparison, setShowComparison] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -321,7 +322,7 @@ export default function DashboardPage() {
                 <SkeletonBlock variant="list" rows={5} />
               ) : (
                 <div className="space-y-4">
-                  {mockReservations.slice(0, 5).map((reservation) => (
+                  {reservations.slice(0, 5).map((reservation) => (
                     <div
                       key={reservation.id}
                       className="flex items-start justify-between gap-3 pb-3 border-b last:border-0 last:pb-0 cursor-pointer hover:bg-muted/20 -mx-2 px-2 py-1 rounded transition-colors"

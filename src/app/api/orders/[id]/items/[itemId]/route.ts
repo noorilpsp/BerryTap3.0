@@ -75,10 +75,16 @@ export async function PUT(
     }
 
     // Update order item
-    const updateData: any = {};
+    const updateData: Record<string, unknown> = {};
     if (quantity !== undefined) updateData.quantity = quantity;
     if (notes !== undefined) updateData.notes = notes;
-    if (status !== undefined) updateData.status = status;
+    if (status !== undefined) {
+      updateData.status = status;
+      const now = new Date();
+      if (status === "preparing") updateData.startedAt = now;
+      if (status === "ready") updateData.readyAt = now;
+      if (status === "served") updateData.servedAt = now;
+    }
 
     // Recalculate line total if quantity changed
     if (quantity !== undefined) {

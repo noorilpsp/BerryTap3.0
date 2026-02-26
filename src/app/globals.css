@@ -518,6 +518,24 @@ html.liquid-glass-page.vivid {
 }
 .animate-charge-core { animation: charge-core 1250ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 
+/* Ops pages with fixed bottom nav: wrapper fills viewport (no gap above nav).
+   Padding keeps content above nav; same bg so no visible strip. */
+.ops-bottom-nav-content {
+  height: 100dvh;
+  min-height: 0;
+  padding-bottom: calc(4.5rem + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+  background-color: hsl(220 20% 4%);
+}
+
+.ops-counter-root .ops-bottom-nav-content,
+.ops-reservations-root .ops-bottom-nav-content {
+  background-color: hsl(240 10% 3.9%);
+}
+
 /* Tables (table detail, my-tables) — theme, animations, portaled content
    Uses full hsl() values so Tailwind v4 @theme resolves correctly (table-merge parity) */
 .ops-tables-root {

@@ -7,6 +7,7 @@ import { useFloorplanBuilder } from "@/hooks/use-floorplan-builder"
 import { BuilderCanvas } from "@/components/builder/builder-canvas"
 import { ElementPalette } from "@/components/builder/element-palette"
 import { PropertiesPanel } from "@/components/builder/properties-panel"
+import { SectionsPanel } from "@/components/builder/sections-panel"
 import { BuilderToolbar } from "@/components/builder/builder-toolbar"
 import { SaveLoadModal } from "@/components/builder/save-load-modal"
 import { ELEMENT_TEMPLATES, type FloorplanElementTemplate } from "@/lib/floorplan-types"
@@ -14,50 +15,84 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ArrowLeft } from "lucide-react"
 import {
-  saveFloorplan,
-  getActiveFloorplan,
-  setActiveFloorplanId,
+  saveFloorplanDb,
+  getActiveFloorplanDb,
+  setActiveFloorplanIdDb,
+  getUsedTableNumbersForPlanDb,
   type SavedFloorplan,
-} from "@/lib/floorplan-storage"
+} from "@/lib/floorplan-storage-db"
+import { useRestaurantStore } from "@/store/restaurantStore"
+import { useLocation } from "@/lib/contexts/LocationContext"
 
 export default function BuilderPage() {
+  const { currentLocationId } = useLocation()
   const builder = useFloorplanBuilder()
   const [draggingTemplate, setDraggingTemplate] =
     useState<FloorplanElementTemplate | null>(null)
   const [initialDragCursorPos, setInitialDragCursorPos] = useState<{ x: number; y: number } | null>(null)
   const [leftPanelOpen, setLeftPanelOpen] = useState(true)
+  const [leftPanelTab, setLeftPanelTab] = useState<"elements" | "sections">("elements")
   const [rightPanelOpen, setRightPanelOpen] = useState(true)
   const [saveLoadModalOpen, setSaveLoadModalOpen] = useState(false)
   const [saveLoadMode, setSaveLoadMode] = useState<"save" | "load">("save")
   const [currentFloorplanId, setCurrentFloorplanId] = useState<string | null>(null)
   const [currentFloorplanName, setCurrentFloorplanName] = useState<string>("")
+  const [usedTableNumbers, setUsedTableNumbers] = useState<number[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    const active = getActiveFloorplan()
-    if (active) {
-      setCurrentFloorplanId(active.id)
-      setCurrentFloorplanName(active.name)
-    }
-  }, [])
+    if (!currentLocationId) return
+    let cancelled = false
+    getActiveFloorplanDb(currentLocationId).then((active) => {
+      if (!cancelled && active) {
+        setCurrentFloorplanId(active.id)
+        setCurrentFloorplanName(active.name)
+      }
+    })
+    return () => { cancelled = true }
+  }, [currentLocationId])
 
-  const handleSave = useCallback((name: string) => {
-    const id = saveFloorplan(
+  useEffect(() => {
+    if (!currentLocationId) return
+    let cancelled = false
+    getUsedTableNumbersForPlanDb(currentLocationId, currentFloorplanId).then(
+      (nums) => {
+        if (!cancelled) setUsedTableNumbers(nums)
+      }
+    )
+    return () => { cancelled = true }
+  }, [currentLocationId, currentFloorplanId])
+
+  const handleSave = useCallback(async (name: string, overwriteId?: string) => {
+    if (!currentLocationId) return
+    const existingId = overwriteId ?? undefined
+    const { id, tables } = await saveFloorplanDb(
+      currentLocationId,
       name,
       builder.elements,
       builder.canvas.gridSize,
       builder.totalSeats,
-      currentFloorplanId || undefined
+      existingId,
+      builder.sections
     )
     setCurrentFloorplanId(id)
     setCurrentFloorplanName(name)
-  }, [builder.elements, builder.canvas.gridSize, builder.totalSeats, currentFloorplanId])
+    if (tables.length > 0) {
+      useRestaurantStore.getState().setTables(tables)
+    }
+  }, [currentLocationId, builder.elements, builder.sections, builder.canvas.gridSize, builder.totalSeats])
 
-  const handleLoad = useCallback((floorplan: SavedFloorplan) => {
+  const handleLoad = useCallback(async (floorplan: SavedFloorplan) => {
+    if (!currentLocationId) return
     builder.clearAll()
+    builder.setSections(floorplan.sections ?? [
+      { id: "patio", name: "Patio" },
+      { id: "bar", name: "Bar Area" },
+      { id: "main", name: "Main Dining" },
+    ])
     setCurrentFloorplanId(floorplan.id)
     setCurrentFloorplanName(floorplan.name)
-    setActiveFloorplanId(floorplan.id)
+    await setActiveFloorplanIdDb(currentLocationId, floorplan.id)
     setTimeout(() => {
       floorplan.elements.forEach((el) => {
         const template = ELEMENT_TEMPLATES.find((t) => t.id === el.templateId)
@@ -68,13 +103,14 @@ export default function BuilderPage() {
             height: el.height,
             rotation: el.rotation,
             customLabel: el.customLabel,
+            sectionId: el.sectionId,
             opacity: el.opacity,
             locked: el.locked,
           })
         }
       })
     }, 100)
-  }, [builder])
+  }, [builder, currentLocationId])
 
   const handleImport = useCallback(() => {
     fileInputRef.current?.click()
@@ -153,6 +189,12 @@ export default function BuilderPage() {
     setSaveLoadModalOpen(true)
   }, [])
 
+  const handleNew = useCallback(() => {
+    builder.clearAll()
+    setCurrentFloorplanId(null)
+    setCurrentFloorplanName("")
+  }, [builder])
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (
@@ -212,6 +254,7 @@ export default function BuilderPage() {
         onExport={handleExport}
         onSave={handleOpenSave}
         onLoad={handleOpenLoad}
+        onNew={handleNew}
         onImport={handleImport}
       />
 
@@ -224,23 +267,60 @@ export default function BuilderPage() {
         >
           {leftPanelOpen && (
             <>
-              <div className="flex items-center justify-between px-3 py-2.5 border-b border-border/50">
-                <h2 className="text-xs font-semibold text-foreground uppercase tracking-wider">
-                  Elements
-                </h2>
+              <div className="flex items-center justify-between border-b border-border/50">
+                <div className="flex">
+                  <button
+                    type="button"
+                    onClick={() => setLeftPanelTab("elements")}
+                    className={cn(
+                      "px-3 py-2.5 text-xs font-medium uppercase tracking-wider transition-colors",
+                      leftPanelTab === "elements"
+                        ? "text-foreground border-b-2 border-primary"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    Elements
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLeftPanelTab("sections")}
+                    className={cn(
+                      "px-3 py-2.5 text-xs font-medium uppercase tracking-wider transition-colors",
+                      leftPanelTab === "sections"
+                        ? "text-foreground border-b-2 border-primary"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    Sections ({builder.sections.length})
+                  </button>
+                </div>
                 <button
                   onClick={() => setLeftPanelOpen(false)}
-                  className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+                  className="h-6 w-6 mr-1 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
                 >
                   <PanelLeftClose className="h-3.5 w-3.5" />
                 </button>
               </div>
-              <ElementPalette
-                onPick={(template, e) => {
-                  setDraggingTemplate(template)
-                  setInitialDragCursorPos({ x: e.clientX, y: e.clientY })
-                }}
-              />
+              <ScrollArea className="flex-1">
+                {leftPanelTab === "elements" ? (
+                  <ElementPalette
+                    onPick={(template, e) => {
+                      setDraggingTemplate(template)
+                      setInitialDragCursorPos({ x: e.clientX, y: e.clientY })
+                    }}
+                  />
+                ) : (
+                  <SectionsPanel
+                    sections={builder.sections}
+                    elementsWithSeats={builder.elements.filter(
+                      (el) => (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
+                    )}
+                    onAddSection={builder.addSection}
+                    onUpdateSection={builder.updateSection}
+                    onDeleteSection={builder.deleteSection}
+                  />
+                )}
+              </ScrollArea>
             </>
           )}
         </div>
@@ -295,6 +375,9 @@ export default function BuilderPage() {
               <ScrollArea className="flex-1">
                 <PropertiesPanel
                   element={builder.selectedElement}
+                  sections={builder.sections}
+                  allElements={builder.elements}
+                  usedTableNumbers={usedTableNumbers}
                   onUpdate={builder.updateElement}
                   onDelete={builder.deleteElement}
                   onDuplicate={builder.duplicateElement}
@@ -320,6 +403,7 @@ export default function BuilderPage() {
         open={saveLoadModalOpen}
         mode={saveLoadMode}
         currentName={currentFloorplanName}
+        currentFloorplanId={currentFloorplanId}
         onClose={() => setSaveLoadModalOpen(false)}
         onSave={handleSave}
         onLoad={handleLoad}

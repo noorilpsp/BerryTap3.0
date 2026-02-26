@@ -11,7 +11,7 @@ export type DietaryFlag =
   | "gluten_free" | "dairy_free" | "shellfish_allergy"
 
 export type WaveType = "drinks" | "food" | "dessert"
-export type WaveStatus = "served" | "ready" | "cooking" | "held" | "not_started"
+export type WaveStatus = "served" | "ready" | "cooking" | "fired" | "held" | "not_started"
 
 export type AlertSeverity = "urgent" | "warning" | "info"
 export type DetailAlertType = "food_ready" | "no_checkin" | "bill_requested"
@@ -95,6 +95,7 @@ export const waveStatusConfig: Record<WaveStatus, { label: string; color: string
   served:      { label: "Served",      color: "text-emerald-600 dark:text-emerald-400", dotColor: "bg-emerald-500" },
   ready:       { label: "Ready",       color: "text-red-600 dark:text-red-400",         dotColor: "bg-red-500" },
   cooking:     { label: "Cooking",     color: "text-amber-600 dark:text-amber-400",     dotColor: "bg-amber-500" },
+  fired:       { label: "New",         color: "text-orange-600 dark:text-orange-400",    dotColor: "bg-orange-500" },
   held:        { label: "Held",        color: "text-muted-foreground",                  dotColor: "bg-muted-foreground" },
   not_started: { label: "Not started", color: "text-muted-foreground/50",               dotColor: "bg-muted" },
 }

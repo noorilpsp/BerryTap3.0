@@ -6,9 +6,20 @@ import { usePathname } from 'next/navigation'
 import {
   BarChart3,
   LayoutDashboard,
+  LogOut,
   ShieldCheck,
   Users,
 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { logout } from '@/app/actions/auth'
+import { clearUserData } from '@/lib/utils/logout'
 
 import {
   Sidebar,
@@ -140,6 +151,30 @@ export function AdminSidebar({ children }: { children: React.ReactNode }) {
             <span className="text-sm font-medium text-muted-foreground truncate">NextFaster</span>
             <span className="text-lg font-semibold leading-none truncate">Admin Console</span>
           </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" className="h-9 gap-2 px-2">
+                <Avatar className="h-7 w-7">
+                  <AvatarFallback className="bg-primary/10 text-primary">
+                    <ShieldCheck className="size-4" />
+                  </AvatarFallback>
+                </Avatar>
+                <span className="hidden md:inline text-sm font-medium">Admin</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onClick={async () => {
+                  clearUserData()
+                  await logout()
+                }}
+              >
+                <LogOut className="h-4 w-4 mr-2" />
+                Log out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </header>
         <main className="p-4 lg:p-6">{children}</main>
       </SidebarInset>

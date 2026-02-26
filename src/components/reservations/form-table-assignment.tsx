@@ -18,14 +18,16 @@ import {
   type TableAssignMode,
   type AvailableTable,
 } from "@/lib/reservation-form-data"
+import type { TableLane } from "@/lib/timeline-data"
 import {
-  tableLanes as timelineTableLanes,
+  tableLanes as fallbackTableLanes,
   zones as timelineZones,
   getBlocksForTable,
   getMergedForTable,
 } from "@/lib/timeline-data"
 
 interface FormTableAssignmentProps {
+  tableLanes?: TableLane[]
   mode: TableAssignMode
   assignedTable: string | null
   zonePreference: string
@@ -125,6 +127,7 @@ function formatOpeningDelta(minutes: number): string {
 }
 
 export function FormTableAssignment({
+  tableLanes: tableLanesProp,
   mode,
   assignedTable,
   zonePreference,
@@ -135,11 +138,12 @@ export function FormTableAssignment({
   onModeChange,
   onTableChange,
 }: FormTableAssignmentProps) {
+  const tableLanes = tableLanesProp ?? fallbackTableLanes
   const slotStart = toMinutes(selectedTime)
   const slotEnd = slotStart + duration
 
   const manualData = useMemo(() => {
-    const buildOption = (lane: (typeof timelineTableLanes)[number]): ManualTableOption => {
+    const buildOption = (lane: TableLane): ManualTableOption => {
       const zoneLabel =
         timelineZones.find((zone) => zone.id === lane.zone)?.name
         ?? lane.zone
@@ -185,7 +189,7 @@ export function FormTableAssignment({
       }
     }
 
-    const zoneFiltered = timelineTableLanes.filter((table) => (
+    const zoneFiltered = tableLanes.filter((table) => (
       (zonePreference === "any" || table.zone === zonePreference)
       && table.seats >= partySize
     ))
@@ -195,7 +199,7 @@ export function FormTableAssignment({
       if (!assignedTable) return base
       if (base.some((table) => table.id === assignedTable)) return base
 
-      const lane = timelineTableLanes.find((table) => table.id === assignedTable)
+      const lane = tableLanes.find((table) => table.id === assignedTable)
       if (!lane) return base
       if (lane.seats < partySize) return base
       return [buildOption(lane), ...base]
@@ -224,7 +228,7 @@ export function FormTableAssignment({
       availableCount: sorted.filter((table) => table.available).length,
       recommended: bestNow[0] ?? sorted[0],
     }
-  }, [assignedTable, partySize, slotEnd, slotStart, zonePreference])
+  }, [assignedTable, partySize, slotEnd, slotStart, zonePreference, tableLanes])
 
   const selectedTableOption = useMemo(
     () => (assignedTable ? manualData.options.find((table) => table.id === assignedTable) : undefined),

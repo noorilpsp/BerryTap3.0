@@ -5,6 +5,8 @@ import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
 import { useMediaQuery } from "@/hooks/use-media-query"
+import { useReservationsFromStore } from "@/lib/reservations-data"
+import { useRestaurantMutations } from "@/lib/hooks/useRestaurantMutations"
 import { WaitlistTopBar } from "./waitlist-top-bar"
 import { WaitlistAlertBanner } from "./waitlist-alert-banner"
 import { WaitlistCard } from "./waitlist-card"
@@ -17,18 +19,24 @@ import { WaitlistDetailPanel } from "./waitlist-detail-panel"
 import {
   type WaitlistEntry,
   type SortMode,
-  activeWaitlist,
   sortWaitlist,
   getElapsedMinutes,
+  waitlistPartyToWaitlistEntry,
 } from "@/lib/waitlist-data"
 
 export function WaitlistView() {
   const isDesktop = useMediaQuery("(min-width: 1280px)")
   const isTablet = useMediaQuery("(min-width: 768px)")
+  const { addToWaitlist, removeFromWaitlist } = useRestaurantMutations()
+
+  const { waitlistParties } = useReservationsFromStore()
+  const entries = useMemo(
+    () => waitlistParties.map(waitlistPartyToWaitlistEntry),
+    [waitlistParties]
+  )
 
   const [sortMode, setSortMode] = useState<SortMode>("smart")
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [entries, setEntries] = useState<WaitlistEntry[]>(activeWaitlist)
   const [showAlert, setShowAlert] = useState(true)
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [seatDialog, setSeatDialog] = useState<{ entry: WaitlistEntry; tableId: string } | null>(null)
@@ -71,16 +79,16 @@ export function WaitlistView() {
     [isDesktop],
   )
 
-  const handleConfirmSeat = useCallback(() => {
+  const handleConfirmSeat = useCallback(async () => {
     if (!seatDialog) return
-    setEntries((prev) => prev.filter((e) => e.id !== seatDialog.entry.id))
+    await removeFromWaitlist(seatDialog.entry.id)
     setSeatDialog(null)
     setShowAlert(false)
-  }, [seatDialog])
+  }, [seatDialog, removeFromWaitlist])
 
-  const handleRemove = useCallback((id: string) => {
-    setEntries((prev) => prev.filter((e) => e.id !== id))
-  }, [])
+  const handleRemove = useCallback(async (id: string) => {
+    await removeFromWaitlist(id)
+  }, [removeFromWaitlist])
 
   const handleOpenDetail = useCallback((entry: WaitlistEntry) => {
     setDetailEntry(entry)
@@ -88,23 +96,15 @@ export function WaitlistView() {
   }, [])
 
   const handleAdd = useCallback(
-    (data: { name: string; phone: string; partySize: number; quote: number }) => {
-      const newEntry: WaitlistEntry = {
-        id: `wl-new-${Date.now()}`,
-        name: data.name,
+    async (data: { name: string; phone: string; partySize: number; quote: number }) => {
+      await addToWaitlist({
+        guestName: data.name,
         partySize: data.partySize,
-        quotedWait: data.quote,
-        joinedAt: 143 + elapsedOffset, // NOW in current live timeline
-        location: "just-added",
         phone: data.phone,
-        smsSent: true,
-        smsStatus: "Just added",
-        bestMatch: null,
-        altMatches: [],
-      }
-      setEntries((prev) => [...prev, newEntry])
+        waitTime: `${data.quote} min`,
+      })
     },
-    [elapsedOffset],
+    [addToWaitlist],
   )
 
   const sortOptions: { value: SortMode; label: string }[] = [
@@ -273,7 +273,7 @@ export function WaitlistView() {
               <div className="text-[10px] uppercase tracking-[0.16em] text-cyan-300">Host Brain</div>
               <div className="mt-1 text-xs text-zinc-400">Live table turnover, best-fit matching, and quote calibration.</div>
             </div>
-            <WaitlistMatchingPanel />
+            <WaitlistMatchingPanel entries={entries} />
             <div className="mt-4">
               <WaitlistQrPanel />
             </div>
@@ -306,7 +306,7 @@ export function WaitlistView() {
               <SheetTitle className="text-zinc-100">Smart Matching</SheetTitle>
               <SheetDescription className="text-zinc-500">Table availability and forecasts</SheetDescription>
             </SheetHeader>
-            <WaitlistMatchingPanel />
+            <WaitlistMatchingPanel entries={entries} />
             <div className="mt-4">
               <WaitlistQrPanel />
             </div>

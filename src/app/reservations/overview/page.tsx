@@ -8,13 +8,14 @@ import { WaitlistSignals } from "@/components/reservations/waitlist-signals"
 import { TurnTracker } from "@/components/reservations/turn-tracker"
 import { PaceStrip } from "@/components/reservations/pace-strip"
 import {
-  reservations,
+  useReservationsFromStore,
   getHeroStats,
 } from "@/lib/reservations-data"
 import { Toaster } from "sonner"
 
 export default function ReservationsOverviewPage() {
-  const stats = getHeroStats(reservations)
+  const { reservations, waitlistParties } = useReservationsFromStore()
+  const stats = getHeroStats(reservations, waitlistParties)
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">

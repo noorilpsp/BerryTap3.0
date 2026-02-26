@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { DisplayModeProvider, useDisplayMode } from "@/components/kds/DisplayModeContext";
+import { getCurrentLocationId } from "@/app/actions/location";
 import { KDSHeader } from "@/components/kds/KDSHeader";
 import { KDSColumns } from "@/components/kds/KDSColumns";
 import { AllDayView } from "@/components/kds/AllDayView";
@@ -76,6 +77,54 @@ interface Order {
   snoozeUntil?: string;
   snoozeDurationSeconds?: number;
   wasSnoozed?: boolean;
+}
+
+/** Response from GET /api/kds/orders (orders + order_items only). */
+interface KdsOrderResponse {
+  id: string;
+  orderNumber: string;
+  orderType: "dine_in" | "pickup";
+  tableNumber: string | null;
+  customerName: string | null;
+  status: OrderStatus;
+  station: string | null;
+  firedAt: string | null;
+  createdAt: string;
+  wave: number;
+  sessionId: string | null;
+  items: Array<{
+    id: string;
+    name: string;
+    quantity: number;
+    notes: string | null;
+    status: string;
+    sentToKitchenAt: string | null;
+    startedAt: string | null;
+    readyAt: string | null;
+    servedAt: string | null;
+  }>;
+}
+
+function mapKdsOrderToOrder(r: KdsOrderResponse): Order {
+  const stationId = r.station ?? "kitchen";
+  return {
+    id: r.id,
+    orderNumber: r.orderNumber,
+    orderType: r.orderType,
+    tableNumber: r.tableNumber,
+    customerName: r.customerName,
+    status: r.status as OrderStatus,
+    createdAt: r.createdAt,
+    items: r.items.map((it) => ({
+      id: it.id,
+      name: it.name,
+      variant: null,
+      quantity: it.quantity,
+      customizations: it.notes ? [it.notes] : [],
+      stationId,
+    })),
+    stationStatuses: { [stationId]: r.status as OrderStatus },
+  };
 }
 
 /** Snapshot of an order when it was bumped (for Recall list). */
@@ -551,6 +600,8 @@ export default function KDSPage() {
   const [highlightedTicketId, setHighlightedTicketId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("tickets");
   const [activeStationId, setActiveStationId] = useState<string>(STATIONS[0].id);
+  const [kdsLoading, setKdsLoading] = useState(true);
+  const [kdsLiveOrderIds, setKdsLiveOrderIds] = useState<Set<string>>(new Set());
   // Track tickets that just transitioned for animation purposes
   const [transitioningTickets, setTransitioningTickets] = useState<Map<string, { from: OrderStatus; to: OrderStatus }>>(new Map());
   const toastTimeoutRefs = useRef<Map<string, NodeJS.Timeout>>(new Map());
@@ -563,6 +614,36 @@ export default function KDSPage() {
   const [messagePanelOpen, setMessagePanelOpen] = useState(false);
   const [messageHistoryOpen, setMessageHistoryOpen] = useState(false);
   const [replyToStationId, setReplyToStationId] = useState<string | null>(null);
+
+  // Load KDS orders from API (orders + order_items only; no table-based lookup)
+  useEffect(() => {
+    let cancelled = false;
+    getCurrentLocationId()
+      .then((locationId) => {
+        if (cancelled || !locationId) {
+          setKdsLoading(false);
+          return;
+        }
+        return fetch(`/api/kds/orders?locationId=${encodeURIComponent(locationId)}`)
+          .then((res) => (res.ok ? res.json() : { orders: [] }))
+          .then((data: { orders?: KdsOrderResponse[] }) => {
+            if (cancelled) return;
+            const list = Array.isArray(data.orders) ? data.orders : [];
+            setOrders(list.map(mapKdsOrderToOrder));
+            setKdsLiveOrderIds(new Set(list.map((o) => o.id)));
+          })
+          .catch(() => {
+            if (!cancelled) setOrders([]);
+          })
+          .finally(() => {
+            if (!cancelled) setKdsLoading(false);
+          });
+      })
+      .catch(() => setKdsLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const addToast = useCallback((order: Order) => {
     const toast: NewOrderToast = {
@@ -687,6 +768,17 @@ export default function KDSPage() {
     // Find the current order to track the transition
     const currentOrder = orders.find(o => o.id === orderId);
     const previousStatus = currentOrder?.status;
+
+    // Persist order_items status (and timestamps) to DB when this order is from the API
+    if (kdsLiveOrderIds.has(orderId) && currentOrder?.items?.length) {
+      currentOrder.items.forEach((item) => {
+        fetch(`/api/orders/${orderId}/items/${item.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: newStatus }),
+        }).catch(() => {});
+      });
+    }
 
     // If bumping (remove), add to completedOrders for Recall
     if (newStatus === "ready" && currentOrder?.status === "ready") {

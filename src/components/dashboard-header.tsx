@@ -32,6 +32,7 @@ import {
 } from "lucide-react"
 import { MobileSidebar } from "@/components/mobile-sidebar"
 import { Logo } from "@/components/logo"
+import { LocationSelector } from "@/components/location-selector"
 import { ThemeToggleInline } from "@/components/theme-toggle-inline"
 import { cn } from "@/lib/utils"
 import { logout } from "@/app/actions/auth"
@@ -123,6 +124,10 @@ export function DashboardHeader() {
       <Separator orientation="vertical" className="mr-2 h-4 hidden md:block" />
 
       <Logo className="h-7 w-auto" />
+
+      <div className="hidden md:block ml-4">
+        <LocationSelector />
+      </div>
 
       {/* Right side: Search, Notifications, User profile */}
       <div className="ml-auto flex items-center gap-2 md:gap-3">

@@ -6,9 +6,10 @@ import { useState, useCallback, useEffect } from "react"
 import { cn } from "@/lib/utils"
 import { FloorplanScene, type TableStatusInfo } from "@/components/shared/floorplan-scene"
 import type { FloorTable, SectionId } from "@/lib/floor-map-data"
-import { sectionConfig, getSectionBounds, tables as allTablesData, floorStatusConfig, stageConfig, minutesAgo, currentServer } from "@/lib/floor-map-data"
-import { getTableDetailById, getTableDetailFallback } from "@/lib/table-detail-data"
-import type { Wave, WaveStatus } from "@/lib/table-detail-data"
+import { getSectionBounds, minutesAgo, currentServer } from "@/lib/floor-map-data"
+import type { WaveStatus } from "@/lib/table-detail-data"
+import { useRestaurantStore } from "@/store/restaurantStore"
+import { buildFloorMapLiveDetail, type FloorMapLiveDetail } from "@/lib/floor-map-live-detail"
 import { Users, Clock, AlertTriangle, Flame, Wine, UtensilsCrossed, Cake } from "lucide-react"
 import {
   ZOOM_LEVELS,
@@ -19,8 +20,10 @@ import {
 } from "@/lib/animation-config"
 import { useMapGestures, usePrefersReducedMotion } from "@/hooks/use-map-gestures"
 import type { PlacedElement } from "@/lib/floorplan-types"
+import { convertElementsToStoreTables } from "@/lib/floorplan-convert"
 
 interface MapCanvasProps {
+  sectionConfig: Record<string, { name: string }>
   tables: FloorTable[]
   ownTableIds: string[]
   filterMode: string
@@ -43,6 +46,7 @@ interface MapCanvasProps {
 }
 
 export function MapCanvas({
+  sectionConfig,
   tables,
   ownTableIds,
   highlightedTableId,
@@ -113,39 +117,63 @@ export function MapCanvas({
     reducedMotion
   )
 
-  const sections: SectionId[] = ["patio", "bar", "main"]
+  const sections = Object.keys(sectionConfig)
 
   const sortedForEntry = [...tables].sort((a, b) => {
     const priority: Record<string, number> = { urgent: 0, active: 1, billing: 2, free: 3, closed: 4 }
     return (priority[a.status] ?? 5) - (priority[b.status] ?? 5)
   })
+  const storeTables = useRestaurantStore((s) => s.tables)
+  const storeOrders = useRestaurantStore((s) => s.orders)
+  const storeById = React.useMemo(
+    () => new Map(storeTables.map((table) => [table.id, table])),
+    [storeTables]
+  )
+  const orderById = React.useMemo(
+    () => new Map(storeOrders.map((order) => [order.id, order])),
+    [storeOrders]
+  )
+  const openOrderByTableId = React.useMemo(() => {
+    const map = new Map<string, (typeof storeOrders)[number]>()
+    for (const order of storeOrders) {
+      if (order.status !== "open" || map.has(order.tableId)) continue
+      map.set(order.tableId, order)
+    }
+    return map
+  }, [storeOrders])
+  const liveDetailByTableId = React.useMemo(() => {
+    const detailMap = new Map<string, FloorMapLiveDetail | null>()
+    for (const table of tables) {
+      const storeTable = storeById.get(table.id) ?? storeById.get(table.id.toLowerCase())
+      const linkedOrder =
+        storeTable?.orderId ? orderById.get(storeTable.orderId) : undefined
+      const openOrder =
+        linkedOrder?.status === "open"
+          ? linkedOrder
+          : openOrderByTableId.get(table.id) ?? openOrderByTableId.get(table.id.toLowerCase())
+      detailMap.set(table.id, buildFloorMapLiveDetail(table, storeTable, openOrder))
+    }
+    return detailMap
+  }, [openOrderByTableId, orderById, storeById, tables])
 
   // ── Build FloorplanScene props from FloorTable data ───────────────────
-  // Map table data to element IDs for the shared scene
+  // Match elements to tables by table number (t1, t2, …), not by index.
+  // DB returns tables in createdAt order; element order comes from the floorplan.
   const tableStatuses: TableStatusInfo[] = React.useMemo(() => {
     if (floorplanElements.length === 0) return []
-    // Elements with seats (tables + seating like booths) - same filter as convertElementsToTables
     const tableEls = floorplanElements.filter(
       (el) => (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
     )
+    const canonicalTables = convertElementsToStoreTables(floorplanElements)
+    const tablesById = new Map(tables.map((t) => [t.id.toLowerCase(), t]))
     return tableEls.map((el, i) => {
-      const table = tables.find((t) => t.number === i + 1)
-      // Get rich detail data for this table
-      const detail = table && table.status !== "free"
-        ? (getTableDetailById(table.id) ??
-          getTableDetailFallback(
-            table.id,
-            table.number,
-            table.section,
-            sectionConfig[table.section].name,
-            table.guests,
-            table.status,
-            table.seatedAt,
-          ))
-        : null
+      const canonical = canonicalTables[i]
+      const tableId = canonical?.id ?? `t${i + 1}`
+      const table = tablesById.get(tableId) ?? tablesById.get(tableId.toLowerCase())
+      const detail = table ? liveDetailByTableId.get(table.id) ?? null : null
       return {
         elementId: el.id,
-        tableNumber: i + 1,
+        tableNumber: table?.number ?? canonical?.number ?? i + 1,
         status: table?.status ?? ("free" as const),
         guests: table?.guests ?? 0,
         capacity: table?.capacity ?? el.seats ?? 4,
@@ -157,7 +185,7 @@ export function MapCanvas({
         alerts: detail?.alerts ?? [],
       }
     })
-  }, [floorplanElements, tables])
+  }, [floorplanElements, liveDetailByTableId, tables])
 
   const dimmedTableIds = React.useMemo(() => {
     const set = new Set<string>()
@@ -165,8 +193,12 @@ export function MapCanvas({
     const tableEls = floorplanElements.filter(
       (el) => (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
     )
+    const canonicalTables = convertElementsToStoreTables(floorplanElements)
+    const tablesById = new Map(tables.map((t) => [t.id.toLowerCase(), t]))
     tableEls.forEach((el, i) => {
-      const table = tables.find((t) => t.number === i + 1)
+      const canonical = canonicalTables[i]
+      const tableId = canonical?.id ?? `t${i + 1}`
+      const table = tablesById.get(tableId) ?? tablesById.get(tableId.toLowerCase())
       if (!table) return
       const dimmedByStatus = statusFilter !== null && table.status !== statusFilter
       const dimmedByFocus = focusedTableId !== null && table.id !== focusedTableId
@@ -177,18 +209,23 @@ export function MapCanvas({
     return set
   }, [floorplanElements, tables, statusFilter, focusedTableId])
 
-  // Map element ID taps back to table IDs for the parent
+  // Map element ID taps back to table IDs (match by table number from conversion)
   const elementToTableId = React.useMemo(() => {
     const map = new Map<string, string>()
     if (floorplanElements.length === 0) return map
     const tableEls = floorplanElements.filter(
       (el) => (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
     )
+    const canonicalTables = convertElementsToStoreTables(floorplanElements)
+    const tablesById = new Map(tables.map((t) => [t.id.toLowerCase(), t]))
     tableEls.forEach((el, i) => {
-      map.set(el.id, `t${i + 1}`)
+      const canonical = canonicalTables[i]
+      const tableId = canonical?.id ?? `t${i + 1}`
+      const table = tablesById.get(tableId) ?? tablesById.get(tableId.toLowerCase())
+      map.set(el.id, table?.id ?? tableId)
     })
     return map
-  }, [floorplanElements])
+  }, [floorplanElements, tables])
 
   const handleSceneTableTap = useCallback(
     (elementId: string) => {
@@ -262,11 +299,11 @@ export function MapCanvas({
           <>
             {/* Default section zones for demo data */}
             {sections.map((sectionId) => {
-              const bounds = getSectionBounds(sectionId, allTablesData)
+              const bounds = getSectionBounds(sectionId, tables)
               if (!bounds) return null
 
               const isFocusedByTable = focusedTableId
-                ? allTablesData.find((t) => t.id === focusedTableId)?.section === sectionId
+                ? tables.find((t) => t.id === focusedTableId)?.section === sectionId
                 : true
 
               const isFocusedSection = focusedSection === null || focusedSection === sectionId
@@ -294,7 +331,7 @@ export function MapCanvas({
                     width: bounds.width,
                     height: bounds.height + 28,
                   }}
-                  aria-label={`${sectionConfig[sectionId].name} section, click to focus`}
+                  aria-label={`${sectionConfig[sectionId]?.name ?? sectionId} section, click to focus`}
                 >
                   <span
                     className={cn(
@@ -307,7 +344,7 @@ export function MapCanvas({
                       !focusedSection && "group-hover:bg-white/10 group-hover:text-foreground",
                     )}
                   >
-                    {sectionConfig[sectionId].name}
+                    {sectionConfig[sectionId]?.name ?? sectionId}
                   </span>
                 </button>
               )
@@ -324,6 +361,7 @@ export function MapCanvas({
                 <DefaultTableNode
                   key={table.id}
                   table={table}
+                  detail={liveDetailByTableId.get(table.id) ?? null}
                   isOwn={isOwn}
                   dimmed={dimmedByStatus || dimmedByFocus}
                   highlighted={isHighlighted}
@@ -356,7 +394,7 @@ export function MapCanvas({
             Overview
           </p>
           <div className="relative h-16 w-24 rounded-md bg-background/60">
-            {allTablesData.map((t) => {
+            {tables.map((t) => {
               const x = (t.position.x / 1060) * 88 + 4
               const y = (t.position.y / 380) * 52 + 4
               return (
@@ -423,6 +461,7 @@ function WaveDot({ type, status }: { type: string; status: WaveStatus }) {
     served: "bg-emerald-400",
     ready: "bg-red-400 animate-pulse",
     cooking: "bg-amber-400",
+    fired: "bg-orange-400",
     held: "bg-muted-foreground/30",
     not_started: "bg-muted-foreground/15",
   }
@@ -446,6 +485,7 @@ function WaveDot({ type, status }: { type: string; status: WaveStatus }) {
 
 function DefaultTableNode({
   table,
+  detail,
   isOwn,
   dimmed,
   highlighted,
@@ -455,6 +495,7 @@ function DefaultTableNode({
   appeared,
 }: {
   table: FloorTable
+  detail: FloorMapLiveDetail | null
   isOwn: boolean
   dimmed: boolean
   highlighted: boolean
@@ -467,21 +508,6 @@ function DefaultTableNode({
   const isFree = table.status === "free"
   const isUrgent = table.status === "urgent"
   const elapsed = table.seatedAt ? minutesAgo(table.seatedAt) : null
-
-  // Get rich detail data
-  const detail = React.useMemo(() => {
-    if (isFree) return null
-    return getTableDetailById(table.id) ??
-      getTableDetailFallback(
-        table.id,
-        table.number,
-        table.section,
-        sectionConfig[table.section].name,
-        table.guests,
-        table.status,
-        table.seatedAt,
-      )
-  }, [table, isFree])
 
   const waves = detail?.waves ?? []
   const alerts = detail?.alerts ?? []
@@ -560,7 +586,7 @@ function DefaultTableNode({
       {isFree ? (
         <div className="flex flex-col items-center gap-0.5">
           <span className={cn("font-mono text-sm font-bold", statusTextClasses[table.status])}>
-            {table.number}
+            T{table.number}
           </span>
           <span className="font-mono text-[8px] uppercase tracking-widest text-emerald-400/60">
             {table.capacity}p
@@ -578,7 +604,7 @@ function DefaultTableNode({
             </span>
             <div className="flex items-center gap-0.5 text-muted-foreground/60">
               <Users className="h-2.5 w-2.5" />
-              <span className="font-mono text-[9px]">{table.guests}</span>
+              <span className="font-mono text-[9px]">{table.guests}/{table.capacity}</span>
             </div>
             {elapsed !== null && (
               <span className={cn(
@@ -593,8 +619,8 @@ function DefaultTableNode({
           {/* ── Wave progress dots ── */}
           {waves.length > 0 && (
             <div className="flex items-center justify-center gap-1.5 px-1.5 pt-0.5">
-              {waves.map((w) => (
-                <WaveDot key={w.type} type={w.type} status={w.status} />
+              {waves.map((w, index) => (
+                <WaveDot key={`${w.type}-${index}`} type={w.type} status={w.status} />
               ))}
             </div>
           )}

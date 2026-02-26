@@ -43,16 +43,21 @@ function Chair({ x, y, size, facingAngle }: { x: number; y: number; size: number
 
 // Returns an inline SVG for each element type, sized to fill its container
 // The viewBox is expanded by `pad` on all sides so chairs etc. are never clipped.
+// chairCountOverride: when provided (floor map view mode), show this many chairs instead of element.seats.
+// Used to show guests when occupied, full capacity when available.
 export function ElementRenderer({
   element,
   width,
   height,
   colorOverride,
+  chairCountOverride,
 }: {
   element: PlacedElement
   width: number
   height: number
   colorOverride?: string
+  /** Override chair count for floor map: guests when occupied, capacity when available */
+  chairCountOverride?: number
 }) {
   const id = element.templateId
   const c = colorOverride ?? element.color
@@ -71,7 +76,7 @@ export function ElementRenderer({
 
   // ── ROUND TABLES ───────────────────────────────────
   if (id.startsWith("table-round")) {
-    const seats = element.seats ?? 4
+    const seats = chairCountOverride ?? element.seats ?? 4
     const cx = ox + width / 2
     const cy = oy + height / 2
     const tableR = Math.min(width, height) / 2 - 4
@@ -107,7 +112,7 @@ export function ElementRenderer({
 
   // ── OVAL TABLE ─────────────────────────────────────
   if (id.startsWith("table-oval")) {
-    const seats = element.seats ?? 6
+    const seats = chairCountOverride ?? element.seats ?? 6
     const cx = ox + width / 2
     const cy = oy + height / 2
     const rx = width / 2 - 4
@@ -142,7 +147,7 @@ export function ElementRenderer({
 
   // ── SQUARE / RECTANGULAR / BANQUET TABLES ──────────
   if (id.startsWith("table-square") || id.startsWith("table-rect") || id.startsWith("table-long")) {
-    const seats = element.seats ?? 4
+    const seats = chairCountOverride ?? element.seats ?? 4
     const cx = ox
     const cy = oy
     const chairSize = Math.min(14, Math.min(width, height) * 0.2)
@@ -261,7 +266,7 @@ export function ElementRenderer({
 
   // ── COUNTER TABLE ──────────────────────────────────
   if (id === "table-counter") {
-    const seats = element.seats ?? 4
+    const seats = chairCountOverride ?? element.seats ?? 4
     const cx = ox
     const cy = oy
     const chairSize = Math.min(12, width / (seats + 1) * 0.7)
@@ -301,7 +306,7 @@ export function ElementRenderer({
 
   // ── KIDS TABLE ─────────────────────────────────────
   if (id === "table-kids") {
-    const seats = element.seats ?? 4
+    const seats = chairCountOverride ?? element.seats ?? 4
     const cx = ox + width / 2
     const cy = oy + height / 2
     const chairSize = Math.min(14, Math.min(width, height) * 0.2)
@@ -471,8 +476,9 @@ export function ElementRenderer({
         <rect x={width * 0.08} y={height * 0.3} width={width * 0.84} height={height * 0.62} rx={4}
           fill={c} stroke="rgba(255,255,255,0.22)" strokeWidth="1.5" />
         {/* cushion dividers */}
-        {Array.from({ length: Math.max(1, (element.seats ?? 2) - 1) }).map((_, i) => {
-          const x = width * 0.12 + ((width * 0.76) / (element.seats ?? 2)) * (i + 1)
+        {Array.from({ length: Math.max(1, (chairCountOverride ?? element.seats ?? 2) - 1) }).map((_, i) => {
+          const seatCount = chairCountOverride ?? element.seats ?? 2
+          const x = width * 0.12 + ((width * 0.76) / seatCount) * (i + 1)
           return <line key={i} x1={x} y1={height * 0.35} x2={x} y2={height * 0.85} stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
         })}
         {/* pillows */}
@@ -512,7 +518,7 @@ export function ElementRenderer({
     const armRight = cx + width - cw
 
     // Split seats between horizontal and vertical edges proportionally
-    const seats = element.seats ?? 8
+    const seats = chairCountOverride ?? element.seats ?? 8
     const hRatio = width / (width + height)
     const hStoolCount = Math.max(1, Math.round(seats * hRatio))
     const vStoolCount = Math.max(0, seats - hStoolCount)
@@ -590,7 +596,7 @@ export function ElementRenderer({
     const armBottom = cy + height - ch
     const armLeft = cx + cw
 
-    const seats = element.seats ?? 8
+    const seats = chairCountOverride ?? element.seats ?? 8
     const hRatio = width / (width + height)
     const hStoolCount = Math.max(1, Math.round(seats * hRatio))
     const vStoolCount = Math.max(0, seats - hStoolCount)
@@ -661,7 +667,7 @@ export function ElementRenderer({
     const cx = ox
     const cy = oy
     const stoolSize = Math.min(12, Math.min(width, height) * 0.12)
-    const stoolCount = element.seats ?? 6
+    const stoolCount = chairCountOverride ?? element.seats ?? 6
 
     return (
       <svg viewBox={`0 0 ${vw} ${vh}`} width={width} height={height} className="block" style={{ filter: glow, overflow: "visible" }}>
@@ -727,7 +733,7 @@ export function ElementRenderer({
     const cx = ox
     const cy = oy
     const stoolSize = Math.min(12, height * 0.22)
-    const stoolCount = element.seats ?? 6
+    const stoolCount = chairCountOverride ?? element.seats ?? 6
     const stoolGap = stoolSize * 0.2
 
     return (

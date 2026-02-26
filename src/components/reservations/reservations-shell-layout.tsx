@@ -32,12 +32,11 @@ import { ReservationFormView } from "@/components/reservations/reservation-form-
 import { getReservationById, getReservationByStatus } from "@/lib/detail-modal-data"
 import {
   capacitySlots,
-  reservations,
+  useReservationsFromStore,
   restaurantConfig,
   type Reservation,
 } from "@/lib/reservations-data"
 import { guestDatabase, type BookingChannel, type FormTag } from "@/lib/reservation-form-data"
-import { activeWaitlist } from "@/lib/waitlist-data"
 import { cn } from "@/lib/utils"
 
 type ReservationLens = {
@@ -140,6 +139,7 @@ function mapOverviewTagsToFormTags(tags: Reservation["tags"]): FormTag[] {
 }
 
 export function ReservationsShellLayout({ children }: ReservationsShellLayoutProps) {
+  const { reservations, waitlistParties } = useReservationsFromStore()
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -176,8 +176,8 @@ export function ReservationsShellLayout({ children }: ReservationsShellLayoutPro
     [actionId]
   )
   const editDetailReservation = useMemo(
-    () => (actionId ? getReservationById(actionId) : undefined),
-    [actionId]
+    () => (actionId ? getReservationById(actionId, reservations) : undefined),
+    [actionId, reservations]
   )
   const newPrefill = useMemo(
     () => (
@@ -299,12 +299,12 @@ export function ReservationsShellLayout({ children }: ReservationsShellLayoutPro
         value: `${activeReservations}`,
       },
       waitlist: {
-        value: `${activeWaitlist.length}`,
+        value: `${waitlistParties.length}`,
       },
     }
 
     return { lensMetrics }
-  }, [])
+  }, [reservations, waitlistParties])
 
   const updateSearch = useCallback(
     (mutate: (next: URLSearchParams) => void) => {
@@ -341,8 +341,8 @@ export function ReservationsShellLayout({ children }: ReservationsShellLayoutPro
 
   const reservation = useMemo(() => {
     if (!detail) return getReservationByStatus("arriving")
-    return getReservationById(detail) ?? getReservationByStatus("arriving")
-  }, [detail])
+    return getReservationById(detail, reservations) ?? getReservationByStatus("arriving")
+  }, [detail, reservations])
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-zinc-950">

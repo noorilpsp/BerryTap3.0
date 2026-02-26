@@ -1,9 +1,13 @@
+import type { StoreTable } from "@/store/types"
+import { restaurantStore } from "@/store/restaurantStore"
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export type FloorTableStatus = "free" | "active" | "urgent" | "billing" | "closed"
 export type MealStage = "drinks" | "food" | "dessert" | "bill"
 export type AlertType = "food_ready" | "no_checkin" | "waiting"
-export type SectionId = "patio" | "bar" | "main"
+/** Section id - legacy (patio|bar|main) or custom from floor plan sections */
+export type SectionId = string
 export type FilterMode = "all" | "my_section" | "my_tables"
 export type ViewMode = "grid" | "map"
 
@@ -75,10 +79,21 @@ export const stageConfig: Record<MealStage, { icon: string; label: string }> = {
   bill: { icon: "\u{1F4B3}", label: "Bill" },
 }
 
-export const sectionConfig: Record<SectionId, { name: string }> = {
+export const defaultSectionConfig: Record<string, { name: string }> = {
   patio: { name: "Patio" },
   bar: { name: "Bar Area" },
   main: { name: "Main Dining" },
+}
+
+/** @deprecated use buildSectionConfig */
+export const sectionConfig = defaultSectionConfig
+
+/** Build section config from floor plan sections, or return default */
+export function buildSectionConfig(
+  sections?: { id: string; name: string }[] | null
+): Record<string, { name: string }> {
+  if (!sections || sections.length === 0) return defaultSectionConfig
+  return Object.fromEntries(sections.map((s) => [s.id, { name: s.name }]))
 }
 
 export const alertMessages: Record<AlertType, string> = {
@@ -99,30 +114,42 @@ export const restaurant: Restaurant = {
   ],
 }
 
-export const tables: FloorTable[] = [
-  // Patio (outdoor tables - mix of rounds and squares)
-  { id: "t1", number: 1, section: "patio", status: "free", capacity: 2, guests: 0, stage: null, position: { x: 90, y: 120 }, shape: "round", server: null },
-  { id: "t2", number: 2, section: "patio", status: "free", capacity: 2, guests: 0, stage: null, position: { x: 255, y: 120 }, shape: "round", server: null },
-  { id: "t3", number: 3, section: "patio", status: "free", capacity: 4, guests: 0, stage: null, position: { x: 420, y: 120 }, shape: "square", server: null },
-  { id: "t4", number: 4, section: "patio", status: "active", capacity: 4, guests: 3, stage: "drinks", position: { x: 90, y: 285 }, shape: "square", server: "s1", seatedAt: "2026-02-08T19:15:00Z" },
-  { id: "t5", number: 5, section: "patio", status: "urgent", capacity: 4, guests: 4, stage: "food", position: { x: 255, y: 285 }, shape: "square", server: "s1", seatedAt: "2026-02-08T18:43:00Z", alerts: ["food_ready"] },
-  { id: "t6", number: 6, section: "patio", status: "active", capacity: 2, guests: 2, stage: "food", position: { x: 420, y: 285 }, shape: "round", server: "s2", seatedAt: "2026-02-08T19:30:00Z" },
-  { id: "t7", number: 7, section: "patio", status: "free", capacity: 6, guests: 0, stage: null, position: { x: 90, y: 450 }, shape: "rectangle", server: null },
-  { id: "t8", number: 8, section: "patio", status: "active", capacity: 4, guests: 2, stage: "dessert", position: { x: 255, y: 450 }, shape: "square", server: "s1", seatedAt: "2026-02-08T18:20:00Z" },
-  { id: "t9", number: 9, section: "patio", status: "free", capacity: 2, guests: 0, stage: null, position: { x: 420, y: 450 }, shape: "round", server: null },
-  // Bar (high-tops and booths)
-  { id: "t10", number: 10, section: "bar", status: "active", capacity: 2, guests: 2, stage: "drinks", position: { x: 690, y: 165 }, shape: "round", server: "s2", seatedAt: "2026-02-08T19:45:00Z" },
-  { id: "t11", number: 11, section: "bar", status: "active", capacity: 2, guests: 1, stage: "food", position: { x: 855, y: 165 }, shape: "round", server: "s2", seatedAt: "2026-02-08T19:20:00Z" },
-  { id: "t12", number: 12, section: "bar", status: "active", capacity: 4, guests: 4, stage: "food", position: { x: 690, y: 330 }, shape: "booth", server: "s1", seatedAt: "2026-02-08T18:52:00Z" },
-  { id: "t13", number: 13, section: "bar", status: "urgent", capacity: 4, guests: 2, stage: "food", position: { x: 855, y: 330 }, shape: "booth", server: "s1", seatedAt: "2026-02-08T18:30:00Z", alerts: ["no_checkin"] },
-  // Main Dining (booths, rectangles for large groups, and 2-tops)
-  { id: "t14", number: 14, section: "main", status: "free", capacity: 4, guests: 0, stage: null, position: { x: 1125, y: 120 }, shape: "booth", server: null },
-  { id: "t15", number: 15, section: "main", status: "free", capacity: 6, guests: 0, stage: null, position: { x: 1290, y: 120 }, shape: "rectangle", server: null },
-  { id: "t16", number: 16, section: "main", status: "active", capacity: 8, guests: 6, stage: "food", position: { x: 1455, y: 120 }, shape: "rectangle", server: "s3", seatedAt: "2026-02-08T19:00:00Z" },
-  { id: "t17", number: 17, section: "main", status: "urgent", capacity: 4, guests: 3, stage: "food", position: { x: 1125, y: 285 }, shape: "square", server: "s3", seatedAt: "2026-02-08T18:35:00Z", alerts: ["food_ready"] },
-  { id: "t18", number: 18, section: "main", status: "active", capacity: 2, guests: 2, stage: "dessert", position: { x: 1290, y: 285 }, shape: "round", server: "s3", seatedAt: "2026-02-08T18:15:00Z" },
-  { id: "t19", number: 19, section: "main", status: "billing", capacity: 6, guests: 4, stage: "bill", position: { x: 1455, y: 285 }, shape: "rectangle", server: "s3", seatedAt: "2026-02-08T17:50:00Z" },
-]
+// Tables are read from the restaurant store. This mapper converts StoreTable to FloorTable for floor components.
+function mapStoreStatusToFloor(s: StoreTable["status"]): FloorTableStatus {
+  if (s === "reserved" || s === "cleaning") return "free"
+  return s
+}
+
+function mapStoreSectionToFloor(s: string | undefined): string {
+  if (!s || s === "private") return "main"
+  return s
+}
+
+export function storeTablesToFloorTables(tables: StoreTable[]): FloorTable[] {
+  return tables.map((t) => ({
+    id: t.id,
+    number: t.number,
+    section: mapStoreSectionToFloor(t.section),
+    status: mapStoreStatusToFloor(t.status),
+    capacity: t.capacity,
+    guests: t.guests ?? 0,
+    stage: t.stage ?? null,
+    position: t.position,
+    shape: t.shape,
+    server: t.serverId ?? null,
+    seatedAt: t.seatedAt ?? undefined,
+    alerts: t.alerts,
+    combinedWith: t.combinedWith,
+    width: t.width,
+    height: t.height,
+    rotation: t.rotation,
+  }))
+}
+
+/** Non-reactive getter for floor tables from store (e.g. in callbacks). For React components, use useRestaurantStore(s => storeTablesToFloorTables(s.tables)). */
+export function getFloorTables(): FloorTable[] {
+  return storeTablesToFloorTables(restaurantStore.getState().getTables())
+}
 
 export const combinedTables: CombinedTable[] = []
 
@@ -187,7 +214,7 @@ export function searchTables(
       else if (numQuery && num.includes(numQuery)) score += 60
 
       // Section name match
-      const secName = sectionConfig[t.section].name.toLowerCase().replace(/\s/g, "")
+      const secName = (sectionConfig[t.section]?.name ?? t.section ?? "").toLowerCase().replace(/\s/g, "")
       if (secName.includes(q)) score += 50
       if (secName.startsWith(q)) score += 10
 
@@ -319,7 +346,7 @@ export function getAvailableTables(
     })
 }
 
-export function getSectionBounds(sectionId: SectionId, allTables: FloorTable[]) {
+export function getSectionBounds(sectionId: string, allTables: FloorTable[]) {
   const sectionTables = allTables.filter((t) => t.section === sectionId)
   if (sectionTables.length === 0) return null
 

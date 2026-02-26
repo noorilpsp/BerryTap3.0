@@ -1,6 +1,12 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { useLocation } from "@/lib/contexts/LocationContext"
+import {
+  getAllFloorplansDb,
+  deleteFloorplanDb,
+  type SavedFloorplan,
+} from "@/lib/floorplan-storage-db"
 import {
   Dialog,
   DialogContent,
@@ -13,11 +19,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  getAllFloorplans,
-  deleteFloorplan,
-  type SavedFloorplan,
-} from "@/lib/floorplan-storage"
 import { Save, FolderOpen, Trash2, Calendar, Users, LayoutGrid } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
 
@@ -25,8 +26,9 @@ interface SaveLoadModalProps {
   open: boolean
   mode: "save" | "load"
   currentName?: string
+  currentFloorplanId?: string | null
   onClose: () => void
-  onSave: (name: string) => void
+  onSave: (name: string, overwriteId?: string) => void
   onLoad: (floorplan: SavedFloorplan) => void
 }
 
@@ -34,25 +36,35 @@ export function SaveLoadModal({
   open,
   mode,
   currentName,
+  currentFloorplanId,
   onClose,
   onSave,
   onLoad,
 }: SaveLoadModalProps) {
+  const { currentLocationId } = useLocation()
   const [name, setName] = useState(currentName || "")
+  const [saveAsNew, setSaveAsNew] = useState(!currentFloorplanId)
   const [floorplans, setFloorplans] = useState<SavedFloorplan[]>([])
 
   useEffect(() => {
-    if (open && mode === "load") {
-      setFloorplans(getAllFloorplans())
+    if (!open || !currentLocationId) return
+    if (mode === "load") {
+      let cancelled = false
+      getAllFloorplansDb(currentLocationId).then((all) => {
+        if (!cancelled) setFloorplans(all)
+      })
+      return () => { cancelled = true }
     }
-    if (open && mode === "save") {
+    if (mode === "save") {
       setName(currentName || "")
+      setSaveAsNew(!currentFloorplanId)
     }
-  }, [open, mode, currentName])
+  }, [open, mode, currentName, currentLocationId])
 
   const handleSave = () => {
     if (!name.trim()) return
-    onSave(name.trim())
+    const overwriteId = !saveAsNew && currentFloorplanId ? currentFloorplanId : undefined
+    onSave(name.trim(), overwriteId)
     onClose()
   }
 
@@ -61,9 +73,11 @@ export function SaveLoadModal({
     onClose()
   }
 
-  const handleDelete = (id: string) => {
-    deleteFloorplan(id)
-    setFloorplans(getAllFloorplans())
+  const handleDelete = async (id: string) => {
+    if (!currentLocationId) return
+    await deleteFloorplanDb(currentLocationId, id)
+    const all = await getAllFloorplansDb(currentLocationId)
+    setFloorplans(all)
   }
 
   if (mode === "save") {
@@ -80,8 +94,24 @@ export function SaveLoadModal({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            {currentFloorplanId && (
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 border border-border/50">
+                <input
+                  type="checkbox"
+                  id="save-as-new"
+                  checked={saveAsNew}
+                  onChange={(e) => setSaveAsNew(e.target.checked)}
+                  className="rounded border-border"
+                />
+                <Label htmlFor="save-as-new" className="text-sm cursor-pointer flex-1">
+                  Save as new floor plan (currently editing: <span className="font-medium text-foreground">{currentName || "Unnamed"}</span>)
+                </Label>
+              </div>
+            )}
             <div className="space-y-2">
-              <Label htmlFor="floorplan-name">Floorplan Name</Label>
+              <Label htmlFor="floorplan-name">
+                {saveAsNew ? "New Floorplan Name" : `Overwrite "${currentName || "Unnamed"}"`}
+              </Label>
               <Input
                 id="floorplan-name"
                 placeholder="e.g., Main Dining Room, Patio Layout..."

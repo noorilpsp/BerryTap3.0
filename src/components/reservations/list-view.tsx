@@ -12,15 +12,22 @@ import {
   type ListReservation,
   type ListReservationStatus,
   type GroupByOption,
-  listReservations,
   getListSummary,
+  reservationToListReservation,
+  waitlistPartyToListReservation,
 } from "@/lib/listview-data"
+import { useReservationsFromStore } from "@/lib/reservations-data"
 import { useMediaQuery } from "@/hooks/use-media-query"
 
 export function ListView() {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
+  const { reservations, waitlistParties } = useReservationsFromStore()
+  const listReservations = useMemo(
+    () => reservations.map(reservationToListReservation),
+    [reservations]
+  )
 
   const startOfDay = useCallback((date: Date) => {
     const next = new Date(date)
@@ -123,10 +130,33 @@ export function ListView() {
     }
 
     return result
-  }, [activeFilters, activeStatuses, getCurrentMinutes, searchQuery])
+  }, [listReservations, activeFilters, activeStatuses, getCurrentMinutes, searchQuery])
 
-  const summary = useMemo(() => getListSummary(listReservations), [])
+  const summary = useMemo(() => getListSummary(listReservations), [listReservations])
   const filteredSummary = useMemo(() => getListSummary(filteredReservations), [filteredReservations])
+  // Waitlist chip shows actual queue length from store, not reservations with status "waitlist"
+  const statusCountsWithWaitlist = useMemo(
+    () => ({ ...summary.statusCounts, waitlist: waitlistParties.length }),
+    [summary.statusCounts, waitlistParties.length]
+  )
+
+  // Waitlist queue as list rows so they appear in the list (and in "Waitlist" when grouped by status)
+  const waitlistAsListRows = useMemo(
+    () => waitlistParties.map(waitlistPartyToListReservation),
+    [waitlistParties]
+  )
+  // When only "Waitlist" is selected, show just waitlist rows; otherwise include waitlist in the list so "Waitlist" appears as a section
+  const isWaitlistOnlyView =
+    activeStatuses.length === 1 && activeStatuses[0] === "waitlist"
+  const displayReservations = useMemo(() => {
+    if (isWaitlistOnlyView) return waitlistAsListRows
+    const includeWaitlist = activeStatuses.length === 0 || activeStatuses.includes("waitlist")
+    return includeWaitlist ? [...filteredReservations, ...waitlistAsListRows] : filteredReservations
+  }, [isWaitlistOnlyView, filteredReservations, waitlistAsListRows, activeStatuses])
+  const displaySummary = useMemo(
+    () => getListSummary(displayReservations),
+    [displayReservations]
+  )
 
   // Handlers
   const handleAddFilter = useCallback((filter: ActiveFilter) => {
@@ -220,9 +250,9 @@ export function ListView() {
       {isDesktop ? (
         <>
           <ListTopBar
-            totalReservations={filteredSummary.totalRes}
-            totalCovers={filteredSummary.totalCovers}
-            statusCounts={summary.statusCounts}
+            totalReservations={displaySummary.totalRes}
+            totalCovers={displaySummary.totalCovers}
+            statusCounts={statusCountsWithWaitlist}
             selectedDate={selectedDate}
             onSelectedDateChange={(date) => setSelectedDate(startOfDay(date))}
             onSearchChange={setSearchQuery}
@@ -238,7 +268,7 @@ export function ListView() {
             onNewReservation={handleOpenNewReservation}
           />
           <ListDataTable
-            reservations={filteredReservations}
+            reservations={displayReservations}
             groupBy={groupBy}
             selectedIds={selectedIds}
             onToggleSelect={handleToggleSelect}
@@ -255,7 +285,7 @@ export function ListView() {
         </>
       ) : (
         <ListMobileCards
-          reservations={filteredReservations}
+          reservations={displayReservations}
           groupBy={groupBy}
           onSearchChange={setSearchQuery}
           activeStatuses={activeStatuses}

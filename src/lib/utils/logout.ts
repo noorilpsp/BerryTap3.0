@@ -17,6 +17,7 @@ export function clearUserData() {
   // Add more keys here as needed
   const keysToRemove = [
     'current_merchant', // Cookie-based fallback
+    'current_location',
     // Add other user-specific localStorage keys here
   ]
 
@@ -29,7 +30,7 @@ export function clearUserData() {
   document.cookie.split(';').forEach((cookie) => {
     const eqPos = cookie.indexOf('=')
     const name = eqPos > -1 ? cookie.substr(0, eqPos).trim() : cookie.trim()
-    if (name.startsWith('current_merchant') || name === 'bt_admin_status') {
+    if (name.startsWith('current_merchant') || name === 'current_location' || name === 'bt_admin_status') {
       document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/`
     }
   })

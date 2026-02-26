@@ -1,5 +1,6 @@
 // ── Timeline View ("The River") Data ─────────────────────────────────────────
 
+import type { StoreTable } from "@/store/types"
 import { type CapacitySlot, capacitySlots, restaurantConfig } from "./reservations-data"
 
 export type TimelineStatus =
@@ -103,6 +104,23 @@ export const tableLanes: TableLane[] = [
   { id: "T25", label: "T25", seats: 4, zone: "private" },
 ]
 
+/** Build table lanes from store tables so the timeline only shows tables from the floor plan. */
+export function getTableLanesFromStore(tables: StoreTable[]): TableLane[] {
+  const sectionToZone = (section: StoreTable["section"]): TableLane["zone"] => {
+    if (section === "bar") return "main"
+    return section
+  }
+  return tables
+    .slice()
+    .sort((a, b) => a.number - b.number)
+    .map((t) => ({
+      id: `T${t.number}`,
+      label: `T${t.number}`,
+      seats: t.capacity,
+      zone: sectionToZone(t.section),
+    }))
+}
+
 export const zones = [
   { id: "main" as const,    name: "Main Dining" },
   { id: "patio" as const,   name: "Patio" },
@@ -197,6 +215,156 @@ export function getTimelineCapacity(): CapacitySlot[] {
   return capacitySlots
 }
 
+// ── Build timeline blocks from reservations (store / reservations-data) ───────
+
+/** Minimal reservation shape for building timeline blocks (avoids circular deps). */
+export interface ReservationLikeForTimeline {
+  id: string
+  guestName: string
+  partySize: number
+  time: string
+  table?: string | null
+  tableId?: string | null
+  endTime?: string | null
+  duration?: number | null
+  status: string
+  risk?: string
+  tags?: { type: string; label: string }[]
+  date?: string | null
+}
+
+const DEFAULT_BLOCK_DURATION_MIN = 90
+
+function parseTimeToMinutesPublic(time: string): number {
+  const parts = time.split(":")
+  const h = Number(parts[0])
+  const m = parts[1] != null ? Number(parts[1]) : 0
+  return h * 60 + m
+}
+
+function timeFromMinutes(totalMin: number): string {
+  const n = ((totalMin % (24 * 60)) + (24 * 60)) % (24 * 60)
+  const h = Math.floor(n / 60).toString().padStart(2, "0")
+  const m = (n % 60).toString().padStart(2, "0")
+  return `${h}:${m}`
+}
+
+function mapReservationStatusToTimeline(status: string): TimelineStatus {
+  switch (status) {
+    case "seated": return "seated"
+    case "completed": return "completed"
+    case "no-show": return "no-show"
+    case "late": return "late"
+    case "arriving": return "arriving"
+    case "confirmed": return "confirmed"
+    case "unconfirmed": return "unconfirmed"
+    case "cancelled": return "no-show"
+    default: return "confirmed"
+  }
+}
+
+/** Normalize table id to match tableLanes (e.g. "12" or "t12" -> "T12"). */
+function normalizeTableIdForBlock(raw: string): string {
+  const s = raw.trim()
+  if (!s) return s
+  const lower = s.toLowerCase()
+  if (lower.charAt(0) === "t") return "T" + s.slice(1)
+  if (/^\d+$/.test(s)) return "T" + s
+  return s
+}
+
+/** Convert a single reservation to a timeline block (only if it has a table). Returns null if no table. */
+export function reservationToTimelineBlock(r: ReservationLikeForTimeline, todayIso: string): TimelineBlock | null {
+  const table = (r.table ?? r.tableId ?? "").trim()
+  if (!table) return null
+  const tableId = normalizeTableIdForBlock(table)
+  const startMin = parseTimeToMinutesPublic(r.time)
+  let endMin: number
+  if (r.endTime) {
+    endMin = parseTimeToMinutesPublic(r.endTime)
+    if (endMin <= startMin) endMin += 24 * 60
+  } else {
+    const durationMin = typeof r.duration === "number" && r.duration > 0 ? r.duration : DEFAULT_BLOCK_DURATION_MIN
+    endMin = startMin + durationMin
+  }
+  const endTime = timeFromMinutes(endMin)
+  const tags: TimelineTag[] = (r.tags ?? []).map((t) => ({
+    type: (t.type as TimelineTag["type"]) || "note",
+    label: t.label,
+    icon: "tag",
+  }))
+  return {
+    id: r.id,
+    guestName: r.guestName,
+    partySize: r.partySize,
+    table: tableId,
+    startTime: r.time,
+    endTime,
+    date: r.date ?? todayIso,
+    status: mapReservationStatusToTimeline(r.status),
+    risk: (r.risk as "low" | "medium" | "high") ?? "low",
+    tags,
+  }
+}
+
+/** Build non-overlapping timeline blocks from an array of blocks (e.g. from reservations). */
+export function buildTimelineBlocksNoOverlapFromBlocks(inputBlocks: TimelineBlock[]): TimelineBlock[] {
+  const tableIds = Array.from(new Set(inputBlocks.map((block) => block.table)))
+  const result: TimelineBlock[] = []
+  const todayIso = getTodayIsoInternal()
+
+  for (const tableId of tableIds) {
+    const tableBlocks = inputBlocks.filter((block) => block.table === tableId)
+    const rawStarts = tableBlocks.map((block) => parseTimeToMinutes(block.startTime))
+    const anchorStart = rawStarts.length > 0 ? Math.min(...rawStarts) : 0
+
+    const normalized = tableBlocks
+      .map((block) => {
+        const start = parseTimeToMinutes(block.startTime)
+        const end = parseTimeToMinutes(block.endTime)
+        const window = normalizeWindow(start, end, anchorStart)
+        if (!window) return null
+        return { block, start: window.start, end: window.end }
+      })
+      .filter((item): item is { block: TimelineBlock; start: number; end: number } => item !== null)
+      .sort((a, b) => a.start - b.start || a.end - b.end || a.block.id.localeCompare(b.block.id))
+
+    let lastEnd = Number.NEGATIVE_INFINITY
+    for (const { block, start, end } of normalized) {
+      const adjustedStart = Math.max(start, lastEnd)
+      const adjustedEnd = Math.max(end, adjustedStart + 15)
+      lastEnd = adjustedEnd
+      result.push({
+        ...block,
+        startTime: toTime24(adjustedStart),
+        endTime: toTime24(adjustedEnd),
+        date: block.date ?? todayIso,
+      })
+    }
+  }
+
+  return result
+}
+
+/** Build timeline blocks from reservations (store); only reservations with a table in tableLanes are included. */
+export function getTimelineBlocksFromReservations(
+  reservations: ReservationLikeForTimeline[],
+  validTableIds?: Set<string>
+): TimelineBlock[] {
+  const todayIso = getTodayIsoInternal()
+  const tableSet = validTableIds ?? new Set(tableLanes.map((l) => l.id))
+  const withTable = reservations.filter((r) => {
+    const raw = (r.table ?? r.tableId ?? "").trim()
+    if (!raw) return false
+    const normalized = normalizeTableIdForBlock(raw)
+    return tableSet.has(normalized)
+  })
+  const raw = withTable
+    .map((r) => reservationToTimelineBlock(r, todayIso))
+    .filter((b): b is TimelineBlock => b !== null)
+  return buildTimelineBlocksNoOverlapFromBlocks(raw)
+}
+
 // ── Mock Timeline Blocks ─────────────────────────────────────────────────────
 
 /** ISO date for the current service day — used to stamp demo blocks so that
@@ -205,6 +373,7 @@ function getTodayIso(): string {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
 }
+const getTodayIsoInternal = getTodayIso
 const TODAY = getTodayIso()
 
 export const timelineBlocks: TimelineBlock[] = [
@@ -1056,8 +1225,9 @@ export function getMergedForTable(tableId: string): MergedBlock | undefined {
   return mergedBlocks.find((m) => m.table === tableId)
 }
 
-export function getTablesForZone(zoneId: string): TableLane[] {
-  return tableLanes.filter((t) => t.zone === zoneId)
+export function getTablesForZone(zoneId: string, lanes?: TableLane[]): TableLane[] {
+  const list = lanes ?? tableLanes
+  return list.filter((t) => t.zone === zoneId)
 }
 
 export function getBlockColor(block: TimelineBlock): {

@@ -17,11 +17,13 @@ import { tableStatusConfig, minutesAgo } from "@/lib/table-data"
 interface TopBarProps {
   table: TableDetail
   onToggleInfo: () => void
+  onCloseTable?: () => void
 }
 
 export function TopBar({
   table,
   onToggleInfo,
+  onCloseTable,
 }: TopBarProps) {
   const [mounted, setMounted] = useState(false)
 
@@ -36,8 +38,8 @@ export function TopBar({
   return (
     <header className="flex items-center gap-2 border-b border-border bg-card px-3 py-2.5 md:px-4 md:py-3">
       {/* Back button */}
-      <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" aria-label="Back to My Tables" asChild>
-        <Link href="/">
+      <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" aria-label="Back to Floor Plan" asChild>
+        <Link href="/floor-map">
           <ArrowLeft className="h-4 w-4" />
         </Link>
       </Button>
@@ -113,7 +115,20 @@ export function TopBar({
           <DropdownMenuItem>Transfer Server</DropdownMenuItem>
           <DropdownMenuItem>Merge Tables</DropdownMenuItem>
           <DropdownMenuItem>Split Table</DropdownMenuItem>
-          <DropdownMenuItem className="text-destructive">Close Table</DropdownMenuItem>
+          {table.status !== "available" && (
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive cursor-pointer"
+              onSelect={() => {
+                queueMicrotask(() => onCloseTable?.())
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
+                onCloseTable?.()
+              }}
+            >
+              Close Table
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </header>

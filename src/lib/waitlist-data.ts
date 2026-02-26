@@ -95,6 +95,22 @@ export const SERVICE_PERIOD = "Dinner"
 // Minutes since 17:00 that equals "now"
 export const NOW_MINUTES = 143 // 7:23 PM = 143 min after 17:00
 
+/** Map store/reservations-data waitlist party to full WaitlistEntry (for UI that expects bestMatch, etc.). */
+export type WaitlistPartyLike = { id: string; name: string; partySize: number; quotedWait: number; notes?: string }
+export function waitlistPartyToWaitlistEntry(wp: WaitlistPartyLike): WaitlistEntry {
+  return {
+    id: wp.id,
+    name: wp.name,
+    partySize: wp.partySize,
+    quotedWait: wp.quotedWait,
+    joinedAt: Math.max(0, NOW_MINUTES - wp.quotedWait),
+    location: "at-restaurant",
+    bestMatch: null,
+    altMatches: [],
+    notes: wp.notes,
+  }
+}
+
 // ── Active Waitlist (expanded scenarios for testing) ─────────────────────────
 
 export const activeWaitlist: WaitlistEntry[] = [

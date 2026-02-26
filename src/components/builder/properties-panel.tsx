@@ -1,5 +1,6 @@
 "use client"
 
+import { useState } from "react"
 import {
   Trash2,
   Copy,
@@ -9,15 +10,33 @@ import {
   ArrowDownToLine,
   RotateCw,
 } from "lucide-react"
-import type { PlacedElement } from "@/lib/floorplan-types"
+import type { PlacedElement, FloorSection } from "@/lib/floorplan-types"
+import { getAssignedTableNumberForElement } from "@/lib/floorplan-convert"
+import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { Separator } from "@/components/ui/separator"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+
+function isSeatBearing(el: PlacedElement): boolean {
+  return (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
+}
 
 interface PropertiesPanelProps {
   element: PlacedElement
+  sections: FloorSection[]
+  /** All elements, used to validate table number uniqueness */
+  allElements: PlacedElement[]
+  /** Table numbers already used by other plans and in DB. From getUsedTableNumbersForPlanDb. */
+  usedTableNumbers?: number[]
   onUpdate: (id: string, updates: Partial<PlacedElement>) => void
   onDelete: (id: string) => void
   onDuplicate: (id: string) => void
@@ -27,12 +46,27 @@ interface PropertiesPanelProps {
 
 export function PropertiesPanel({
   element,
+  sections,
+  allElements,
+  usedTableNumbers = [],
   onUpdate,
   onDelete,
   onDuplicate,
   onBringToFront,
   onSendToBack,
 }: PropertiesPanelProps) {
+  const [tableNumberError, setTableNumberError] = useState<string | null>(null)
+
+  const assignedTableNumber =
+    element.tableNumber == null && isSeatBearing(element)
+      ? getAssignedTableNumberForElement(
+          element.id,
+          allElements,
+          sections,
+          usedTableNumbers
+        )
+      : null
+
   return (
     <div className="flex flex-col gap-4 p-4">
       <div className="flex items-center justify-between">
@@ -71,6 +105,29 @@ export function PropertiesPanel({
       </div>
 
       <Separator className="bg-border/50" />
+
+      {isSeatBearing(element) && sections.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <Label className="text-[11px] text-muted-foreground uppercase tracking-wider">
+            Section
+          </Label>
+          <Select
+            value={element.sectionId ?? sections[0]?.id ?? ""}
+            onValueChange={(v) => onUpdate(element.id, { sectionId: v })}
+          >
+            <SelectTrigger className="h-8 text-xs bg-card border-border/50">
+              <SelectValue placeholder="Select section" />
+            </SelectTrigger>
+            <SelectContent>
+              {sections.map((s) => (
+                <SelectItem key={s.id} value={s.id} className="text-xs">
+                  {s.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
       <div className="flex flex-col gap-1.5">
         <Label className="text-[11px] text-muted-foreground uppercase tracking-wider">
@@ -199,6 +256,59 @@ export function PropertiesPanel({
           </span>
         </div>
       </div>
+
+      {isSeatBearing(element) && (
+        <div className="flex flex-col gap-1.5">
+          <Label className="text-[11px] text-muted-foreground uppercase tracking-wider">
+            Table Number
+          </Label>
+          <Input
+            type="number"
+            value={element.tableNumber ?? ""}
+            onChange={(e) => {
+              setTableNumberError(null)
+              const raw = e.target.value
+              if (raw === "") {
+                onUpdate(element.id, { tableNumber: undefined })
+                return
+              }
+              const num = parseInt(raw, 10)
+              if (!Number.isInteger(num) || num <= 0) return
+              const takenByOther = allElements.some(
+                (el) =>
+                  el.id !== element.id &&
+                  isSeatBearing(el) &&
+                  el.tableNumber === num
+              )
+              if (takenByOther) {
+                setTableNumberError("Table number already in use")
+                return
+              }
+              onUpdate(element.id, { tableNumber: num })
+            }}
+            onBlur={() => setTableNumberError(null)}
+            className={cn(
+              "h-7 text-xs font-mono bg-card focus:border-primary/50",
+              tableNumberError ? "border-destructive" : "border-border/50"
+            )}
+            placeholder={
+              element.tableNumber != null
+                ? undefined
+                : assignedTableNumber != null
+                  ? `T${assignedTableNumber}`
+                  : "Auto"
+            }
+            min={1}
+            max={999}
+          />
+          <p className={cn(
+            "text-[10px]",
+            tableNumberError ? "text-destructive" : "text-muted-foreground"
+          )}>
+            {tableNumberError ?? "Must be unique across all sections"}
+          </p>
+        </div>
+      )}
 
       {element.seats !== undefined && (
         <div className="flex flex-col gap-1.5">

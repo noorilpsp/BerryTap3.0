@@ -9,19 +9,28 @@ import { MapCanvas } from "@/components/floor-map/map-canvas"
 import { GridView } from "@/components/floor-map/grid-view"
 import { QuickActionsMenu } from "@/components/floor-map/quick-actions-menu"
 import { SeatPartyModal } from "@/components/floor-map/seat-party-modal"
-import { CloseZoomView } from "@/components/floor-map/close-zoom-view"
 import {
-  tables as defaultTables,
   currentServer,
   getStatusCounts,
   filterTablesByMode,
   filterTablesByStatus,
-  sectionConfig,
+  buildSectionConfig,
   floorStatusConfig,
-  getSectionBounds, // Declare the variable here
+  getSectionBounds,
+  storeTablesToFloorTables,
 } from "@/lib/floor-map-data"
-import { getActiveFloorplan, convertElementsToTables, type SavedFloorplan, getAllFloorplans, setActiveFloorplanId } from "@/lib/floorplan-storage"
+import { useRestaurantStore } from "@/store/restaurantStore"
+import {
+  getAllFloorplansDb,
+  getActiveFloorplanDb,
+  setActiveFloorplanIdDb,
+  getTablesForFloorplanDb,
+  type SavedFloorplan,
+} from "@/lib/floorplan-storage-db"
+import { useLocation } from "@/lib/contexts/LocationContext"
 import { FloorplanSelector } from "@/components/floor-map/floorplan-selector"
+import { ensureSessionForTable } from "@/app/actions/orders"
+import { recordSessionEvent } from "@/app/actions/session-events"
 import type { FilterMode, ViewMode, FloorTableStatus, SectionId, SeatPartyForm } from "@/lib/floor-map-data"
 import { Plus, Hammer } from "lucide-react"
 import Link from "next/link"
@@ -34,66 +43,85 @@ import {
 } from "@/lib/animation-config"
 import { usePrefersReducedMotion } from "@/hooks/use-map-gestures"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { useRouter } from "next/navigation"
 
 export default function FloorMapPage() {
+  const router = useRouter()
+  const { currentLocationId } = useLocation()
   const isMobile = useIsMobile()
   const reducedMotion = usePrefersReducedMotion()
   const windowWidth = typeof window !== "undefined" ? window.innerWidth : 1024
 
-  // ── Load Tables and Elements from Active Floorplan or Default ───────────
-  const [tables, setTables] = useState(defaultTables)
+  // ── Tables: single source from store; loading a floorplan applies it to the store ──
+  const storeTables = useRestaurantStore((s) => s.tables)
+  const tables = React.useMemo(
+    () => storeTablesToFloorTables(storeTables),
+    [storeTables]
+  )
   const [floorplanElements, setFloorplanElements] = useState<any[]>([])
-  const [usingCustomFloorplan, setUsingCustomFloorplan] = useState(false)
   const [allFloorplans, setAllFloorplans] = useState<SavedFloorplan[]>([])
   const [activeFloorplanId, setActiveFloorplanIdState] = useState<string | null>(null)
-  
+  const [activeFloorplanSections, setActiveFloorplanSections] = useState<{ id: string; name: string }[] | undefined>()
+  const [initialLoadDone, setInitialLoadDone] = useState(false)
+
+  const sectionConfig = buildSectionConfig(activeFloorplanSections)
+
   useEffect(() => {
-    const floorplans = getAllFloorplans()
-    setAllFloorplans(floorplans)
-    
-    const activeFloorplan = getActiveFloorplan()
-    setActiveFloorplanIdState(activeFloorplan?.id || null)
-    
-    if (activeFloorplan && activeFloorplan.elements.length > 0) {
-      const convertedTables = convertElementsToTables(activeFloorplan.elements)
-      if (convertedTables.length > 0) {
-        setTables(convertedTables)
-        setFloorplanElements(activeFloorplan.elements)
-        setUsingCustomFloorplan(true)
+    if (!currentLocationId) {
+      setInitialLoadDone(false)
+      return
+    }
+    let cancelled = false
+    setInitialLoadDone(false)
+    async function load() {
+      try {
+        const [all, active] = await Promise.all([
+          getAllFloorplansDb(currentLocationId!),
+          getActiveFloorplanDb(currentLocationId!),
+        ])
+        if (cancelled) return
+        setAllFloorplans(all)
+        setActiveFloorplanIdState(active?.id ?? null)
+        setActiveFloorplanSections(active?.sections)
+        if (active?.elements?.length && active?.id) {
+          const storeTablesFromPlan = await getTablesForFloorplanDb(currentLocationId!, active.id)
+          if (storeTablesFromPlan.length > 0) {
+            useRestaurantStore.getState().setTables(storeTablesFromPlan)
+            setFloorplanElements(active.elements)
+          }
+        }
+      } finally {
+        if (!cancelled) setInitialLoadDone(true)
       }
     }
-  }, [])
+    load()
+    return () => { cancelled = true }
+  }, [currentLocationId])
 
-  // ── Floorplan Change Handler ───────────────────────────────────────────
-  const handleFloorplanChange = useCallback((floorplan: SavedFloorplan | null) => {
-    if (floorplan && floorplan.elements.length > 0) {
-      const convertedTables = convertElementsToTables(floorplan.elements)
-      if (convertedTables.length > 0) {
-        setTables(convertedTables)
+  const handleFloorplanChange = useCallback(async (floorplan: SavedFloorplan | null) => {
+    if (!currentLocationId) return
+    if (floorplan?.elements?.length && floorplan?.id) {
+      const storeTablesFromPlan = await getTablesForFloorplanDb(currentLocationId, floorplan.id)
+      if (storeTablesFromPlan.length > 0) {
+        useRestaurantStore.getState().setTables(storeTablesFromPlan)
         setFloorplanElements(floorplan.elements)
-        setUsingCustomFloorplan(true)
         setActiveFloorplanIdState(floorplan.id)
-        setActiveFloorplanId(floorplan.id)
+        setActiveFloorplanSections(floorplan.sections)
+        await setActiveFloorplanIdDb(currentLocationId, floorplan.id)
         return
       }
     }
-    // Fall back to demo
-    setTables(defaultTables)
     setFloorplanElements([])
-    setUsingCustomFloorplan(false)
     setActiveFloorplanIdState(null)
-    setActiveFloorplanId(null)
-  }, [])
+    setActiveFloorplanSections(undefined)
+    await setActiveFloorplanIdDb(currentLocationId, null)
+  }, [currentLocationId])
   
   // ── Tab Change Handler ─────────────────────────────────────────────────
   const handleTabChange = useCallback((tabId: string) => {
-    if (tabId === "demo") {
-      handleFloorplanChange(null)
-    } else {
-      const floorplan = allFloorplans.find(fp => fp.id === tabId)
-      if (floorplan) {
-        handleFloorplanChange(floorplan)
-      }
+    const floorplan = allFloorplans.find(fp => fp.id === tabId)
+    if (floorplan) {
+      handleFloorplanChange(floorplan)
     }
   }, [allFloorplans, handleFloorplanChange])
 
@@ -111,7 +139,6 @@ export default function FloorMapPage() {
   // ── Highlight State ──────────────────────────────────────────────────────
   const [highlightedTableId, setHighlightedTableId] = useState<string | null>(null)
   const [highlightType, setHighlightType] = useState<"search" | "alert" | null>(null)
-  const [focusedTableId, setFocusedTableId] = useState<string | null>(null)
   const [focusedSection, setFocusedSection] = useState<SectionId | null>(null)
 
   // ── Quick Actions ────────────────────────────────────────────────────────
@@ -124,10 +151,6 @@ export default function FloorMapPage() {
   // ── Seat Party State ──────────────────────────────────────────────────────
   const [seatPartyOpen, setSeatPartyOpen] = useState(false)
   const [seatPartyPreSelect, setSeatPartyPreSelect] = useState<string | null>(null)
-
-  // ── Level 3 State ────────────────────────────────────────────────────────
-  const [closeZoomTableId, setCloseZoomTableId] = useState<string | null>(null)
-  const [exitingCloseZoom, setExitingCloseZoom] = useState(false)
 
   // ── View Switch Animation State ──────────────────────────────────────────
   const [viewTransition, setViewTransition] = useState<
@@ -166,12 +189,12 @@ export default function FloorMapPage() {
   if (filterMode !== "all") {
     activeFilterChips.push(
       filterMode === "my_section"
-        ? `Section: ${sectionConfig[currentServer.section].name}`
+        ? `Section: ${sectionConfig[currentServer.section]?.name ?? currentServer.section}`
         : `My Tables (${currentServer.assignedTables.length})`
     )
   }
   if (sectionFilter) {
-    activeFilterChips.push(sectionConfig[sectionFilter].name)
+    activeFilterChips.push(sectionConfig[sectionFilter]?.name ?? sectionFilter)
   }
   if (statusFilter) {
     activeFilterChips.push(floorStatusConfig[statusFilter].label)
@@ -205,18 +228,27 @@ export default function FloorMapPage() {
 
   // ── Fit to Screen (Maximizes scale while keeping all elements visible) ──
   const handleFitToScreen = useCallback(() => {
-    if (floorplanElements.length === 0) return
-
     const PADDING = 32
     const containerWidth = windowWidth
     // The map container takes up the full height minus TopBar + StatsBar (~104px)
     const containerHeight = typeof window !== "undefined" ? window.innerHeight - 104 : 600
 
-    // Get bounding box of all elements
-    const minX = Math.min(...floorplanElements.map((e) => e.x))
-    const minY = Math.min(...floorplanElements.map((e) => e.y))
-    const maxX = Math.max(...floorplanElements.map((e) => e.x + e.width))
-    const maxY = Math.max(...floorplanElements.map((e) => e.y + e.height))
+    let minX: number, minY: number, maxX: number, maxY: number
+    if (floorplanElements.length > 0) {
+      minX = Math.min(...floorplanElements.map((e) => e.x))
+      minY = Math.min(...floorplanElements.map((e) => e.y))
+      maxX = Math.max(...floorplanElements.map((e) => e.x + e.width))
+      maxY = Math.max(...floorplanElements.map((e) => e.y + e.height))
+    } else if (tables.length > 0) {
+      const w = (t: { position: { x: number; y: number }; width?: number; height?: number }) => t.width ?? 64
+      const h = (t: { position: { x: number; y: number }; width?: number; height?: number }) => t.height ?? 64
+      minX = Math.min(...tables.map((t) => t.position.x))
+      minY = Math.min(...tables.map((t) => t.position.y))
+      maxX = Math.max(...tables.map((t) => t.position.x + w(t)))
+      maxY = Math.max(...tables.map((t) => t.position.y + h(t)))
+    } else {
+      return
+    }
 
     const contentWidth = maxX - minX
     const contentHeight = maxY - minY
@@ -256,23 +288,23 @@ export default function FloorMapPage() {
     }
 
     animateTransition(targetScale, targetOffset, DURATIONS.zoomIn)
-  }, [floorplanElements, windowWidth, animateTransition])
+  }, [floorplanElements, tables, windowWidth, animateTransition])
 
-  // Auto-fit on floorplan load
+  // Auto-fit when we have tables or floorplan elements
   useEffect(() => {
-    if (floorplanElements.length > 0) {
+    if (floorplanElements.length > 0 || tables.length > 0) {
       const timer = setTimeout(() => handleFitToScreen(), 100)
       return () => clearTimeout(timer)
     }
-  }, [floorplanElements, handleFitToScreen])
+  }, [floorplanElements, tables, handleFitToScreen])
 
   // Re-fit on window resize
   useEffect(() => {
-    if (floorplanElements.length === 0) return
+    if (floorplanElements.length === 0 && tables.length === 0) return
     const onResize = () => handleFitToScreen()
     window.addEventListener("resize", onResize)
     return () => window.removeEventListener("resize", onResize)
-  }, [floorplanElements, handleFitToScreen])
+  }, [floorplanElements, tables, handleFitToScreen])
 
   // ── Zoom In/Out ──────────────────────────────────────────────────────────
   const handleZoomIn = useCallback(() => {
@@ -301,25 +333,10 @@ export default function FloorMapPage() {
     (tableId: string) => {
       const table = tables.find((t) => t.id === tableId)
       if (!table) return
-      setFocusedTableId(tableId)
-      const delay = reducedMotion ? 1 : 100
-      setTimeout(() => {
-        setCloseZoomTableId(tableId)
-        setFocusedTableId(null)
-      }, delay)
+      router.push(`/table/${tableId}`)
     },
-    [reducedMotion]
+    [tables, router]
   )
-
-  // ── Close Zoom Back ─────────────────────────────────────────────────────
-  const handleCloseZoomBack = useCallback(() => {
-    setExitingCloseZoom(true)
-    const exitDur = getAnimatedDuration(DURATIONS.zoomOut, windowWidth, reducedMotion)
-    setTimeout(() => {
-      setCloseZoomTableId(null)
-      setExitingCloseZoom(false)
-    }, exitDur)
-  }, [windowWidth, reducedMotion])
 
   // ── Seat Party ──────────────────────────────────────────────────────────
   const handleOpenSeatParty = useCallback((preSelectTableId?: string) => {
@@ -332,36 +349,40 @@ export default function FloorMapPage() {
     setSeatPartyPreSelect(null)
   }, [])
 
-  const handlePartySeated = useCallback((formData: SeatPartyForm) => {
-    if (!formData.tableId) return
-    
-    // Update table status to "active" with all seating information
-    setTables((prev) =>
-      prev.map((t) =>
-        t.id === formData.tableId
-          ? {
-              ...t,
-              status: "active",
-              guests: formData.partySize,
-              stage: "drinks",
-              server: currentServer.id,
-              seatedAt: new Date().toISOString(),
-            }
-          : t
-      )
-    )
-    
-    console.log("[v0] Party seated with full details:", {
-      tableId: formData.tableId,
-      partySize: formData.partySize,
-      dietary: formData.dietary,
-      occasion: formData.occasion,
-      notes: formData.notes,
-    })
-    
-    setSeatPartyOpen(false)
-    setSeatPartyPreSelect(null)
-  }, [])
+  const handlePartySeated = useCallback(
+    (formData: SeatPartyForm) => {
+      if (!formData.tableId) return
+
+      const store = useRestaurantStore.getState()
+      store.updateTable(formData.tableId, {
+        status: "active",
+        guests: formData.partySize,
+        stage: "drinks",
+        serverId: currentServer.id,
+        seatedAt: new Date().toISOString(),
+      })
+      store.openOrderForTable(formData.tableId, formData.partySize)
+
+      if (currentLocationId) {
+        ensureSessionForTable(
+          currentLocationId,
+          formData.tableId,
+          formData.partySize,
+          currentServer.id
+        ).then((sessionId) => {
+          if (sessionId) {
+            recordSessionEvent(currentLocationId, sessionId, "guest_seated", {
+              guestCount: formData.partySize,
+            }).catch(() => {})
+          }
+        })
+      }
+
+      setSeatPartyOpen(false)
+      setSeatPartyPreSelect(null)
+    },
+    [currentLocationId]
+  )
 
   // ── Long Press ───────────────────────────────────────────────────────────
   const handleTableLongPress = useCallback(
@@ -481,8 +502,6 @@ export default function FloorMapPage() {
 
   // ── Keyboard Shortcuts ───────────────────────────────────────────────────
   useEffect(() => {
-    if (closeZoomTableId) return
-
     function handleKeyDown(e: KeyboardEvent) {
       // Don't capture when typing in an input
       const tag = (e.target as HTMLElement)?.tagName
@@ -511,29 +530,27 @@ export default function FloorMapPage() {
     }
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [handleZoomIn, handleZoomOut, handleViewModeChange, handleClearAllFilters, closeZoomTableId, animateTransition])
-
-  // ── Level 3 Close Zoom View ──────────────────────────────────────────────
-  if (closeZoomTableId) {
-    return (
-      <div className="flex h-full flex-col bg-background">
-        <CloseZoomView
-          tableId={closeZoomTableId}
-          onBack={handleCloseZoomBack}
-          isExiting={exitingCloseZoom}
-        />
-      </div>
-    )
-  }
+  }, [handleZoomIn, handleZoomOut, handleViewModeChange, handleClearAllFilters, animateTransition])
 
   // ── Normal Map / Grid View ───────────────────────────────────────────────
   const showGridExiting = viewTransition === "grid-exit" || viewTransition === "map-enter"
   const showMapExiting = viewTransition === "map-exit" || viewTransition === "grid-enter"
 
+  const isReady = Boolean(currentLocationId && initialLoadDone)
+
+  if (!isReady) {
+    return (
+      <div className="flex h-full flex-col bg-background overflow-hidden items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full flex-col bg-background overflow-hidden">
       {/* Top Bar */}
       <MapTopBar
+        sectionConfig={sectionConfig}
         filterMode={filterMode}
         viewMode={viewMode}
         serverSection={currentServer.section}
@@ -574,6 +591,7 @@ export default function FloorMapPage() {
           >
             <div className="relative h-full w-full max-w-[1600px]">
               <MapCanvas
+                sectionConfig={sectionConfig}
                 tables={displayTables}
                 ownTableIds={currentServer.assignedTables}
                 filterMode={filterMode}
@@ -587,7 +605,7 @@ export default function FloorMapPage() {
                 offset={offset}
                 onOffsetChange={handleOffsetChange}
                 isTransitioning={isTransitioning}
-                focusedTableId={focusedTableId}
+                focusedTableId={null}
                 focusedSection={focusedSection}
                 onSectionTap={handleSectionFocus}
                 entering={mapEntering}
@@ -607,6 +625,7 @@ export default function FloorMapPage() {
             }
           >
             <GridView
+              sectionConfig={sectionConfig}
               tables={displayTables}
               ownTableIds={currentServer.assignedTables}
               onTableTap={handleTableTap}
@@ -641,7 +660,7 @@ export default function FloorMapPage() {
               <div className="flex items-center gap-2">
                 <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
                 <p className="text-sm font-medium">
-                  Viewing <span className="text-primary font-semibold">{sectionConfig[focusedSection].name}</span>
+                  Viewing <span className="text-primary font-semibold">{sectionConfig[focusedSection]?.name ?? focusedSection}</span>
                 </p>
               </div>
               <button
@@ -677,7 +696,9 @@ export default function FloorMapPage() {
 
       {/* Seat Party Modal */}
       <SeatPartyModal
+        sectionConfig={sectionConfig}
         open={seatPartyOpen}
+        tables={tables}
         preSelectedTableId={seatPartyPreSelect}
         onClose={handleSeatPartyClose}
         onSeated={handlePartySeated}

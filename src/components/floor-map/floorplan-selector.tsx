@@ -2,11 +2,12 @@
 
 import { useState, useEffect } from "react"
 import {
-  getAllFloorplans,
-  getActiveFloorplanId,
-  setActiveFloorplanId,
+  getAllFloorplansDb,
+  getActiveFloorplanDb,
+  setActiveFloorplanIdDb,
   type SavedFloorplan,
-} from "@/lib/floorplan-storage"
+} from "@/lib/floorplan-storage-db"
+import { useLocation } from "@/lib/contexts/LocationContext"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,26 +26,33 @@ interface FloorplanSelectorProps {
 }
 
 export function FloorplanSelector({ onFloorplanChange }: FloorplanSelectorProps) {
+  const { currentLocationId } = useLocation()
   const [floorplans, setFloorplans] = useState<SavedFloorplan[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
 
   useEffect(() => {
-    setFloorplans(getAllFloorplans())
-    setActiveId(getActiveFloorplanId())
-  }, [])
+    if (!currentLocationId) return
+    let cancelled = false
+    async function load() {
+      const [all, active] = await Promise.all([
+        getAllFloorplansDb(currentLocationId!),
+        getActiveFloorplanDb(currentLocationId!),
+      ])
+      if (cancelled) return
+      setFloorplans(all)
+      setActiveId(active?.id ?? null)
+    }
+    load()
+    return () => { cancelled = true }
+  }, [currentLocationId])
 
   const activePlan = floorplans.find((f) => f.id === activeId)
 
-  const handleSelect = (floorplan: SavedFloorplan) => {
-    setActiveFloorplanId(floorplan.id)
+  const handleSelect = async (floorplan: SavedFloorplan) => {
+    if (!currentLocationId) return
+    await setActiveFloorplanIdDb(currentLocationId, floorplan.id)
     setActiveId(floorplan.id)
     onFloorplanChange(floorplan)
-  }
-
-  const handleUseDemo = () => {
-    setActiveFloorplanId(null)
-    setActiveId(null)
-    onFloorplanChange(null)
   }
 
   if (floorplans.length === 0) return null
@@ -59,7 +67,7 @@ export function FloorplanSelector({ onFloorplanChange }: FloorplanSelectorProps)
         >
           <Map className="h-3.5 w-3.5" />
           <span className="max-w-[120px] truncate">
-            {activePlan?.name ?? "Demo Layout"}
+            {activePlan?.name ?? "Select floorplan"}
           </span>
         </Button>
       </DropdownMenuTrigger>
@@ -67,25 +75,6 @@ export function FloorplanSelector({ onFloorplanChange }: FloorplanSelectorProps)
         <DropdownMenuLabel className="text-xs text-muted-foreground font-normal">
           Select Floorplan
         </DropdownMenuLabel>
-        <DropdownMenuSeparator />
-
-        {/* Demo option */}
-        <DropdownMenuItem
-          onClick={handleUseDemo}
-          className="gap-3 py-2.5"
-        >
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary">
-            <LayoutGrid className="h-4 w-4 text-muted-foreground" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium">Demo Layout</p>
-            <p className="text-xs text-muted-foreground">Built-in sample</p>
-          </div>
-          {!activeId && (
-            <Check className="h-4 w-4 text-primary shrink-0" />
-          )}
-        </DropdownMenuItem>
-
         <DropdownMenuSeparator />
 
         {/* Saved floorplans */}

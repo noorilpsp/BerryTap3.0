@@ -16,7 +16,7 @@ import {
 import { cn } from "@/lib/utils"
 import type { FloorTable, SectionId, SearchHistoryEntry } from "@/lib/floor-map-data"
 import {
-  sectionConfig,
+  defaultSectionConfig,
   searchTables,
   floorStatusConfig,
   minutesAgo,
@@ -26,6 +26,7 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile"
 
 interface CommandSearchProps {
+  sectionConfig?: Record<string, { name: string }>
   tables: FloorTable[]
   ownTableIds: string[]
   onSelect: (tableId: string) => void
@@ -33,6 +34,7 @@ interface CommandSearchProps {
 }
 
 export function CommandSearch({
+  sectionConfig = defaultSectionConfig,
   tables,
   ownTableIds,
   onSelect,
@@ -449,7 +451,7 @@ function SearchResultItem({
       <div className="flex flex-1 flex-col gap-0.5 min-w-0">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm font-bold text-foreground">T{table.number}</span>
-          <span className="text-xs text-muted-foreground/70">{sectionConfig[table.section].name}</span>
+          <span className="text-xs text-muted-foreground/70">{sectionConfig[table.section]?.name ?? table.section}</span>
           {table.guests > 0 && (
             <span className="text-xs text-muted-foreground/70">{table.guests} guests</span>
           )}

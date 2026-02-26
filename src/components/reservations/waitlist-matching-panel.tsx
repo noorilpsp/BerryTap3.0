@@ -13,20 +13,24 @@ import {
   mergeOptions,
   quoteAccuracy,
   activeWaitlist,
+  type WaitlistEntry,
 } from "@/lib/waitlist-data"
 
-export function WaitlistMatchingPanel() {
+type WaitlistMatchingPanelProps = { entries?: WaitlistEntry[] }
+
+export function WaitlistMatchingPanel({ entries: entriesProp }: WaitlistMatchingPanelProps = {}) {
+  const entries = entriesProp ?? activeWaitlist
   const nowTables = availableTables.filter((t) => t.status === "available-now")
   const turningTables = availableTables.filter((t) => t.status === "turning-soon")
 
   // Find best match for available tables
   function bestMatchFor(tableId: string, seats: number): string | null {
-    const match = activeWaitlist.find(
+    const match = entries.find(
       (e) => e.bestMatch?.tableId === tableId || e.altMatches.some((m) => m.tableId === tableId)
     )
     if (match) return `${match.name} (${match.partySize}p)`
     // fallback: find smallest party that fits
-    const fits = activeWaitlist
+    const fits = entries
       .filter((e) => e.partySize <= seats)
       .sort((a, b) => a.partySize - b.partySize)
     return fits[0] ? `${fits[0].name} (${fits[0].partySize}p)` : null

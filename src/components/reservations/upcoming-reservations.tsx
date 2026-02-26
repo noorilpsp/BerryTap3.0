@@ -27,7 +27,7 @@ import {
   restaurantConfig,
   groupReservationsByTime,
   getUpcomingReservations,
-  reservations,
+  useReservationsFromStore,
 } from "@/lib/reservations-data"
 import { toast } from "sonner"
 
@@ -256,6 +256,7 @@ function ReservationCard({
 }
 
 export function UpcomingReservations() {
+  const { reservations } = useReservationsFromStore()
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()

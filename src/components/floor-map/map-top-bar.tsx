@@ -4,7 +4,7 @@ import { Radio, LayoutGrid, Map, ChevronDown, Check, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { FilterMode, ViewMode, SectionId, FloorTableStatus, FloorTable } from "@/lib/floor-map-data"
-import { sectionConfig, floorStatusConfig, tables as allTablesData } from "@/lib/floor-map-data"
+import { floorStatusConfig } from "@/lib/floor-map-data"
 import { CommandSearch } from "./command-search"
 import { useState, useRef, useEffect } from "react"
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -13,6 +13,7 @@ import type { SavedFloorplan } from "@/lib/floorplan-storage"
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface MapTopBarProps {
+  sectionConfig: Record<string, { name: string }>
   filterMode: FilterMode
   viewMode: ViewMode
   serverSection: SectionId
@@ -34,9 +35,9 @@ interface MapTopBarProps {
 
 // ── Section counts ───────────────────────────────────────────────────────────
 
-function getSectionCounts(): Record<SectionId, number> {
+function getSectionCounts(tableList: FloorTable[]): Record<SectionId, number> {
   const counts: Record<string, number> = {}
-  for (const t of allTablesData) {
+  for (const t of tableList) {
     counts[t.section] = (counts[t.section] || 0) + 1
   }
   return counts as Record<SectionId, number>
@@ -45,6 +46,7 @@ function getSectionCounts(): Record<SectionId, number> {
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function MapTopBar({
+  sectionConfig,
   filterMode,
   viewMode,
   serverSection,
@@ -81,6 +83,7 @@ export function MapTopBar({
 
         {/* Command Search */}
         <CommandSearch
+          sectionConfig={sectionConfig}
           tables={tables}
           ownTableIds={ownTableIds}
           onSelect={onTableSelect}
@@ -93,14 +96,14 @@ export function MapTopBar({
             label={
               filterMode === "all"
                 ? "All Tables"
-                : filterMode === "my_section"
-                  ? sectionConfig[serverSection].name
+                :               filterMode === "my_section"
+                  ? (sectionConfig[serverSection]?.name ?? serverSection)
                   : `My Tables (${ownTableIds.length})`
             }
             activeValue={filterMode}
             options={[
               { value: "all", label: "All Tables" },
-              { value: "my_section", label: `My Section (${sectionConfig[serverSection].name})` },
+              { value: "my_section", label: `My Section (${sectionConfig[serverSection]?.name ?? serverSection})` },
               { value: "my_tables", label: `My Tables (${ownTableIds.length})` },
             ]}
             onSelect={(v) => onFilterModeChange(v as FilterMode)}
@@ -109,9 +112,11 @@ export function MapTopBar({
 
         {/* Section filter */}
         <SectionFilter
+          sectionConfig={sectionConfig}
           value={sectionFilter}
           onChange={onSectionFilterChange}
           isMobile={isMobile ?? false}
+          tables={tables}
         />
 
         {/* Status filter (desktop only -- mobile uses stats bar taps) */}
@@ -188,7 +193,7 @@ export function MapTopBar({
                   const sectionKeys = Object.keys(sectionConfig)
                   if (statusKeys.includes(chip.toLowerCase())) {
                     onStatusFilterChange(null)
-                  } else if (sectionKeys.some((s) => sectionConfig[s as SectionId].name === chip)) {
+                  } else if (sectionKeys.some((s) => sectionConfig[s]?.name === chip)) {
                     onSectionFilterChange(null)
                   } else {
                     onFilterModeChange("all")
@@ -281,18 +286,22 @@ function DropdownFilter({
 // ── Section Filter ───────────────────────────────────────────────────────────
 
 function SectionFilter({
+  sectionConfig,
   value,
   onChange,
   isMobile,
+  tables,
 }: {
+  sectionConfig: Record<string, { name: string }>
   value: SectionId | null
   onChange: (section: SectionId | null) => void
   isMobile: boolean
+  tables: FloorTable[]
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-  const counts = getSectionCounts()
-  const sections: SectionId[] = ["patio", "bar", "main"]
+  const counts = getSectionCounts(tables)
+  const sections = Object.keys(sectionConfig)
 
   useEffect(() => {
     if (!open) return
@@ -303,7 +312,7 @@ function SectionFilter({
     return () => document.removeEventListener("mousedown", handleClick)
   }, [open])
 
-  const label = value ? sectionConfig[value].name : (isMobile ? "Sec" : "All Sections")
+  const label = value ? (sectionConfig[value]?.name ?? value) : (isMobile ? "Sec" : "All Sections")
 
   return (
     <div ref={ref} className="relative">
@@ -344,7 +353,7 @@ function SectionFilter({
             >
               <div className="flex items-center gap-2">
                 {value === s ? <Check className="h-3 w-3 text-primary" /> : <span className="w-3" />}
-                {sectionConfig[s].name}
+                {sectionConfig[s]?.name ?? s}
               </div>
               <span className="rounded-md bg-secondary/80 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/70">
                 {counts[s]}
@@ -466,7 +475,7 @@ function FloorplanSelector({
   }, [open])
 
   const activeFloorplan = allFloorplans.find(fp => fp.id === activeFloorplanId)
-  const label = activeFloorplan ? activeFloorplan.name : "Demo Layout"
+  const label = activeFloorplan ? activeFloorplan.name : "Select floorplan"
 
   return (
     <div ref={ref} className="relative">
@@ -484,20 +493,6 @@ function FloorplanSelector({
       </button>
       {open && (
         <div className="absolute left-0 top-full z-50 mt-1.5 min-w-[180px] rounded-xl glass-surface-strong shadow-2xl animate-fade-slide-in overflow-hidden">
-          <button
-            type="button"
-            onClick={() => {
-              onFloorplanChange("demo")
-              setOpen(false)
-            }}
-            className={cn(
-              "flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-accent/40",
-              !activeFloorplanId && "text-primary"
-            )}
-          >
-            {!activeFloorplanId ? <Check className="h-3 w-3 text-primary" /> : <span className="w-3" />}
-            Demo Layout
-          </button>
           {allFloorplans.map((fp) => (
             <button
               key={fp.id}

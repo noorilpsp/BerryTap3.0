@@ -20,8 +20,8 @@ import {
 import { cn } from "@/lib/utils"
 import {
   type TimelineBlock,
+  type TableLane,
   zones,
-  tableLanes,
   getGhostsForTable,
   getMergedForTable,
   getBlockColor,
@@ -32,6 +32,7 @@ import {
 } from "@/lib/timeline-data"
 
 interface TimelineMobileProps {
+  tableLanes: TableLane[]
   blocks: TimelineBlock[]
   zoneFilter: string
   onZoneFilterChange: (zone: string) => void
@@ -44,6 +45,7 @@ interface TimelineMobileProps {
 }
 
 export function TimelineMobile({
+  tableLanes,
   blocks,
   zoneFilter,
   onZoneFilterChange,
@@ -78,7 +80,7 @@ export function TimelineMobile({
   const filteredTables = (zoneFilter === "all"
     ? tableLanes
     : tableLanes.filter((t) => t.zone === zoneFilter)
-  ).filter((table) => {
+  ).filter((table: TableLane) => {
     if (partySizeFilter === "all") return true
     // Show table if it has a direct block matching the party filter
     if (blocks.some((block) => (

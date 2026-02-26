@@ -67,6 +67,71 @@ export interface ListReservation {
   cancelledNote?: string
 }
 
+/** Minimal shape for mapping from store/reservations-data into ListReservation. */
+export interface ReservationLike {
+  id: string
+  time: string
+  guestName: string
+  partySize: number
+  table: string | null
+  status: string
+  risk?: string
+  tags?: { type: string; label: string; detail?: string }[]
+  notes?: string
+  phone?: string
+  visitCount?: number
+  bookedVia?: string
+  confirmationSent?: boolean
+}
+
+export function reservationToListReservation(r: ReservationLike): ListReservation {
+  return {
+    id: r.id,
+    time: r.time,
+    guestName: r.guestName,
+    partySize: r.partySize,
+    table: r.table,
+    status: r.status as ListReservationStatus,
+    risk: ((r.risk ?? "low") as ListRiskLevel) || "low",
+    server: null,
+    zone: null,
+    tags: (r.tags ?? []).map((t) => ({ type: t.type as ListTagType, label: t.label, detail: t.detail })),
+    notes: r.notes,
+    phone: r.phone,
+    visitCount: r.visitCount,
+    bookedVia: (r.bookedVia as BookingChannel) ?? "Direct",
+    confirmationSent: r.confirmationSent ?? false,
+  }
+}
+
+/** Map a waitlist party to ListReservation so it can be shown in the list/table when "Waitlist" is selected. */
+export interface WaitlistPartyLike {
+  id: string
+  name: string
+  partySize: number
+  notes?: string
+}
+
+export function waitlistPartyToListReservation(wp: WaitlistPartyLike): ListReservation {
+  return {
+    id: wp.id,
+    time: "—",
+    guestName: wp.name,
+    partySize: wp.partySize,
+    table: null,
+    status: "waitlist",
+    risk: "low",
+    server: null,
+    zone: null,
+    tags: [],
+    notes: wp.notes,
+    phone: undefined,
+    visitCount: undefined,
+    bookedVia: "Walk-in",
+    confirmationSent: false,
+  }
+}
+
 // ── 32 reservations for Friday dinner service ────────────────────────────────
 
 export const listReservations: ListReservation[] = [
@@ -817,14 +882,20 @@ export function getTagIcon(type: ListTagType): string {
 }
 
 export function formatTime12h(time24: string): string {
-  const [h, m] = time24.split(":").map(Number)
+  const parts = time24.split(":")
+  const h = Number(parts[0])
+  const m = parts[1] != null ? Number(parts[1]) : 0
+  if (Number.isNaN(h) || Number.isNaN(m)) return time24
   const hour = h > 12 ? h - 12 : h === 0 ? 12 : h
   const ampm = h >= 12 ? "PM" : "AM"
   return `${hour}:${m.toString().padStart(2, "0")} ${ampm}`
 }
 
 export function formatTimeShort(time24: string): string {
-  const [h, m] = time24.split(":").map(Number)
+  const parts = time24.split(":")
+  const h = Number(parts[0])
+  const m = parts[1] != null ? Number(parts[1]) : 0
+  if (Number.isNaN(h) || Number.isNaN(m)) return time24
   const hour = h > 12 ? h - 12 : h === 0 ? 12 : h
   return `${hour}:${m.toString().padStart(2, "0")}`
 }
@@ -847,7 +918,13 @@ export function groupReservations(
         key = STATUS_GROUP_LABELS[r.status]
         break
       case "time": {
-        const [h, m] = r.time.split(":").map(Number)
+        const parts = r.time.split(":")
+        const h = Number(parts[0])
+        const m = parts[1] != null ? Number(parts[1]) : 0
+        if (Number.isNaN(h) || Number.isNaN(m)) {
+          key = "—"
+          break
+        }
         const slot = Math.floor(m / 30) * 30
         const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h
         key = `${h12}:${slot.toString().padStart(2, "0")}`
@@ -873,15 +950,25 @@ export function groupReservations(
     map.set(key, list)
   }
 
-  // Sort groups
+  // Sort groups: show every group that has at least one item; for status use fixed order
   if (groupBy === "status") {
     const groupOrder = ["Waitlist", "Arriving Now", "Late", "Upcoming", "Seated", "Completed", "No-Shows", "Cancelled"]
-    return groupOrder
-      .filter((label) => map.has(label))
+    const ordered = groupOrder
+      .filter((label) => map.has(label) && (map.get(label)?.length ?? 0) > 0)
       .map((label) => ({ label, reservations: map.get(label)! }))
+    // Include any other groups present in data but not in fixed order (so nothing with items is hidden)
+    const orderedLabels = new Set(ordered.map((g) => g.label))
+    for (const [label, list] of map.entries()) {
+      if (list.length > 0 && !orderedLabels.has(label)) {
+        ordered.push({ label, reservations: list })
+        orderedLabels.add(label)
+      }
+    }
+    return ordered
   }
 
   return Array.from(map.entries())
+    .filter(([, reservations]) => reservations.length > 0)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([label, reservations]) => ({ label, reservations }))
 }

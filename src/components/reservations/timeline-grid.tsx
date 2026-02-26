@@ -9,6 +9,7 @@ import {
 import {
   type ZoomLevel,
   type TimelineBlock as TBlock,
+  type TableLane,
   zones,
   getTablesForZone,
   getGhostsForTable,
@@ -19,6 +20,7 @@ import {
 import { ReservationBlock, GhostBlockComponent, MergedBlockComponent } from "./timeline-block"
 
 interface TimelineGridProps {
+  tableLanes: TableLane[]
   blocks: TBlock[]
   zoom: ZoomLevel
   zoneFilter: string
@@ -43,6 +45,7 @@ const DRAG_START_THRESHOLD_PX = 7
 const WIDTH_RESIZE_THRESHOLD_PX = 24
 
 export function TimelineGrid({
+  tableLanes,
   blocks,
   zoom,
   zoneFilter,
@@ -221,7 +224,7 @@ export function TimelineGrid({
   const filteredTablesByZone = useMemo(() => {
     return new Map(
       filteredZones.map((zone) => {
-        const tables = getTablesForZone(zone.id).filter((table) => {
+        const tables = getTablesForZone(zone.id, tableLanes).filter((table) => {
           if (partySizeFilter === "all") return true
           // Show table if it has a direct block matching the party filter
           if (displayedBlocks.some((block) => (
@@ -243,7 +246,7 @@ export function TimelineGrid({
         return [zone.id, tables]
       })
     )
-  }, [displayedBlocks, filteredZones, matchesPartyFilter, partySizeFilter])
+  }, [displayedBlocks, filteredZones, matchesPartyFilter, partySizeFilter, tableLanes])
   const laneBands = useMemo(() => {
     let cursor = TIME_HEADER_HEIGHT
     const bands: Array<{ tableId: string; startY: number; endY: number }> = []

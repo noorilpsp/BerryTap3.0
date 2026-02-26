@@ -30,6 +30,10 @@ export interface FloorplanElementTemplate {
 export interface PlacedElement {
   id: string
   templateId: string
+  /** Stable table number for seat-bearing elements so numbering can persist across plans. */
+  tableNumber?: number
+  /** Section id for seat-bearing elements. Overrides position-based assignment. */
+  sectionId?: string
   x: number
   y: number
   width: number
@@ -43,6 +47,11 @@ export interface PlacedElement {
   category: ElementCategory
   seats?: number
   customLabel?: string
+}
+
+export interface FloorSection {
+  id: string
+  name: string
 }
 
 export interface CanvasState {

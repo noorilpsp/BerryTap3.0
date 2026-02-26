@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
   type WaitlistParty,
-  waitlistParties,
+  useReservationsFromStore,
   getWaitTimerStatus,
 } from "@/lib/reservations-data"
 
@@ -99,6 +99,7 @@ function WaitlistCard({
 }
 
 export function WaitlistPanel() {
+  const { waitlistParties } = useReservationsFromStore()
   return (
     <div className="glass-surface flex flex-col rounded-xl">
       <div className="flex items-center justify-between border-b border-zinc-800/50 px-4 py-3">

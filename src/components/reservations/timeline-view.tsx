@@ -1,16 +1,20 @@
 "use client"
 
-import { useState, useRef, useCallback, useEffect } from "react"
+import { useState, useRef, useCallback, useEffect, useMemo } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { useMediaQuery } from "@/hooks/use-media-query"
 import {
   restaurantConfig,
   getCurrentLocalTime24,
-  getTimelineBlocksNoOverlap,
-  tableLanes as timelineTableLanes,
+  getTimelineBlocksFromReservations,
+  getTableLanesFromStore,
+  tableLanes as fallbackTableLanes,
   type ZoomLevel,
   type TimelineBlock,
 } from "@/lib/timeline-data"
+import { useReservationsFromStore } from "@/lib/reservations-data"
+import { useRestaurantMutations } from "@/lib/hooks/useRestaurantMutations"
+import { useRestaurantStore } from "@/store/restaurantStore"
 import { TimelineTopBar } from "./timeline-top-bar"
 import { TimelineGrid } from "./timeline-grid"
 import { TimelineDetailPanel } from "./timeline-detail-panel"
@@ -69,6 +73,7 @@ export function TimelineView() {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
+  const { updateReservation } = useRestaurantMutations()
 
   const [zoom, setZoom] = useState<ZoomLevel>("30min")
   const [zoneFilter, setZoneFilter] = useState("all")
@@ -85,7 +90,32 @@ export function TimelineView() {
   })
   const [selectedBlock, setSelectedBlock] = useState<TimelineBlock | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
-  const [blocks, setBlocks] = useState<TimelineBlock[]>(() => getTimelineBlocksNoOverlap())
+  const storeTables = useRestaurantStore((s) => s.tables)
+  const tableLanes = useMemo(
+    () => (storeTables.length > 0 ? getTableLanesFromStore(storeTables) : fallbackTableLanes),
+    [storeTables]
+  )
+  const validTableIds = useMemo(() => new Set(tableLanes.map((l) => l.id)), [tableLanes])
+  const { reservations } = useReservationsFromStore()
+  const blocks = useMemo(
+    () =>
+      getTimelineBlocksFromReservations(
+        reservations.map((r) => ({
+          id: r.id,
+          guestName: r.guestName,
+          partySize: r.partySize,
+          time: r.time,
+          table: r.table,
+          tableId: r.table,
+          status: r.status,
+          risk: r.risk,
+          tags: r.tags,
+          date: r.date ?? undefined,
+        })),
+        validTableIds
+      ),
+    [reservations, validTableIds]
+  )
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const isMobile = useMediaQuery("(max-width: 767px)")
 
@@ -95,9 +125,7 @@ export function TimelineView() {
   const isSelectedDateToday = isSameLocalDay(selectedDate, new Date())
   const nowTimeForTimeline = isSelectedDateToday ? currentTime : null
   const selectedIsoDate = toIsoDate(selectedDate)
-  const displayedBlocks = isSelectedDateToday
-    ? blocks
-    : blocks.filter((b) => b.date === selectedIsoDate)
+  const displayedBlocks = blocks.filter((b) => b.date === selectedIsoDate)
 
   const handleBlockClick = useCallback((block: TimelineBlock) => {
     setSelectedBlock(block)
@@ -105,19 +133,17 @@ export function TimelineView() {
   }, [])
 
   const handleBlockUpdate = useCallback(
-    (blockId: string, updates: Pick<TimelineBlock, "table" | "startTime" | "endTime">) => {
-      setBlocks((prev) => prev.map((block) => (
-        block.id === blockId
-          ? { ...block, ...updates }
-          : block
-      )))
-      setSelectedBlock((prev) => (
-        prev && prev.id === blockId
-          ? { ...prev, ...updates }
-          : prev
-      ))
+    async (blockId: string, updates: Pick<TimelineBlock, "table" | "startTime" | "endTime">) => {
+      const tableId = updates.table ?? null
+      await updateReservation(blockId, {
+        tableId: typeof tableId === "string" ? tableId : null,
+        reservationTime: updates.startTime,
+      })
+      setSelectedBlock((prev) =>
+        prev && prev.id === blockId ? { ...prev, ...updates } : prev
+      )
     },
-    []
+    [updateReservation]
   )
 
   const handleOpenNewReservation = useCallback(() => {
@@ -143,7 +169,7 @@ export function TimelineView() {
 
   const handleEmptySlotClick = useCallback((payload: { tableId: string; time: string; duration: number; durationMax: number; partySize: number }) => {
     const next = new URLSearchParams(searchParams.toString())
-    const selectedLane = timelineTableLanes.find((lane) => lane.id === payload.tableId)
+    const selectedLane = tableLanes.find((lane) => lane.id === payload.tableId)
     next.set("action", "new")
     next.set("time", payload.time)
     next.set("table", payload.tableId)
@@ -158,7 +184,7 @@ export function TimelineView() {
     next.delete("detail")
     const query = next.toString()
     router.push(query ? `${pathname}?${query}` : pathname, { scroll: false })
-  }, [pathname, router, searchParams, selectedDate, servicePeriodId])
+  }, [pathname, router, searchParams, selectedDate, servicePeriodId, tableLanes])
 
   const handleScrollChange = useCallback(() => {}, [])
 
@@ -206,6 +232,7 @@ export function TimelineView() {
 
       {isMobile ? (
         <TimelineMobile
+          tableLanes={tableLanes}
           blocks={displayedBlocks}
           zoneFilter={zoneFilter}
           onZoneFilterChange={setZoneFilter}
@@ -218,6 +245,7 @@ export function TimelineView() {
         />
       ) : (
         <TimelineGrid
+          tableLanes={tableLanes}
           blocks={displayedBlocks}
           zoom={zoom}
           zoneFilter={zoneFilter}

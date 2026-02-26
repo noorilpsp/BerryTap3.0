@@ -5,6 +5,7 @@ import dynamic from "next/dynamic"
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar"
 import { PermissionsProvider, usePermissionsContext } from "@/lib/contexts/PermissionsContext"
 import { TenantProvider } from "@/lib/contexts/TenantContext"
+import { LocationProvider } from "@/lib/contexts/LocationContext"
 
 const AppSidebar = dynamic(
   () => import("@/components/app-sidebar").then((mod) => mod.AppSidebar),
@@ -20,6 +21,10 @@ const FloatingActionButton = dynamic(
 )
 const CommandPalette = dynamic(
   () => import("@/components/command-palette").then((mod) => mod.CommandPalette),
+  { ssr: false }
+)
+const RestaurantHydrationRunner = dynamic(
+  () => import("@/components/restaurant-hydration-runner").then((mod) => mod.RestaurantHydrationRunner),
   { ssr: false }
 )
 
@@ -98,6 +103,8 @@ function DashboardLayoutInner({ children }: { children: React.ReactNode }) {
 
   return (
     <TenantProvider initialMerchants={merchantMemberships} userId={userId}>
+      <LocationProvider>
+      <RestaurantHydrationRunner />
       <SidebarProvider>
         <div className="flex min-h-screen w-full">
           <AppSidebar />
@@ -111,6 +118,7 @@ function DashboardLayoutInner({ children }: { children: React.ReactNode }) {
           </SidebarInset>
         </div>
       </SidebarProvider>
+      </LocationProvider>
     </TenantProvider>
   )
 }

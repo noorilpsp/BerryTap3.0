@@ -6,12 +6,35 @@ import type {
   CanvasState,
   HistoryEntry,
   FloorplanElementTemplate,
+  FloorSection,
 } from "@/lib/floorplan-types"
 
 const MAX_HISTORY = 50
 
+const DEFAULT_SECTIONS: FloorSection[] = [
+  { id: "patio", name: "Patio" },
+  { id: "bar", name: "Bar Area" },
+  { id: "main", name: "Main Dining" },
+]
+
+function isSeatBearingElement(el: Pick<PlacedElement, "category" | "seats">): boolean {
+  return (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
+}
+
+function getNextTableNumber(elements: PlacedElement[]): number {
+  let max = 0
+  for (const element of elements) {
+    if (!isSeatBearingElement(element)) continue
+    const value = element.tableNumber
+    if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) continue
+    if (value > max) max = value
+  }
+  return max + 1
+}
+
 export function useFloorplanBuilder() {
   const [elements, setElements] = useState<PlacedElement[]>([])
+  const [sections, setSectionsState] = useState<FloorSection[]>(DEFAULT_SECTIONS)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [canvas, setCanvas] = useState<CanvasState>({
     zoom: 1,
@@ -44,6 +67,8 @@ export function useFloorplanBuilder() {
   const addElement = useCallback(
     (template: FloorplanElementTemplate, x: number, y: number) => {
       const id = `el-${Date.now()}-${idCounterRef.current++}`
+      const isSeatBearing = (template.category === "tables" || template.category === "seating") && (template.seats ?? 0) > 0
+      const firstSectionId = sections.length > 0 ? sections[0].id : undefined
       const newEl: PlacedElement = {
         id,
         templateId: template.id,
@@ -59,6 +84,7 @@ export function useFloorplanBuilder() {
         opacity: 1,
         category: template.category,
         seats: template.seats,
+        ...(isSeatBearing && firstSectionId ? { sectionId: firstSectionId } : {}),
       }
       setElements((prev) => {
         const next = [...prev, newEl]
@@ -68,7 +94,7 @@ export function useFloorplanBuilder() {
       setSelectedId(id)
       return id
     },
-    [pushHistory]
+    [pushHistory, sections]
   )
 
   const updateElement = useCallback(
@@ -101,11 +127,14 @@ export function useFloorplanBuilder() {
       const el = elements.find((e) => e.id === id)
       if (!el) return
       const newId = `el-${Date.now()}-${idCounterRef.current++}`
+      const shouldAssignNumber = isSeatBearingElement(el)
+      const nextTableNumber = shouldAssignNumber ? getNextTableNumber(elements) : undefined
       const newEl: PlacedElement = {
         ...JSON.parse(JSON.stringify(el)),
         id: newId,
         x: el.x + 20,
         y: el.y + 20,
+        tableNumber: nextTableNumber,
       }
       setElements((prev) => {
         const next = [...prev, newEl]
@@ -180,9 +209,44 @@ export function useFloorplanBuilder() {
 
   const clearAll = useCallback(() => {
     setElements([])
+    setSectionsState(DEFAULT_SECTIONS)
     setSelectedId(null)
     pushHistory([])
   }, [pushHistory])
+
+  const setSections = useCallback((next: FloorSection[]) => {
+    setSectionsState(next)
+  }, [])
+
+  const addSection = useCallback((name: string) => {
+    const slug =
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "") || "section"
+    setSectionsState((prev) => {
+      const ids = new Set(prev.map((s) => s.id))
+      let id = slug
+      let n = 1
+      while (ids.has(id)) id = `${slug}-${n++}`
+      return [...prev, { id, name }]
+    })
+  }, [])
+
+  const updateSection = useCallback((sectionId: string, name: string) => {
+    setSectionsState((prev) =>
+      prev.map((s) => (s.id === sectionId ? { ...s, name } : s))
+    )
+  }, [])
+
+  const deleteSection = useCallback((sectionId: string) => {
+    setSectionsState((prev) => prev.filter((s) => s.id !== sectionId))
+    setElements((prev) =>
+      prev.map((el) =>
+        el.sectionId === sectionId ? { ...el, sectionId: undefined } : el
+      )
+    )
+  }, [])
 
   const bringToFront = useCallback(
     (id: string) => {
@@ -215,6 +279,11 @@ export function useFloorplanBuilder() {
 
   return {
     elements,
+    sections,
+    setSections,
+    addSection,
+    updateSection,
+    deleteSection,
     selectedId,
     selectedElement,
     canvas,

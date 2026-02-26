@@ -23,6 +23,7 @@ export * from "./invitations";
 export * from "./platform-personnel";
 export * from "./menus";
 export * from "./orders";
+export * from "./floor-plans";
 
 // Import tables for relations
 import { merchants } from "./merchants";
@@ -41,11 +42,15 @@ import {
 } from "./menus";
 import {
   tables,
+  sessions,
+  seats,
   customers,
   reservations,
   orders,
   orderTimeline,
+  waitlist,
 } from "./orders";
+import { floorPlans } from "./floor-plans";
 
 // ============================================================================
 // Relations
@@ -77,6 +82,8 @@ export const merchantsRelations = relations(merchants, ({ many }) => ({
  * - One location has many customers
  * - One location has many reservations
  * - One location has many orders
+ * - One location has many waitlist entries
+ * - One location has many floor plans
  */
 export const merchantLocationsRelations = relations(
   merchantLocations,
@@ -93,9 +100,12 @@ export const merchantLocationsRelations = relations(
     allergens: many(allergens),
     customizationGroups: many(customizationGroups),
     tables: many(tables),
+    sessions: many(sessions),
     customers: many(customers),
     reservations: many(reservations),
     orders: many(orders),
+    waitlist: many(waitlist),
+    floorPlans: many(floorPlans),
   }),
 );
 
@@ -164,6 +174,9 @@ export const platformPersonnelRelations = relations(
 // Re-export relations from orders schema
 export {
   tablesRelations,
+  sessionsRelations,
+  seatsRelations,
+  sessionEventsRelations,
   customersRelations,
   reservationsRelations,
   ordersRelations,
@@ -172,6 +185,9 @@ export {
   orderTimelineRelations,
   paymentsRelations,
   orderDeliveryRelations,
+  waitlistRelations,
 } from "./orders";
+
+export { floorPlansRelations } from "./floor-plans";
 
 

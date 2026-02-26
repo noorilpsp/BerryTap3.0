@@ -16,6 +16,7 @@ import {
   Save,
   FolderOpen,
   Upload,
+  FilePlus2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -48,6 +49,7 @@ interface BuilderToolbarProps {
   onSave: () => void
   onLoad: () => void
   onImport: () => void
+  onNew: () => void
 }
 
 function ToolbarButton({
@@ -118,6 +120,7 @@ export function BuilderToolbar({
   onSave,
   onLoad,
   onImport,
+  onNew,
 }: BuilderToolbarProps) {
   return (
     <header className="flex items-center justify-between h-12 px-4 border-b border-border/50 bg-card/80 backdrop-blur-md">
@@ -216,6 +219,11 @@ export function BuilderToolbar({
         <Separator orientation="vertical" className="h-5 bg-border/50" />
 
         <div className="flex items-center gap-0.5">
+          <ToolbarButton
+            icon={FilePlus2}
+            label="New Floorplan"
+            onClick={onNew}
+          />
           <ToolbarButton
             icon={Save}
             label="Save Floorplan"

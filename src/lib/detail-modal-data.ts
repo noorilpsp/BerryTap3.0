@@ -675,11 +675,15 @@ function buildDetailFromOverview(reservation: OverviewReservation): DetailReserv
   }
 }
 
-export function getReservationById(id: string): DetailReservation | undefined {
+export function getReservationById(
+  id: string,
+  overviewReservationsList?: OverviewReservation[]
+): DetailReservation | undefined {
   const staticMatch = [sarahChen, completedBase, noShowBase, cancelledBase].find((reservation) => reservation.id === id)
   if (staticMatch) return staticMatch
 
-  const overviewMatch = overviewReservations.find((reservation) => reservation.id === id)
+  const list = overviewReservationsList ?? overviewReservations
+  const overviewMatch = list.find((reservation) => reservation.id === id)
   if (overviewMatch) return buildDetailFromOverview(overviewMatch)
 
   return undefined
