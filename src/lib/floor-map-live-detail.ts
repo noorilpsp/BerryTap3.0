@@ -159,6 +159,13 @@ function mapStoreAlertToDetail(type: StoreAlertType): DetailAlert {
       message: "Food ready for pickup",
     }
   }
+  if (type === "kitchen_delay") {
+    return {
+      type: "kitchen_delay",
+      severity: "urgent",
+      message: "Kitchen delay",
+    }
+  }
   if (type === "no_checkin") {
     return {
       type: "no_checkin",

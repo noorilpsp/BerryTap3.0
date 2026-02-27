@@ -4,6 +4,11 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { orders, orderItems } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import {
+  markItemPreparing,
+  markItemReady,
+  markItemServed,
+} from "@/app/actions/order-item-lifecycle";
 
 export const runtime = "nodejs";
 
@@ -74,17 +79,35 @@ export async function PUT(
       );
     }
 
-    // Update order item
+    // Route status changes through lifecycle helpers (validate transitions, record events)
+    if (status !== undefined) {
+      if (status === "preparing") {
+        const result = await markItemPreparing(itemId);
+        if (!result.ok) {
+          return NextResponse.json({ error: result.error }, { status: 400 });
+        }
+      } else if (status === "ready") {
+        const result = await markItemReady(itemId);
+        if (!result.ok) {
+          return NextResponse.json({ error: result.error }, { status: 400 });
+        }
+      } else if (status === "served") {
+        const result = await markItemServed(itemId);
+        if (!result.ok) {
+          return NextResponse.json({ error: result.error }, { status: 400 });
+        }
+      } else {
+        return NextResponse.json(
+          { error: `Invalid status: ${status}. Use preparing, ready, or served.` },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Build update for quantity/notes only (status handled by lifecycle)
     const updateData: Record<string, unknown> = {};
     if (quantity !== undefined) updateData.quantity = quantity;
     if (notes !== undefined) updateData.notes = notes;
-    if (status !== undefined) {
-      updateData.status = status;
-      const now = new Date();
-      if (status === "preparing") updateData.startedAt = now;
-      if (status === "ready") updateData.readyAt = now;
-      if (status === "served") updateData.servedAt = now;
-    }
 
     // Recalculate line total if quantity changed
     if (quantity !== undefined) {
@@ -102,16 +125,28 @@ export async function PUT(
       }
     }
 
-    const [updatedItem] = await db
-      .update(orderItems)
-      .set(updateData)
-      .where(and(
-        eq(orderItems.orderId, id),
-        eq(orderItems.id, itemId)
-      ))
-      .returning();
+    let updatedItem;
+    if (Object.keys(updateData).length > 0) {
+      const [item] = await db
+        .update(orderItems)
+        .set(updateData)
+        .where(and(
+          eq(orderItems.orderId, id),
+          eq(orderItems.id, itemId)
+        ))
+        .returning();
+      updatedItem = item;
+    } else {
+      const item = await db.query.orderItems.findFirst({
+        where: and(
+          eq(orderItems.orderId, id),
+          eq(orderItems.id, itemId)
+        ),
+      });
+      updatedItem = item;
+    }
 
-    // Recalculate order totals
+    // Recalculate order totals when quantity changed
     const allItems = await db.query.orderItems.findMany({
       where: eq(orderItems.orderId, id),
     });

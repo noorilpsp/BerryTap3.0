@@ -22,14 +22,25 @@ export type SessionEventType =
   | "item_voided"
   | "runner_assigned"
   | "table_cleaned"
-  | "kitchen_delay";
+  | "kitchen_delay"
+  | "guest_added"
+  | "guest_removed"
+  | "guest_count_adjusted";
+
+export type SessionActorType = "server" | "kitchen" | "system" | "runner" | "customer";
+
+export type SessionEventActor = {
+  actorType: SessionActorType;
+  actorId: string;
+};
 
 /** Record an operational event for a session. Use for analytics and audit. */
 export async function recordSessionEvent(
   locationId: string,
   sessionId: string,
   type: SessionEventType,
-  meta?: Record<string, unknown>
+  meta?: Record<string, unknown>,
+  actor?: SessionEventActor
 ): Promise<{ ok: boolean; error?: string }> {
   const location = await verifyLocationAccess(locationId);
   if (!location) {
@@ -48,6 +59,10 @@ export async function recordSessionEvent(
     sessionId,
     type,
     meta: meta ?? null,
+    ...(actor && {
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+    }),
   });
   return { ok: true };
 }
@@ -57,9 +72,10 @@ export async function recordSessionEventByTable(
   locationId: string,
   tableId: string,
   type: SessionEventType,
-  meta?: Record<string, unknown>
+  meta?: Record<string, unknown>,
+  actor?: SessionEventActor
 ): Promise<{ ok: boolean; error?: string }> {
   const sessionId = await getOpenSessionIdForTable(locationId, tableId);
   if (!sessionId) return { ok: false, error: "No open session for table" };
-  return recordSessionEvent(locationId, sessionId, type, meta);
+  return recordSessionEvent(locationId, sessionId, type, meta, actor);
 }

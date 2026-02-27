@@ -4,6 +4,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { tables } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { computeTableStatus } from "@/app/actions/tables";
 
 export const runtime = "nodejs";
 
@@ -67,7 +68,8 @@ export async function GET(
       );
     }
 
-    return NextResponse.json(table);
+    const derivedStatus = await computeTableStatus(table.id);
+    return NextResponse.json({ ...table, status: derivedStatus });
   } catch (error) {
     console.error("[GET /api/tables/[id]] Error:", error);
     return NextResponse.json(

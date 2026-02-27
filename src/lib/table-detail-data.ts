@@ -14,7 +14,7 @@ export type WaveType = "drinks" | "food" | "dessert"
 export type WaveStatus = "served" | "ready" | "cooking" | "fired" | "held" | "not_started"
 
 export type AlertSeverity = "urgent" | "warning" | "info"
-export type DetailAlertType = "food_ready" | "no_checkin" | "bill_requested"
+export type DetailAlertType = "food_ready" | "no_checkin" | "bill_requested" | "kitchen_delay"
 
 export interface Seat {
   number: number

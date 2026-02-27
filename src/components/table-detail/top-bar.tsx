@@ -17,7 +17,8 @@ import { tableStatusConfig, minutesAgo } from "@/lib/table-data"
 interface TopBarProps {
   table: TableDetail
   onToggleInfo: () => void
-  onCloseTable?: () => void
+  /** Called when closing table. Pass { force: true } for manager override. */
+  onCloseTable?: (options?: { force?: boolean }) => void
 }
 
 export function TopBar({
@@ -116,18 +117,32 @@ export function TopBar({
           <DropdownMenuItem>Merge Tables</DropdownMenuItem>
           <DropdownMenuItem>Split Table</DropdownMenuItem>
           {table.status !== "available" && (
-            <DropdownMenuItem
-              className="text-destructive focus:text-destructive cursor-pointer"
-              onSelect={() => {
-                queueMicrotask(() => onCloseTable?.())
-              }}
-              onClick={(e) => {
-                e.stopPropagation()
-                onCloseTable?.()
-              }}
-            >
-              Close Table
-            </DropdownMenuItem>
+            <>
+              <DropdownMenuItem
+                className="cursor-pointer"
+                onSelect={() => {
+                  queueMicrotask(() => onCloseTable?.())
+                }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onCloseTable?.()
+                }}
+              >
+                Close Table
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="cursor-pointer text-amber-400 focus:text-amber-400"
+                onSelect={() => {
+                  queueMicrotask(() => onCloseTable?.({ force: true }))
+                }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onCloseTable?.({ force: true })
+                }}
+              >
+                Force Close (Manager Override)
+              </DropdownMenuItem>
+            </>
           )}
         </DropdownMenuContent>
       </DropdownMenu>

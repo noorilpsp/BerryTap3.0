@@ -176,6 +176,7 @@ export {
   tablesRelations,
   sessionsRelations,
   seatsRelations,
+  servicePeriodsRelations,
   sessionEventsRelations,
   customersRelations,
   reservationsRelations,

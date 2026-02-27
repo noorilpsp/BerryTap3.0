@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { DisplayModeProvider, useDisplayMode } from "@/components/kds/DisplayModeContext";
 import { getCurrentLocationId } from "@/app/actions/location";
+import { refireItem } from "@/app/actions/order-item-lifecycle";
 import { KDSHeader } from "@/components/kds/KDSHeader";
 import { KDSColumns } from "@/components/kds/KDSColumns";
 import { AllDayView } from "@/components/kds/AllDayView";
@@ -918,6 +919,9 @@ export default function KDSPage() {
   const handleRefire = useCallback((orderId: string, item: OrderItem, reason: string) => {
     const original = orders.find(o => o.id === orderId);
     if (!original) return;
+    if (kdsLiveOrderIds.has(orderId)) {
+      refireItem(item.id, reason).catch(() => {});
+    }
     const remakeId = `${orderId}-R`;
     const remakeOrderNumber = `${original.orderNumber}-R`;
     const stationId = item.stationId ?? activeStationId;
@@ -937,7 +941,7 @@ export default function KDSPage() {
       originalOrderId: orderId,
     };
     setOrders(prev => [remakeOrder, ...prev]);
-  }, [orders, activeStationId]);
+  }, [orders, activeStationId, kdsLiveOrderIds]);
 
   const handleRecall = useCallback((completed: CompletedOrder) => {
     const stationIds = completed.stationStatuses

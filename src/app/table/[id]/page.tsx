@@ -11,6 +11,7 @@ import { InfoPanel } from "@/components/table-detail/info-panel"
 import { ActionBar } from "@/components/table-detail/action-bar"
 import { PaymentModal } from "@/components/table-detail/payment-modal"
 import { FoodReadyAlert } from "@/components/table-detail/food-ready-alert"
+import { KitchenDelayAlert } from "@/components/table-detail/kitchen-delay-alert"
 import { SeatPartyModal } from "@/components/floor-map/seat-party-modal"
 import { Button } from "@/components/ui/button"
 import { CategoryNav } from "@/components/take-order/category-nav"
@@ -52,7 +53,11 @@ import { useRestaurantStore } from "@/store/restaurantStore"
 import { useLocation } from "@/lib/contexts/LocationContext"
 import {
   advanceOrderWaveStatus,
+  createNextWave,
+  fireWave,
   getOrderForTable,
+  getOrderIdForSessionAndWave,
+  getOpenSessionIdForTable,
   getSeatsForSession,
   syncOrderToDb,
   closeOrderForTable,
@@ -60,6 +65,10 @@ import {
   type OrderForTableItem,
   type OrderForTableResult,
 } from "@/app/actions/orders"
+import { getSessionOutstandingItems } from "@/app/actions/session-close-validation"
+import { detectKitchenDelays } from "@/app/actions/kitchen-delay-detection"
+import { voidItem, markItemServed } from "@/app/actions/order-item-lifecycle"
+import { removeSeatBySessionAndNumber, renameSeatBySessionAndNumber } from "@/app/actions/seat-management"
 import { updateTable } from "@/app/actions/tables"
 import { recordSessionEvent, recordSessionEventByTable } from "@/app/actions/session-events"
 import type {
@@ -96,6 +105,11 @@ function getAutoOptionUpcharge(item: MenuItem, selectedOptions: Record<string, s
     }
   }
   return upcharge
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function isDbOrderItemId(id: string): boolean {
+  return UUID_REGEX.test(id)
 }
 
 function getItemWaveNumber(item: TableOrderItem): number | null {
@@ -384,7 +398,7 @@ function orderForTableToSession(
     const waveNumber = parseSeatAndWave(row.notes).waveNumber
     maxWave = Math.max(maxWave, waveNumber)
     const item: TableOrderItem = {
-      id: `db-${tableId}-${index}`,
+      id: row.id ?? `db-${tableId}-${index}`,
       name: row.name,
       price: row.price,
       status: dbItemStatusToStore(row.status),
@@ -470,6 +484,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     if (prevTableIdRef.current !== id) {
       prevTableIdRef.current = id
       setTable(tableFromStore)
+      setKitchenDelayDismissed(false)
     }
   }, [id, tableFromStore])
   const [selectedSeat, setSelectedSeat] = useState<number | null>(null)
@@ -504,6 +519,14 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   const [discardDraftDialogOpen, setDiscardDraftDialogOpen] = useState(false)
   const [armedWaveDelete, setArmedWaveDelete] = useState<number | null>(null)
   const [armedSeatDelete, setArmedSeatDelete] = useState<number | null>(null)
+  const [seatRenameState, setSeatRenameState] = useState<{ seatNumber: number; input: string } | null>(null)
+  const [outstandingItems, setOutstandingItems] = useState<
+    Awaited<ReturnType<typeof getSessionOutstandingItems>> | null
+  >(null)
+  const [kitchenDelays, setKitchenDelays] = useState<
+    Awaited<ReturnType<typeof detectKitchenDelays>> | null
+  >(null)
+  const [kitchenDelayDismissed, setKitchenDelayDismissed] = useState(false)
   const waveHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const seatHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const waveHoldTriggeredRef = useRef<number | null>(null)
@@ -555,7 +578,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       const capacity = Math.max(1, activeStoreTable.capacity ?? tableFromStore.seats.length)
       const seatsFromDb =
         data.sessionId != null
-          ? await getSeatsForSession(data.sessionId).catch(() => undefined)
+          ? await getSeatsForSession(data.sessionId, true).catch(() => undefined)
           : undefined
       const seatsPayload =
         seatsFromDb != null
@@ -592,6 +615,30 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     }
   }, [currentLocationId, id, activeStoreTable?.id, activeStoreTable?.capacity, hasSessionData, openOrderForTable, syncOrderSession, updateStoreTable, tableFromStore.seats.length])
 
+  // Fetch outstanding items when payment modal opens so we can show blocking reasons
+  useEffect(() => {
+    if (!paymentOpen || !currentLocationId || !id) {
+      setOutstandingItems(null)
+      return
+    }
+    let cancelled = false
+    getOpenSessionIdForTable(currentLocationId, id)
+      .then(async (sessionId) => {
+        if (cancelled || !sessionId) {
+          if (!cancelled) setOutstandingItems(null)
+          return
+        }
+        const result = await getSessionOutstandingItems(sessionId)
+        if (!cancelled) setOutstandingItems(result)
+      })
+      .catch(() => {
+        if (!cancelled) setOutstandingItems(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [paymentOpen, currentLocationId, id])
+
   const shouldPersistSession = useMemo(
     () =>
       table.guestCount > 0 ||
@@ -599,13 +646,18 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       table.seats.some((seat) => seat.items.some((item) => item.status !== "void")),
     [table.guestCount, table.seats, tableItems]
   )
-  const nextStoreAlerts = useMemo(
-    () => deriveStoreAlerts(table, tableItems),
-    [table, tableItems]
-  )
+  const nextStoreAlerts = useMemo(() => {
+    const base = deriveStoreAlerts(table, tableItems) ?? []
+    const withKitchen =
+      kitchenDelays && kitchenDelays.length > 0 && !kitchenDelayDismissed
+        ? [...new Set([...base, "kitchen_delay"])]
+        : base
+    return withKitchen.length > 0 ? withKitchen : undefined
+  }, [table, tableItems, kitchenDelays, kitchenDelayDismissed])
   const nextStoreStatus = useMemo(() => {
     const mapped = mapTableStatusToStoreStatus(table.status, activeStoreTable?.status)
-    if (mapped === "active" && nextStoreAlerts?.includes("food_ready")) return "urgent"
+    if (mapped === "active" && (nextStoreAlerts?.includes("food_ready") || nextStoreAlerts?.includes("kitchen_delay")))
+      return "urgent"
     return mapped
   }, [activeStoreTable?.status, nextStoreAlerts, table.status])
   const nextStoreStage = useMemo(
@@ -616,6 +668,35 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     () => (shouldPersistSession ? buildStoreSession(table, tableItems, waveCount) : null),
     [shouldPersistSession, table, tableItems, waveCount]
   )
+
+  // Poll kitchen delays when table has active session (display only, no event recording)
+  useEffect(() => {
+    if (!shouldPersistSession || !currentLocationId || !id) {
+      setKitchenDelays(null)
+      return
+    }
+    let cancelled = false
+    const poll = () => {
+      getOpenSessionIdForTable(currentLocationId, id)
+        .then(async (sessionId) => {
+          if (cancelled || !sessionId) {
+            if (!cancelled) setKitchenDelays(null)
+            return
+          }
+          const result = await detectKitchenDelays(sessionId, { recordEvents: false })
+          if (!cancelled) setKitchenDelays(result)
+        })
+        .catch(() => {
+          if (!cancelled) setKitchenDelays(null)
+        })
+    }
+    poll()
+    const interval = setInterval(poll, 60_000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [shouldPersistSession, currentLocationId, id])
 
   useEffect(() => {
     if (!activeStoreTable) return
@@ -922,7 +1003,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   }, [])
 
   const handleDeleteSeat = useCallback(
-    (seatNumber: number) => {
+    async (seatNumber: number) => {
       if (table.seats.length <= 1) return
       if (orderItems.some((item) => item.seat === seatNumber)) {
         setWarningDialog({
@@ -933,6 +1014,24 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         return
       }
 
+      if (currentLocationId && activeStoreTable?.id) {
+        const sessionId = await getOpenSessionIdForTable(
+          currentLocationId,
+          activeStoreTable.id
+        )
+        if (sessionId) {
+          const result = await removeSeatBySessionAndNumber(sessionId, seatNumber)
+          if (!result.ok) {
+            setWarningDialog({
+              open: true,
+              title: "Cannot delete seat",
+              description: result.error ?? "Seat has order items referencing it.",
+            })
+            return
+          }
+        }
+      }
+
       setTable((prev) => ({
         ...prev,
         guestCount: Math.max(0, prev.guestCount - 1),
@@ -941,7 +1040,40 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       setArmedSeatDelete(null)
       setSelectedSeat((prev) => (prev === seatNumber ? null : prev))
     },
-    [orderItems, table.seats.length]
+    [orderItems, table.seats.length, currentLocationId, activeStoreTable?.id]
+  )
+
+  const handleRenameSeat = useCallback(
+    async (seatNumber: number, newSeatNumber: number) => {
+      if (!currentLocationId || !activeStoreTable?.id) return
+      const sessionId = await getOpenSessionIdForTable(
+        currentLocationId,
+        activeStoreTable.id
+      )
+      if (!sessionId) return
+      const result = await renameSeatBySessionAndNumber(
+        sessionId,
+        seatNumber,
+        newSeatNumber
+      )
+      if (!result.ok) {
+        setWarningDialog({
+          open: true,
+          title: "Cannot rename seat",
+          description: result.error ?? "Seat number already exists.",
+        })
+        return
+      }
+      setTable((prev) => ({
+        ...prev,
+        seats: prev.seats.map((s) =>
+          s.number === seatNumber ? { ...s, number: newSeatNumber } : s
+        ),
+      }))
+      setSeatRenameState(null)
+      setArmedSeatDelete(null)
+    },
+    [currentLocationId, activeStoreTable?.id]
   )
 
   useEffect(() => {
@@ -965,6 +1097,17 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   }, [])
 
   const fireWaveNumber = useCallback((waveNumber: number) => {
+    if (currentLocationId && activeStoreTable?.id) {
+      getOpenSessionIdForTable(currentLocationId, activeStoreTable.id)
+        .then((sessionId) =>
+          sessionId
+            ? getOrderIdForSessionAndWave(sessionId, waveNumber)
+            : Promise.resolve(null)
+        )
+        .then((orderId) => (orderId ? fireWave(orderId) : Promise.resolve()))
+        .catch(() => {})
+    }
+
     const fireItem = (item: TableOrderItem): TableOrderItem => {
       if (item.status !== "held") return item
       if (getItemWaveNumber(item) !== waveNumber) return item
@@ -979,7 +1122,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       })),
     }))
     setTableItems((prev) => prev.map(fireItem))
-  }, [])
+  }, [currentLocationId, activeStoreTable?.id])
 
   const handleFireWave = useCallback((waveId: string) => {
     const match = waveId.match(/^mw-(\d+)$/)
@@ -995,6 +1138,9 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   }, [fireWaveNumber, mealProgress.nextFireableWaveNumber])
 
   const handleMarkServed = useCallback((itemId: string) => {
+    if (isDbOrderItemId(itemId)) {
+      markItemServed(itemId).catch(() => {})
+    }
     setTable((prev) => ({
       ...prev,
       seats: prev.seats.map((s) => ({
@@ -1063,6 +1209,9 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   }, [handleAdvanceWaveStatus])
 
   const handleVoidItem = useCallback((itemId: string) => {
+    if (isDbOrderItemId(itemId)) {
+      voidItem(itemId, "Voided from table view").catch(() => {})
+    }
     setTable((prev) => ({
       ...prev,
       seats: prev.seats.map((s) => ({
@@ -1207,8 +1356,48 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     handleExitOrderingView()
   }, [handleExitOrderingView, nextSendableWaveNumber, orderItems, table.seats, tableItems])
 
-  const handleCloseTable = useCallback(() => {
-    if (currentLocationId && activeStoreTable?.id) {
+  const handleCloseTable = useCallback(
+    async (
+      arg?: { force?: boolean } | { mode: string; method: string; subtotal: number; tip: number; total: number; charges: Array<{ label: string; amount: number }> }
+    ) => {
+      const isPaymentSummary = arg != null && "total" in arg
+      const options = isPaymentSummary ? undefined : (arg as { force?: boolean } | undefined)
+      const payment = isPaymentSummary
+        ? {
+            amount: (arg as { total: number }).total,
+            tipAmount: (arg as { tip: number }).tip ?? 0,
+            method: ((arg as { method: string }).method ?? "other") as "card" | "cash" | "mobile" | "other",
+          }
+        : {
+            amount: table.bill?.total ?? 0,
+            tipAmount: 0,
+            method: "other" as const,
+          }
+      if (currentLocationId && activeStoreTable?.id) {
+        const result = await closeOrderForTable(
+          currentLocationId,
+          activeStoreTable.id,
+          payment,
+          options
+        )
+      if (!result.ok) {
+        const msg =
+          result.reason === "unfinished_items"
+            ? `Cannot close: ${result.items?.length ?? 0} item(s) still pending, preparing, or ready. Finish or void them first.`
+            : result.reason === "unpaid_balance"
+              ? `Cannot close: $${(result.remaining ?? 0).toFixed(2)} unpaid. Session total: $${(result.sessionTotal ?? 0).toFixed(2)}, payments: $${(result.paymentsTotal ?? 0).toFixed(2)}.`
+              : result.reason === "invalid_tip"
+                ? "Tip amount must be >= 0."
+                : result.reason === "payment_in_progress"
+                  ? "Cannot close: a payment is in progress."
+                  : result.reason === "kitchen_mid_fire"
+                    ? "Cannot close: items sent to kitchen but not yet started."
+                    : result.reason === "session_not_open"
+                      ? "Session is not open."
+                      : result.error ?? "Cannot close table."
+        setWarningDialog({ open: true, title: "Cannot close table", description: msg })
+        return
+      }
       recordSessionEventByTable(currentLocationId, activeStoreTable.id, "payment_completed").catch(
         () => {}
       )
@@ -1231,13 +1420,6 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
           seatedAt: null,
           stage: null,
         }).catch((err) => console.error("[TableDetail] Failed to persist close table:", err))
-        closeOrderForTable(currentLocationId, activeStoreTable.id, {
-          amount: table.bill?.total ?? 0,
-          tipAmount: 0,
-          method: "other",
-        }).catch((err) =>
-          console.error("[TableDetail] Failed to close order in DB:", err)
-        )
       }
       // Sync local state from store so meal progress / waves / orders clear immediately
       const closedTable = useRestaurantStore.getState().tables.find(
@@ -1271,7 +1453,9 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     setInfoOpen(false)
     setAlertDismissed(false)
     router.push("/floor-map")
-  }, [activeStoreTable, closeOrder, currentLocationId, table.bill, updateStoreTable, router])
+  },
+    [activeStoreTable, closeOrder, currentLocationId, table.bill, updateStoreTable, router]
+  )
 
   const handlePaymentComplete = handleCloseTable
 
@@ -1408,6 +1592,14 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         />
       )}
 
+      {/* Kitchen Delay Alert */}
+      {kitchenDelays && kitchenDelays.length > 0 && !kitchenDelayDismissed && (
+        <KitchenDelayAlert
+          items={kitchenDelays}
+          onDismiss={() => setKitchenDelayDismissed(true)}
+        />
+      )}
+
       {/* Main content area - responsive grid */}
       <div className="flex-1 overflow-hidden">
         <div className="flex h-full">
@@ -1532,6 +1724,18 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                               const nextWave = waveCount + 1
                               setWaveCount(nextWave)
                               setSelectedWaveNumber(nextWave)
+                              if (currentLocationId && activeStoreTable?.id) {
+                                getOpenSessionIdForTable(
+                                  currentLocationId,
+                                  activeStoreTable.id
+                                )
+                                  .then((sessionId) =>
+                                    sessionId
+                                      ? createNextWave(sessionId)
+                                      : Promise.resolve(null)
+                                  )
+                                  .catch(() => {})
+                              }
                             }}
                             className="h-7 shrink-0 rounded-md border border-border bg-background px-2 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-accent"
                             aria-label="Add wave"
@@ -1588,15 +1792,100 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                                   S{seat.number}
                                 </button>
                                 {armedSeatDelete === seat.number && table.seats.length > 1 && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteSeat(seat.number)}
-                                    className="ml-1 inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-400/40 bg-red-500/10 text-red-300 hover:bg-red-500/20"
-                                    aria-label={`Delete seat ${seat.number}`}
-                                    title={`Delete Seat ${seat.number}`}
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </button>
+                                  <div className="ml-1 flex items-center gap-0.5">
+                                    {seatRenameState?.seatNumber === seat.number ? (
+                                      <>
+                                        <input
+                                          type="number"
+                                          min={1}
+                                          max={99}
+                                          value={seatRenameState.input}
+                                          onChange={(e) =>
+                                            setSeatRenameState((s) =>
+                                              s ? { ...s, input: e.target.value } : s
+                                            )
+                                          }
+                                          onKeyDown={(e) => {
+                                            if (e.key === "Enter") {
+                                              const n = parseInt(
+                                                seatRenameState.input,
+                                                10
+                                              )
+                                              if (
+                                                Number.isFinite(n) &&
+                                                n >= 1 &&
+                                                n !== seat.number
+                                              ) {
+                                                handleRenameSeat(seat.number, n)
+                                              }
+                                            }
+                                            if (e.key === "Escape") {
+                                              setSeatRenameState(null)
+                                              setArmedSeatDelete(null)
+                                            }
+                                          }}
+                                          className="h-7 w-12 rounded-md border border-border bg-background px-1.5 text-center text-[11px] font-semibold tabular-nums"
+                                          autoFocus
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const n = parseInt(
+                                              seatRenameState.input,
+                                              10
+                                            )
+                                            if (
+                                              Number.isFinite(n) &&
+                                              n >= 1 &&
+                                              n !== seat.number
+                                            ) {
+                                              handleRenameSeat(seat.number, n)
+                                            }
+                                          }}
+                                          className="h-7 px-1.5 text-[10px] font-semibold text-emerald-400"
+                                        >
+                                          OK
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setSeatRenameState(null)
+                                            setArmedSeatDelete(null)
+                                          }}
+                                          className="h-7 px-1 text-[10px] font-semibold text-muted-foreground"
+                                        >
+                                          ×
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setSeatRenameState({
+                                              seatNumber: seat.number,
+                                              input: String(seat.number),
+                                            })
+                                          }
+                                          className="h-7 px-1.5 text-[10px] font-semibold text-sky-400 hover:text-sky-300"
+                                          title={`Rename seat ${seat.number}`}
+                                        >
+                                          Rename
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            handleDeleteSeat(seat.number)
+                                          }
+                                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-400/40 bg-red-500/10 text-red-300 hover:bg-red-500/20"
+                                          aria-label={`Delete seat ${seat.number}`}
+                                          title={`Delete Seat ${seat.number}`}
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
                                 )}
                               </div>
                             ))}
@@ -1815,6 +2104,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         seats={table.seats}
         tableItems={tableItems}
         onComplete={handlePaymentComplete}
+        outstandingItems={outstandingItems}
       />
 
       {/* Mobile/Tablet: Info panel as sheet */}

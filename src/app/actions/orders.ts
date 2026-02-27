@@ -1,6 +1,6 @@
 "use server";
 
-import { eq, and, ilike, inArray } from "drizzle-orm";
+import { eq, and, ilike, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   tables as tablesTable,
@@ -9,9 +9,18 @@ import {
   orders as ordersTable,
   orderItems as orderItemsTable,
   payments as paymentsTable,
+  servicePeriods as servicePeriodsTable,
 } from "@/lib/db/schema/orders";
 import { verifyLocationAccess } from "@/lib/location-access";
 import type { StoreTableSessionState, StoreOrderItem } from "@/store/types";
+import { canCloseSession } from "@/app/actions/session-close-validation";
+import { recordSessionEvent } from "@/app/actions/session-events";
+import {
+  markItemPreparing,
+  markItemReady,
+  markItemServed,
+} from "@/app/actions/order-item-lifecycle";
+import { addSeatToSession, syncSeatsWithGuestCount } from "@/app/actions/seat-management";
 
 const ORDER_STATUS_ACTIVE = ["pending", "confirmed", "preparing", "ready"] as const;
 
@@ -35,7 +44,7 @@ function mapItemStatusToDb(
 
 /**
  * Flatten session into line items with seat context. Skips void items.
- * Includes seatNumber (0 = shared) for seat_id resolution.
+ * Includes seatNumber (0 = shared) and waveNumber for seat_id and wave resolution.
  */
 function flattenSessionToLines(session: StoreTableSessionState): Array<{
   name: string;
@@ -43,6 +52,7 @@ function flattenSessionToLines(session: StoreTableSessionState): Array<{
   status: "pending" | "preparing" | "ready" | "served";
   notes: string | null;
   seatNumber: number;
+  waveNumber: number;
 }> {
   const lines: Array<{
     name: string;
@@ -50,12 +60,14 @@ function flattenSessionToLines(session: StoreTableSessionState): Array<{
     status: "pending" | "preparing" | "ready" | "served";
     notes: string | null;
     seatNumber: number;
+    waveNumber: number;
   }> = [];
 
   for (const seat of session.seats) {
     for (const item of seat.items) {
       if (item.status === "void") continue;
-      const waveLabel = item.waveNumber ? `Wave ${item.waveNumber}` : "";
+      const waveNumber = item.waveNumber ?? 1;
+      const waveLabel = `Wave ${waveNumber}`;
       const notes = [seat.number > 0 ? `Seat ${seat.number}` : "Shared", waveLabel]
         .filter(Boolean)
         .join(" · ");
@@ -65,13 +77,15 @@ function flattenSessionToLines(session: StoreTableSessionState): Array<{
         status: mapItemStatusToDb(item.status),
         notes: notes || null,
         seatNumber: seat.number,
+        waveNumber,
       });
     }
   }
 
   for (const item of session.tableItems) {
     if (item.status === "void") continue;
-    const waveLabel = item.waveNumber ? `Wave ${item.waveNumber}` : "";
+    const waveNumber = item.waveNumber ?? 1;
+    const waveLabel = `Wave ${waveNumber}`;
     const notes = ["Shared", waveLabel].filter(Boolean).join(" · ");
     lines.push({
       name: item.name.slice(0, 255),
@@ -79,6 +93,7 @@ function flattenSessionToLines(session: StoreTableSessionState): Array<{
       status: mapItemStatusToDb(item.status),
       notes: notes || null,
       seatNumber: 0,
+      waveNumber,
     });
   }
 
@@ -86,40 +101,30 @@ function flattenSessionToLines(session: StoreTableSessionState): Array<{
 }
 
 /**
- * Ensure a session has seats for seat_number 1..guestCount. Creates any missing seats.
+ * Sync seats with guest count. Uses syncSeatsWithGuestCount to create/mark seats.
  */
 async function ensureSeatsForSession(
   sessionId: string,
   guestCount: number
 ): Promise<void> {
-  const existing = await db.query.seats.findMany({
-    where: eq(seatsTable.sessionId, sessionId),
-    columns: { seatNumber: true },
-  });
-  const existingNumbers = new Set(existing.map((s) => s.seatNumber));
-  const toCreate: number[] = [];
-  for (let n = 1; n <= Math.max(1, guestCount); n++) {
-    if (!existingNumbers.has(n)) toCreate.push(n);
+  const result = await syncSeatsWithGuestCount(sessionId, guestCount);
+  if (!result.ok) {
+    throw new Error(result.error ?? "Failed to sync seats");
   }
-  if (toCreate.length === 0) return;
-  const now = new Date();
-  await db.insert(seatsTable).values(
-    toCreate.map((seatNumber) => ({
-      sessionId,
-      seatNumber,
-      updatedAt: now,
-    }))
-  );
 }
 
 /**
- * Get all seats for a session (for resolving seat_id from seat number in POS).
+ * Get seats for a session. For seat_id resolution (sync) use activeOnly: false (default).
+ * For table UI display use activeOnly: true.
  */
-export async function getSeatsForSession(sessionId: string): Promise<
-  Array<{ id: string; seatNumber: number; guestName: string | null }>
-> {
+export async function getSeatsForSession(
+  sessionId: string,
+  activeOnly = false
+): Promise<Array<{ id: string; seatNumber: number; guestName: string | null }>> {
   const rows = await db.query.seats.findMany({
-    where: eq(seatsTable.sessionId, sessionId),
+    where: activeOnly
+      ? and(eq(seatsTable.sessionId, sessionId), eq(seatsTable.status, "active"))
+      : eq(seatsTable.sessionId, sessionId),
     columns: { id: true, seatNumber: true, guestName: true },
     orderBy: (s, { asc }) => [asc(s.seatNumber)],
   });
@@ -128,6 +133,30 @@ export async function getSeatsForSession(sessionId: string): Promise<
     seatNumber: r.seatNumber,
     guestName: r.guestName ?? null,
   }));
+}
+
+/**
+ * Get the current service period id for a location based on current time.
+ * Returns null if no matching period or no periods defined.
+ */
+async function getCurrentServicePeriodIdForLocation(
+  locationId: string
+): Promise<string | null> {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const currentTime = `${hh}:${mm}`;
+
+  const periods = await db.query.servicePeriods.findMany({
+    where: eq(servicePeriodsTable.locationId, locationId),
+    columns: { id: true, startTime: true, endTime: true },
+  });
+  for (const p of periods) {
+    if (currentTime >= p.startTime && currentTime < p.endTime) {
+      return p.id;
+    }
+  }
+  return null;
 }
 
 /**
@@ -149,6 +178,7 @@ async function getOrCreateSessionForTable(
   });
   if (existing) return existing.id;
 
+  const servicePeriodId = await getCurrentServicePeriodIdForLocation(locationId);
   const [inserted] = await db
     .insert(sessionsTable)
     .values({
@@ -158,6 +188,7 @@ async function getOrCreateSessionForTable(
       guestCount,
       status: "open",
       source: "walk_in",
+      servicePeriodId: servicePeriodId ?? undefined,
       updatedAt: new Date(),
     })
     .returning({ id: sessionsTable.id });
@@ -205,87 +236,103 @@ export async function syncOrderToDb(
   if (!sessionId) {
     return { ok: false, error: "Failed to get or create session" };
   }
-  await ensureSeatsForSession(sessionId, session.guestCount ?? 0);
+  const guestCount = Math.max(1, Math.floor(session.guestCount ?? 0));
+  await db
+    .update(sessionsTable)
+    .set({ guestCount, updatedAt: now })
+    .where(eq(sessionsTable.id, sessionId));
+  await ensureSeatsForSession(sessionId, guestCount);
   const seatRows = await getSeatsForSession(sessionId);
   const seatNumberToId = new Map(seatRows.map((s) => [s.seatNumber, s.id]));
 
-  const waveNumber = 1;
-  let orderRow = await db.query.orders.findFirst({
-    where: and(
-      eq(ordersTable.sessionId, sessionId),
-      eq(ordersTable.wave, waveNumber)
-    ),
-    columns: { id: true, orderNumber: true },
-  });
+  const linesByWave = new Map<number, typeof lines>();
+  for (const line of lines) {
+    const wave = Math.max(1, line.waveNumber);
+    const list = linesByWave.get(wave) ?? [];
+    list.push(line);
+    linesByWave.set(wave, list);
+  }
+  const waveNumbers =
+    linesByWave.size > 0
+      ? Array.from(linesByWave.keys()).sort((a, b) => a - b)
+      : [1];
+  const numMatch = tableRow.tableNumber.match(/^[A-Za-z]*(\d+)$/);
+  const tableNum = numMatch ? numMatch[1] : "1";
 
-  if (!orderRow) {
-    const numMatch = tableRow.tableNumber.match(/^[A-Za-z]*(\d+)$/);
-    const tableNum = numMatch ? numMatch[1] : "1";
-    const orderNumber = `T${tableNum}-${Date.now().toString(36).slice(-6)}`.slice(0, 20);
+  for (const waveNumber of waveNumbers) {
+    const waveLines = linesByWave.get(waveNumber) ?? [];
+    let orderRow = await db.query.orders.findFirst({
+      where: and(
+        eq(ordersTable.sessionId, sessionId),
+        eq(ordersTable.wave, waveNumber)
+      ),
+      columns: { id: true, orderNumber: true },
+    });
 
-    const [inserted] = await db
-      .insert(ordersTable)
-      .values({
-        sessionId,
-        wave: waveNumber,
-        locationId,
-        tableId: tableUuid,
-        orderNumber,
-        orderType: "dine_in",
-        status: "pending",
-        paymentStatus: "unpaid",
-        paymentTiming: "pay_later",
-        subtotal: "0",
-        taxAmount: "0",
-        serviceCharge: "0",
-        tipAmount: "0",
-        discountAmount: "0",
-        total: "0",
-        firedAt: now,
+    if (!orderRow) {
+      const orderNumber = `T${tableNum}-${Date.now().toString(36).slice(-6)}`.slice(0, 20);
+      const [inserted] = await db
+        .insert(ordersTable)
+        .values({
+          sessionId,
+          wave: waveNumber,
+          locationId,
+          tableId: tableUuid,
+          orderNumber,
+          orderType: "dine_in",
+          status: "pending",
+          paymentStatus: "unpaid",
+          paymentTiming: "pay_later",
+          subtotal: "0",
+          taxAmount: "0",
+          serviceCharge: "0",
+          tipAmount: "0",
+          discountAmount: "0",
+          total: "0",
+          firedAt: waveNumber === 1 ? now : null,
+          station: null,
+          updatedAt: now,
+        })
+        .returning({ id: ordersTable.id });
+      if (!inserted) return { ok: false, error: "Failed to create order" };
+      orderRow = { id: inserted.id, orderNumber };
+    }
+
+    await db.delete(orderItemsTable).where(eq(orderItemsTable.orderId, orderRow.id));
+
+    const subtotal = waveLines.reduce((sum, l) => sum + l.price, 0);
+
+    if (waveLines.length > 0) {
+      await db.insert(orderItemsTable).values(
+        waveLines.map((line) => {
+          const seatId = line.seatNumber > 0 ? seatNumberToId.get(line.seatNumber) ?? null : null;
+          return {
+            orderId: orderRow.id,
+            itemName: line.name,
+            itemPrice: line.price.toFixed(2),
+            quantity: 1,
+            seat: line.seatNumber,
+            ...(seatId && { seatId }),
+            customizationsTotal: "0.00",
+            lineTotal: line.price.toFixed(2),
+            notes: line.notes ?? null,
+            status: line.status,
+            sentToKitchenAt: now,
+          };
+        })
+      );
+    }
+
+    await db
+      .update(ordersTable)
+      .set({
+        subtotal: subtotal.toFixed(2),
+        taxAmount: "0.00",
+        total: subtotal.toFixed(2),
         updatedAt: now,
       })
-      .returning({ id: ordersTable.id });
-
-    if (!inserted) {
-      return { ok: false, error: "Failed to create order (wave)" };
-    }
-    orderRow = { id: inserted.id, orderNumber };
+      .where(eq(ordersTable.id, orderRow.id));
   }
-
-  await db.delete(orderItemsTable).where(eq(orderItemsTable.orderId, orderRow.id));
-
-  const subtotal = lines.reduce((sum, l) => sum + l.price, 0);
-
-  if (lines.length > 0) {
-    await db.insert(orderItemsTable).values(
-      lines.map((line) => {
-        const seatId = line.seatNumber > 0 ? seatNumberToId.get(line.seatNumber) ?? null : null;
-        return {
-          orderId: orderRow.id,
-          itemName: line.name,
-          itemPrice: line.price.toFixed(2),
-          quantity: 1,
-          seat: line.seatNumber,
-          ...(seatId && { seatId }),
-          customizationsTotal: "0.00",
-          lineTotal: line.price.toFixed(2),
-          notes: line.notes ?? null,
-          status: line.status,
-          sentToKitchenAt: now,
-        };
-      })
-    );
-  }
-
-  await db
-    .update(ordersTable)
-    .set({
-      subtotal: subtotal.toFixed(2),
-      taxAmount: "0.00",
-      total: subtotal.toFixed(2),
-      updatedAt: now,
-    })
-    .where(eq(ordersTable.id, orderRow.id));
 
   return { ok: true, sessionId };
 }
@@ -344,6 +391,134 @@ export async function getOpenSessionIdForTable(
   return session?.id ?? null;
 }
 
+/**
+ * Create the next order wave for a session. Finds highest wave number and creates a new order
+ * with wave = highest + 1, status = pending, fired_at = null, station = null.
+ */
+export async function createNextWave(
+  sessionId: string
+): Promise<{ ok: true; order: { id: string; wave: number } } | { ok: false; error: string }> {
+  const session = await db.query.sessions.findFirst({
+    where: eq(sessionsTable.id, sessionId),
+    columns: { id: true, locationId: true, tableId: true },
+  });
+  if (!session) return { ok: false, error: "Session not found" };
+
+  const location = await verifyLocationAccess(session.locationId);
+  if (!location) return { ok: false, error: "Unauthorized or location not found" };
+
+  const [maxRow] = await db
+    .select({
+      maxWave: sql<number>`COALESCE(MAX(${ordersTable.wave}), 0)::int`,
+    })
+    .from(ordersTable)
+    .where(eq(ordersTable.sessionId, sessionId));
+  const highestWave = maxRow?.maxWave ?? 0;
+  const nextWave = highestWave + 1;
+
+  const tableRow = session.tableId
+    ? await db.query.tables.findFirst({
+        where: eq(tablesTable.id, session.tableId),
+        columns: { tableNumber: true },
+      })
+    : null;
+  const tableNum = tableRow?.tableNumber?.match(/^[A-Za-z]*(\d+)$/)?.[1] ?? "1";
+  const orderNumber = `T${tableNum}-${Date.now().toString(36).slice(-6)}`.slice(0, 20);
+  const now = new Date();
+
+  const [inserted] = await db
+    .insert(ordersTable)
+    .values({
+      sessionId,
+      wave: nextWave,
+      locationId: session.locationId,
+      tableId: session.tableId,
+      orderNumber,
+      orderType: "dine_in",
+      status: "pending",
+      paymentStatus: "unpaid",
+      paymentTiming: "pay_later",
+      subtotal: "0",
+      taxAmount: "0",
+      serviceCharge: "0",
+      tipAmount: "0",
+      discountAmount: "0",
+      total: "0",
+      firedAt: null,
+      station: null,
+      updatedAt: now,
+    })
+    .returning({ id: ordersTable.id, wave: ordersTable.wave });
+
+  if (!inserted) return { ok: false, error: "Failed to create order" };
+  return { ok: true, order: { id: inserted.id, wave: inserted.wave } };
+}
+
+/**
+ * Fire a wave: set fired_at = now, status = confirmed, update order_items.sent_to_kitchen_at
+ * if not set, and record session event course_fired.
+ */
+export async function fireWave(
+  orderId: string
+): Promise<{ ok: boolean; error?: string }> {
+  const order = await db.query.orders.findFirst({
+    where: eq(ordersTable.id, orderId),
+    columns: { id: true, sessionId: true, locationId: true, wave: true },
+  });
+  if (!order) return { ok: false, error: "Order not found" };
+
+  const location = await verifyLocationAccess(order.locationId);
+  if (!location) return { ok: false, error: "Unauthorized or location not found" };
+
+  const now = new Date();
+
+  await db
+    .update(ordersTable)
+    .set({
+      firedAt: now,
+      status: "confirmed",
+      updatedAt: now,
+    })
+    .where(eq(ordersTable.id, orderId));
+
+  const items = await db.query.orderItems.findMany({
+    where: and(
+      eq(orderItemsTable.orderId, orderId),
+      isNull(orderItemsTable.sentToKitchenAt)
+    ),
+    columns: { id: true },
+  });
+  for (const item of items) {
+    await db
+      .update(orderItemsTable)
+      .set({ sentToKitchenAt: now })
+      .where(eq(orderItemsTable.id, item.id));
+  }
+
+  if (order.sessionId) {
+    await recordSessionEvent(order.locationId, order.sessionId, "course_fired", {
+      wave: order.wave,
+    });
+  }
+
+  return { ok: true };
+}
+
+/** Get order id for a session and wave number. Used to wire fireWave from table page. */
+export async function getOrderIdForSessionAndWave(
+  sessionId: string,
+  waveNumber: number
+): Promise<string | null> {
+  const order = await db.query.orders.findFirst({
+    where: and(
+      eq(ordersTable.sessionId, sessionId),
+      eq(ordersTable.wave, waveNumber)
+    ),
+    columns: { id: true },
+  });
+  return order?.id ?? null;
+}
+
 /** Advance all items in a wave to a kitchen status and set timestamps. Used by table detail and KDS. */
 export async function advanceOrderWaveStatus(
   locationId: string,
@@ -366,16 +541,26 @@ export async function advanceOrderWaveStatus(
   });
   if (!orderRow) return { ok: false, error: "Order (wave) not found" };
 
-  const now = new Date();
-  const updates: Record<string, unknown> = { status };
-  if (status === "preparing") updates.startedAt = now;
-  if (status === "ready") updates.readyAt = now;
-  if (status === "served") updates.servedAt = now;
+  const items = await db.query.orderItems.findMany({
+    where: and(
+      eq(orderItemsTable.orderId, orderRow.id),
+      isNull(orderItemsTable.voidedAt)
+    ),
+    columns: { id: true },
+  });
+  const helper =
+    status === "preparing"
+      ? markItemPreparing
+      : status === "ready"
+        ? markItemReady
+        : markItemServed;
 
-  await db
-    .update(orderItemsTable)
-    .set(updates as Partial<typeof orderItemsTable.$inferInsert>)
-    .where(eq(orderItemsTable.orderId, orderRow.id));
+  for (const item of items) {
+    const result = await helper(item.id);
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+  }
 
   return { ok: true };
 }
@@ -384,6 +569,8 @@ export async function advanceOrderWaveStatus(
 const ORDER_ITEM_STATUS = ["pending", "preparing", "ready", "served"] as const;
 
 export type OrderForTableItem = {
+  /** DB order_items.id when loaded from database; omit for draft items. */
+  id?: string;
   name: string;
   price: number;
   quantity: number;
@@ -453,6 +640,7 @@ export async function getOrderForTable(
     const rows = await db.query.orderItems.findMany({
       where: inArray(orderItemsTable.orderId, orderIds),
       columns: {
+        id: true,
         itemName: true,
         itemPrice: true,
         quantity: true,
@@ -462,17 +650,33 @@ export async function getOrderForTable(
         seatId: true,
       },
     });
-    const items: OrderForTableItem[] = rows.map((r) => ({
-      name: r.itemName,
-      price: Number(r.itemPrice),
-      quantity: r.quantity ?? 1,
-      status: ORDER_ITEM_STATUS.includes(r.status as (typeof ORDER_ITEM_STATUS)[number])
-        ? (r.status as (typeof ORDER_ITEM_STATUS)[number])
-        : "pending",
-      notes: r.notes,
-      seatNumber: r.seat ?? 0,
-      seatId: r.seatId ?? null,
-    }));
+    const seatIds = rows.map((r) => r.seatId).filter((id): id is string => !!id);
+    const seatIdToNumber = new Map<string, number>();
+    if (seatIds.length > 0) {
+      const seatRows = await db.query.seats.findMany({
+        where: inArray(seatsTable.id, seatIds),
+        columns: { id: true, seatNumber: true },
+      });
+      seatRows.forEach((s) => seatIdToNumber.set(s.id, s.seatNumber));
+    }
+    const items: OrderForTableItem[] = rows.map((r) => {
+      const seatNumber =
+        r.seatId != null
+          ? seatIdToNumber.get(r.seatId) ?? r.seat ?? 0
+          : r.seat ?? 0;
+      return {
+        id: r.id,
+        name: r.itemName,
+        price: Number(r.itemPrice),
+        quantity: r.quantity ?? 1,
+        status: ORDER_ITEM_STATUS.includes(r.status as (typeof ORDER_ITEM_STATUS)[number])
+          ? (r.status as (typeof ORDER_ITEM_STATUS)[number])
+          : "pending",
+        notes: r.notes,
+        seatNumber,
+        seatId: r.seatId ?? null,
+      };
+    });
     return {
       guestCount: openSession.guestCount ?? guestCount,
       seatedAt: seatedAt ?? openSession.openedAt?.toISOString() ?? null,
@@ -499,6 +703,7 @@ export async function getOrderForTable(
   const rows = await db.query.orderItems.findMany({
     where: eq(orderItemsTable.orderId, orderRow.id),
     columns: {
+      id: true,
       itemName: true,
       itemPrice: true,
       quantity: true,
@@ -508,17 +713,33 @@ export async function getOrderForTable(
       seatId: true,
     },
   });
-  const items: OrderForTableItem[] = rows.map((r) => ({
-    name: r.itemName,
-    price: Number(r.itemPrice),
-    quantity: r.quantity ?? 1,
-    status: ORDER_ITEM_STATUS.includes(r.status as (typeof ORDER_ITEM_STATUS)[number])
-      ? (r.status as (typeof ORDER_ITEM_STATUS)[number])
-      : "pending",
-    notes: r.notes,
-    seatNumber: r.seat ?? 0,
-    seatId: r.seatId ?? null,
-  }));
+  const legacySeatIds = rows.map((r) => r.seatId).filter((id): id is string => !!id);
+  const legacySeatIdToNumber = new Map<string, number>();
+  if (legacySeatIds.length > 0) {
+    const seatRows = await db.query.seats.findMany({
+      where: inArray(seatsTable.id, legacySeatIds),
+      columns: { id: true, seatNumber: true },
+    });
+    seatRows.forEach((s) => legacySeatIdToNumber.set(s.id, s.seatNumber));
+  }
+  const items: OrderForTableItem[] = rows.map((r) => {
+    const seatNumber =
+      r.seatId != null
+        ? legacySeatIdToNumber.get(r.seatId) ?? r.seat ?? 0
+        : r.seat ?? 0;
+    return {
+      id: r.id,
+      name: r.itemName,
+      price: Number(r.itemPrice),
+      quantity: r.quantity ?? 1,
+      status: ORDER_ITEM_STATUS.includes(r.status as (typeof ORDER_ITEM_STATUS)[number])
+        ? (r.status as (typeof ORDER_ITEM_STATUS)[number])
+        : "pending",
+      notes: r.notes,
+      seatNumber,
+      seatId: r.seatId ?? null,
+    };
+  });
 
   return { guestCount, seatedAt, items };
 }
@@ -530,15 +751,35 @@ export type CloseTablePayment = {
   method?: "card" | "cash" | "mobile" | "other";
 };
 
+/** Options for closing a table session. */
+export type CloseOrderForTableOptions = {
+  /** Manager override: skip validation, void blocking items, record forced_close event. */
+  force?: boolean;
+};
+
+export type CloseOrderForTableResult =
+  | { ok: true }
+  | {
+      ok: false;
+      error: string;
+      reason?: "session_not_open" | "unfinished_items" | "unpaid_balance" | "payment_in_progress" | "kitchen_mid_fire" | "invalid_tip";
+      items?: Array<{ id: string; itemName: string; status: string; quantity: number }>;
+      remaining?: number;
+      sessionTotal?: number;
+      paymentsTotal?: number;
+    };
+
 /**
  * Close the active session for a table (and mark its orders completed). If payment is provided and
  * there is an open session, inserts a payment row then closes the session.
+ * Validates session is in a safe state unless force=true (manager override).
  */
 export async function closeOrderForTable(
   locationId: string,
   tableId: string,
-  payment?: CloseTablePayment
-): Promise<{ ok: boolean; error?: string }> {
+  payment?: CloseTablePayment,
+  options?: CloseOrderForTableOptions
+): Promise<CloseOrderForTableResult> {
   const location = await verifyLocationAccess(locationId);
   if (!location) {
     return { ok: false, error: "Unauthorized or location not found" };
@@ -567,6 +808,67 @@ export async function closeOrderForTable(
   });
 
   if (openSession) {
+    const force = options?.force === true;
+
+    // Validate tip amount when payment is provided
+    if (payment && (payment.tipAmount ?? 0) < 0) {
+      return {
+        ok: false,
+        error: "Tip amount must be >= 0",
+        reason: "invalid_tip",
+      };
+    }
+
+    if (!force) {
+      const canClose = await canCloseSession(openSession.id, {
+        incomingPaymentAmount: payment?.amount,
+      });
+      if (!canClose.ok) {
+        const err: CloseOrderForTableResult = {
+          ok: false,
+          error: `Cannot close session: ${canClose.reason}`,
+          reason: canClose.reason,
+        };
+        if (canClose.reason === "unfinished_items") {
+          err.items = canClose.items;
+        }
+        if (canClose.reason === "unpaid_balance") {
+          err.remaining = canClose.remaining;
+          err.sessionTotal = canClose.sessionTotal;
+          err.paymentsTotal = canClose.paymentsTotal;
+        }
+        return err;
+      }
+    } else {
+      const ordersForSession = await db.query.orders.findMany({
+        where: eq(ordersTable.sessionId, openSession.id),
+        columns: { id: true },
+      });
+      const orderIds = ordersForSession.map((o) => o.id);
+      if (orderIds.length > 0) {
+        const unfinishedItems = await db.query.orderItems.findMany({
+          where: and(
+            inArray(orderItemsTable.orderId, orderIds),
+            inArray(orderItemsTable.status, ["pending", "preparing", "ready"]),
+            isNull(orderItemsTable.voidedAt)
+          ),
+          columns: { id: true },
+        });
+        if (unfinishedItems.length > 0) {
+          for (const item of unfinishedItems) {
+            await db
+              .update(orderItemsTable)
+              .set({ voidedAt: now })
+              .where(eq(orderItemsTable.id, item.id));
+          }
+        }
+      }
+      await recordSessionEvent(locationId, openSession.id, "payment_completed", {
+        forced_close: true,
+        reason: "manager_override",
+      });
+    }
+
     if (payment && payment.amount > 0) {
       await db.insert(paymentsTable).values({
         sessionId: openSession.id,

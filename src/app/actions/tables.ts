@@ -1,6 +1,6 @@
 "use server";
 
-import { eq, and, desc, ilike } from "drizzle-orm";
+import { eq, and, desc, ilike, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { tables as tablesTable, sessions as sessionsTable } from "@/lib/db/schema/orders";
 import { verifyLocationAccess } from "@/lib/location-access";
@@ -63,6 +63,7 @@ function mapDbStatusToStoreStatus(
     occupied: "active",
     reserved: "reserved",
     unavailable: "closed",
+    cleaning: "cleaning",
   };
   return map[dbStatus] ?? "free";
 }
@@ -82,16 +83,80 @@ function mapStoreStatusToDb(
   return map[status] ?? "available";
 }
 
-/** Table status is derived from sessions: if an open session exists for a table, status is occupied. */
-async function getTableIdsWithOpenSession(locationId: string): Promise<Set<string>> {
-  const openSessions = await db.query.sessions.findMany({
+/** Minutes after session close that table is considered "cleaning". */
+const CLEANING_WINDOW_MINUTES = 5;
+
+export type ComputedTableStatus = "available" | "occupied" | "cleaning";
+
+/**
+ * Derive table status from sessions. Does not use tables.status.
+ * - No open session → available
+ * - Open session → occupied
+ * - Session closed within last CLEANING_WINDOW_MINUTES → cleaning
+ * - Cleaning finished → available
+ */
+export async function computeTableStatus(tableId: string): Promise<ComputedTableStatus> {
+  const openSession = await db.query.sessions.findFirst({
     where: and(
-      eq(sessionsTable.locationId, locationId),
+      eq(sessionsTable.tableId, tableId),
       eq(sessionsTable.status, "open")
     ),
-    columns: { tableId: true },
+    columns: { id: true },
   });
-  return new Set(openSessions.map((s) => s.tableId));
+  if (openSession) return "occupied";
+
+  const recentlyClosed = await db
+    .select({ id: sessionsTable.id })
+    .from(sessionsTable)
+    .where(
+      and(
+        eq(sessionsTable.tableId, tableId),
+        eq(sessionsTable.status, "closed"),
+        sql`${sessionsTable.closedAt} >= now() - interval '${sql.raw(String(CLEANING_WINDOW_MINUTES))} minutes'`
+      )
+    )
+    .orderBy(desc(sessionsTable.closedAt))
+    .limit(1);
+  if (recentlyClosed.length > 0) return "cleaning";
+
+  return "available";
+}
+
+/** Batch: derive status from sessions for many tables. Used by getTablesForLocation/getTablesForFloorPlan and API routes. */
+export async function getComputedStatusesForTables(
+  locationId: string
+): Promise<Map<string, ComputedTableStatus>> {
+  const [openSessions, recentlyClosedSessions] = await Promise.all([
+    db.query.sessions.findMany({
+      where: and(
+        eq(sessionsTable.locationId, locationId),
+        eq(sessionsTable.status, "open")
+      ),
+      columns: { tableId: true },
+    }),
+    db
+      .select({ tableId: sessionsTable.tableId })
+      .from(sessionsTable)
+      .where(
+        and(
+          eq(sessionsTable.locationId, locationId),
+          eq(sessionsTable.status, "closed"),
+          sql`${sessionsTable.closedAt} >= now() - interval '${sql.raw(String(CLEANING_WINDOW_MINUTES))} minutes'`
+        )
+      ),
+  ]);
+
+  const openTableIds = new Set(openSessions.map((s) => s.tableId));
+  const result = new Map<string, ComputedTableStatus>();
+  for (const s of openSessions) {
+    result.set(s.tableId, "occupied");
+  }
+  for (const r of recentlyClosedSessions) {
+    if (!openTableIds.has(r.tableId)) {
+      result.set(r.tableId, "cleaning");
+    }
+  }
+  return result;
 }
 
 export async function getTablesForLocation(
@@ -102,16 +167,16 @@ export async function getTablesForLocation(
     throw new Error("Unauthorized or location not found");
   }
 
-  const [rows, openTableIds] = await Promise.all([
+  const [rows, computedStatuses] = await Promise.all([
     db.query.tables.findMany({
       where: eq(tablesTable.locationId, locationId),
       orderBy: [desc(tablesTable.createdAt)],
     }),
-    getTableIdsWithOpenSession(locationId),
+    getComputedStatusesForTables(locationId),
   ]);
 
   return rows.map((r) => {
-    const status = openTableIds.has(r.id) ? "occupied" : r.status;
+    const status = computedStatuses.get(r.id) ?? "available";
     return mapTableRowToStoreTable({
       ...r,
       status,
@@ -121,7 +186,7 @@ export async function getTablesForLocation(
   });
 }
 
-/** Get tables for a specific floor plan from DB. Status derived from open sessions. */
+/** Get tables for a specific floor plan from DB. Status derived from sessions via computeTableStatus. */
 export async function getTablesForFloorPlan(
   locationId: string,
   floorPlanId: string
@@ -131,7 +196,7 @@ export async function getTablesForFloorPlan(
     throw new Error("Unauthorized or location not found");
   }
 
-  const [rows, openTableIds] = await Promise.all([
+  const [rows, computedStatuses] = await Promise.all([
     db.query.tables.findMany({
       where: and(
         eq(tablesTable.locationId, locationId),
@@ -139,11 +204,11 @@ export async function getTablesForFloorPlan(
       ),
       orderBy: [desc(tablesTable.createdAt)],
     }),
-    getTableIdsWithOpenSession(locationId),
+    getComputedStatusesForTables(locationId),
   ]);
 
   return rows.map((r) => {
-    const status = openTableIds.has(r.id) ? "occupied" : r.status;
+    const status = computedStatuses.get(r.id) ?? "available";
     return mapTableRowToStoreTable({
       ...r,
       status,

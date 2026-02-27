@@ -103,6 +103,8 @@ export const sessionSourceEnum = pgEnum("session_source", [
   "pos",
 ]);
 
+export const seatStatusEnum = pgEnum("seat_status", ["active", "removed"]);
+
 /** Wave/fire status for KDS and timing. */
 export const orderWaveStatusEnum = pgEnum("order_wave_status", [
   "held",
@@ -260,6 +262,29 @@ export const reservations = pgTable(
 );
 
 // =============================================================================
+// TABLE 3a: SERVICE_PERIODS (Breakfast, Lunch, Dinner, Late Night - for analytics)
+// =============================================================================
+
+export const servicePeriods = pgTable(
+  "service_periods",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    locationId: uuid("location_id")
+      .notNull()
+      .references(() => merchantLocations.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 50 }).notNull(), // e.g. "Breakfast", "Lunch"
+    startTime: varchar("start_time", { length: 10 }).notNull(), // e.g. "08:00", "14:00"
+    endTime: varchar("end_time", { length: 10 }).notNull(), // e.g. "11:00", "17:00"
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    locationIdIdx: index("service_periods_location_id_idx").on(table.locationId),
+  })
+);
+
+// =============================================================================
 // TABLE 3b: SESSIONS (one dining visit per table; at most one active per table)
 // =============================================================================
 
@@ -282,6 +307,9 @@ export const sessions = pgTable(
     status: sessionStatusEnum("status").notNull().default("open"),
     source: sessionSourceEnum("source").notNull().default("walk_in"),
     reservationId: uuid("reservation_id").references(() => reservations.id),
+    servicePeriodId: uuid("service_period_id").references(() => servicePeriods.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -309,6 +337,14 @@ export const sessions = pgTable(
 // TABLE 3c: SESSION_EVENTS (operational events for analytics and audit)
 // =============================================================================
 
+export const sessionActorTypeEnum = pgEnum("session_actor_type", [
+  "server",
+  "kitchen",
+  "system",
+  "runner",
+  "customer",
+]);
+
 export const sessionEventTypeEnum = pgEnum("session_event_type", [
   "guest_seated",
   "order_sent",
@@ -323,6 +359,9 @@ export const sessionEventTypeEnum = pgEnum("session_event_type", [
   "runner_assigned",
   "table_cleaned",
   "kitchen_delay",
+  "guest_added",
+  "guest_removed",
+  "guest_count_adjusted",
 ]);
 
 export const sessionEvents = pgTable(
@@ -333,6 +372,8 @@ export const sessionEvents = pgTable(
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
     type: sessionEventTypeEnum("type").notNull(),
+    actorType: sessionActorTypeEnum("actor_type"),
+    actorId: uuid("actor_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -344,6 +385,11 @@ export const sessionEvents = pgTable(
       table.sessionId,
       table.type
     ),
+    sessionIdActorTypeIdx: index("session_events_session_id_actor_type_idx").on(
+      table.sessionId,
+      table.actorType
+    ),
+    actorIdIdx: index("session_events_actor_id_idx").on(table.actorId),
     createdAtIdx: index("session_events_created_at_idx").on(table.createdAt),
     metaOrderItemIdIdx: index("session_events_meta_order_item").on(
       sql`(${table.meta}->>'orderItemId')`
@@ -363,6 +409,7 @@ export const seats = pgTable(
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
     seatNumber: integer("seat_number").notNull(),
+    status: seatStatusEnum("status").notNull().default("active"),
     guestName: varchar("guest_name", { length: 255 }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -473,10 +520,13 @@ export const orderItems = pgTable(
     lineTotal: decimal("line_total", { precision: 10, scale: 2 }).notNull(),
     notes: text("notes"),
     status: orderItemStatusEnum("status").notNull().default("pending"),
+    stationOverride: varchar("station_override", { length: 50 }),
     sentToKitchenAt: timestamp("sent_to_kitchen_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
     readyAt: timestamp("ready_at", { withTimezone: true }),
     servedAt: timestamp("served_at", { withTimezone: true }),
+    voidedAt: timestamp("voided_at", { withTimezone: true }),
+    refiredAt: timestamp("refired_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -627,6 +677,14 @@ export const orderDelivery = pgTable(
 // RELATIONS
 // =============================================================================
 
+export const servicePeriodsRelations = relations(servicePeriods, ({ one, many }) => ({
+  location: one(merchantLocations, {
+    fields: [servicePeriods.locationId],
+    references: [merchantLocations.id],
+  }),
+  sessions: many(sessions),
+}));
+
 export const tablesRelations = relations(tables, ({ one, many }) => ({
   location: one(merchantLocations, {
     fields: [tables.locationId],
@@ -653,6 +711,10 @@ export const sessionsRelations = relations(sessions, ({ one, many }) => ({
   reservation: one(reservations, {
     fields: [sessions.reservationId],
     references: [reservations.id],
+  }),
+  servicePeriod: one(servicePeriods, {
+    fields: [sessions.servicePeriodId],
+    references: [servicePeriods.id],
   }),
   orders: many(orders),
   payments: many(payments),

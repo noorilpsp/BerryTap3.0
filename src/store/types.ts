@@ -15,7 +15,7 @@ export type StoreTableShape = "round" | "square" | "rectangle" | "booth"
 
 export type StoreMealStage = "drinks" | "food" | "dessert" | "bill"
 
-export type StoreAlertType = "food_ready" | "no_checkin" | "waiting"
+export type StoreAlertType = "food_ready" | "no_checkin" | "waiting" | "kitchen_delay"
 
 export type StoreTableDetailStatus =
   | "available"

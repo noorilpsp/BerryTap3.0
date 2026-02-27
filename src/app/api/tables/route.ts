@@ -4,6 +4,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { tables } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { getComputedStatusesForTables } from "@/app/actions/tables";
 
 export const runtime = "nodejs";
 
@@ -73,18 +74,24 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Fetch tables
-    const whereConditions = [eq(tables.locationId, locationId)];
+    const [tablesList, computedStatuses] = await Promise.all([
+      db.query.tables.findMany({
+        where: eq(tables.locationId, locationId),
+        orderBy: [desc(tables.createdAt)],
+      }),
+      getComputedStatusesForTables(locationId),
+    ]);
+
+    let result = tablesList.map((t) => ({
+      ...t,
+      status: computedStatuses.get(t.id) ?? t.status,
+    }));
+
     if (status) {
-      whereConditions.push(eq(tables.status, status as any));
+      result = result.filter((t) => t.status === status);
     }
 
-    const tablesList = await db.query.tables.findMany({
-      where: and(...whereConditions),
-      orderBy: [desc(tables.createdAt)],
-    });
-
-    return NextResponse.json(tablesList, {
+    return NextResponse.json(result, {
       headers: {
         "Cache-Control": "no-store, must-revalidate",
       },

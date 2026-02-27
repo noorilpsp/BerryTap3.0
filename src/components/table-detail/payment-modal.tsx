@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import { ArrowLeft, CheckCircle2, Minus, Plus, Users } from "lucide-react"
+import { AlertTriangle, ArrowLeft, CheckCircle2, Minus, Plus, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -38,6 +38,18 @@ interface PaymentModalProps {
   guestCount: number
   seats: Seat[]
   tableItems: OrderItem[]
+  /** Result from getSessionOutstandingItems, to show blocking reasons when session cannot be closed */
+  outstandingItems?: {
+    canClose: boolean
+    reason?:
+      | "session_not_open"
+      | "unfinished_items"
+      | "unpaid_balance"
+      | "payment_in_progress"
+      | "kitchen_mid_fire"
+    unfinishedItems?: Array<{ id: string; name: string; status: string }>
+    remaining?: number
+  } | null
   onComplete?: (summary: {
     mode: "one-bill" | "by-seat" | "equal" | "item"
     method: "card" | "cash" | "tap" | "other"
@@ -152,6 +164,7 @@ export function PaymentModal({
   guestCount,
   seats,
   tableItems,
+  outstandingItems = null,
   onComplete,
 }: PaymentModalProps) {
   const contextLabel = contextName ?? `Table ${tableNumber}`
@@ -222,6 +235,7 @@ export function PaymentModal({
 
   const suggestedPayers = Math.max(1, guestCount || seats.length || 1)
   const maxPayers = 12
+  const cannotCloseSession = Boolean(outstandingItems && !outstandingItems.canClose)
 
   useEffect(() => {
     if (!open) return
@@ -685,6 +699,32 @@ export function PaymentModal({
           </DialogTitle>
         </DialogHeader>
 
+        {outstandingItems && !outstandingItems.canClose && outstandingItems.reason && (
+          <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-400/40 bg-amber-500/15 px-3 py-2.5">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+            <div className="text-sm text-amber-100/90">
+              {outstandingItems.reason === "unfinished_items" && outstandingItems.unfinishedItems && (
+                <span>
+                  {outstandingItems.unfinishedItems.length} item(s) still pending:{" "}
+                  {outstandingItems.unfinishedItems.map((i) => i.name).join(", ")}
+                </span>
+              )}
+              {outstandingItems.reason === "unpaid_balance" && outstandingItems.remaining != null && (
+                <span>Unpaid balance: {formatCurrency(outstandingItems.remaining)}</span>
+              )}
+              {outstandingItems.reason === "session_not_open" && (
+                <span>Session is not open</span>
+              )}
+              {outstandingItems.reason === "payment_in_progress" && (
+                <span>Payment in progress</span>
+              )}
+              {outstandingItems.reason === "kitchen_mid_fire" && (
+                <span>Kitchen wave in progress</span>
+              )}
+            </div>
+          </div>
+        )}
+
         {stage === "plan" && (
           <>
             {showCustomerFields && (
@@ -1064,7 +1104,7 @@ export function PaymentModal({
                     }
                     setStage("checkout")
                   }}
-                  disabled={!canReviewCheckout}
+                  disabled={!canReviewCheckout || cannotCloseSession}
                 >
                   {mode === "one-bill"
                     ? `Charge Now ${formatCurrency(subtotal)}`
@@ -1300,7 +1340,7 @@ export function PaymentModal({
                               <Button
                                 className="h-8 w-full bg-gradient-to-r from-emerald-500 to-cyan-500 text-white hover:from-emerald-400 hover:to-cyan-400"
                                 onClick={() => handleEqualPersonCharge(payment.id, mode === "item" ? "item" : "equal")}
-                                disabled={!canCharge}
+                                disabled={!canCharge || cannotCloseSession}
                               >
                                 {payment.method === "cash"
                                   ? `Collect ${formatCurrency(currentTotal)}`
@@ -1484,7 +1524,7 @@ export function PaymentModal({
                     setBySeatHasRemainingAfterSuccess(false)
                     setStage("success")
                   }}
-                  disabled={!equalAllPaid}
+                  disabled={!equalAllPaid || cannotCloseSession}
                 >
                   {equalAllPaid ? "Review Receipts" : "Charge each person to continue"}
                 </Button>
@@ -1492,7 +1532,7 @@ export function PaymentModal({
                 <Button
                   className="w-full bg-gradient-to-r from-emerald-500 to-cyan-500 text-white hover:from-emerald-400 hover:to-cyan-400"
                   onClick={handleCharge}
-                  disabled={!canChargeCheckout}
+                  disabled={!canChargeCheckout || cannotCloseSession}
                 >
                   {method === "cash" ? `Collect ${formatCurrency(checkoutTotal)}` : `Charge ${formatCurrency(checkoutTotal)}`}
                 </Button>
@@ -1579,6 +1619,7 @@ export function PaymentModal({
                   }
                   finalizeAndClose()
                 }}
+                disabled={cannotCloseSession}
               >
                 {bySeatHasRemainingAfterSuccess && !successCanFinalize ? "Next Seat" : "Done"}
               </Button>

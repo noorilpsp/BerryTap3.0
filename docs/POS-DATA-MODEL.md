@@ -4,12 +4,13 @@
 
 The restaurant data model is refactored to align with professional POS systems:
 
-- **tables** – Physical table layout (section, shape, position, capacity). **Table status is derived from sessions**: if an open session exists for a table, the table is considered occupied. The `tables.status` column is a cache; source of truth is `sessions.status = 'open'` per table.
-- **sessions** – One dining visit per table. **At most one open session per table** (enforced by partial unique index `sessions_one_open_per_table` on `table_id` WHERE `status = 'open'`). Holds: locationId, tableId, serverId, guestCount, openedAt, closedAt, status, source (walk_in, reservation, qr, pos).
-- **session_events** – Operational events per session: guest_seated, order_sent, item_ready, served, bill_requested, payment_completed. Columns: session_id, type, created_at, meta (jsonb).
-- **seats** – One row per guest position in a session. Columns: session_id, seat_number (1..guestCount), guest_name (nullable). Unique (session_id, seat_number). Created when a session is created.
+- **tables** – Physical table layout (section, shape, position, capacity). **Table status is derived from sessions** via `computeTableStatus(tableId)`: no open session → available; open session → occupied; session closed within last 5 min → cleaning; else → available. The `tables.status` column is a legacy cache; source of truth is sessions.
+- **service_periods** – Time windows per location (e.g. Breakfast 08:00–11:00, Lunch 14:00–17:00). Columns: location_id, name, start_time, end_time. Sessions get `service_period_id` assigned at creation based on current time (for analytics).
+- **sessions** – One dining visit per table. **At most one open session per table** (enforced by partial unique index). Holds: locationId, tableId, serverId, guestCount, **servicePeriodId** (optional), openedAt, closedAt, status, source.
+- **session_events** – Operational events per session. Columns: session_id, type, created_at, **actor_type** (server | kitchen | system | runner | customer), **actor_id** (uuid), meta (jsonb). Indexes: (session_id, type), (session_id, actor_type), (actor_id).
+- **seats** – One row per guest position in a session. Columns: session_id, seat_number, status (active | removed), guest_name (nullable). Unique (session_id, seat_number). Removed seats are never deleted if order_items reference them.
 - **orders** – Waves/fires within a session. Each order has sessionId, wave number, status, firedAt, completedAt, station (for KDS).
-- **order_items** – Line items per order (wave), with timing: **seat_id** (FK to seats.id), legacy **seat** (number, kept for migration), sentToKitchenAt, startedAt, readyAt, servedAt. **Kitchen timestamps are validated**: sentToKitchenAt ≤ startedAt ≤ readyAt ≤ servedAt (CHECK constraint).
+- **order_items** – Line items per order (wave), with timing: **seat_id** (primary for seat assignment), legacy **seat** (fallback), sentToKitchenAt, startedAt, readyAt, servedAt, **voidedAt**, **refiredAt**, **station_override** (e.g. "grill", "fryer", "bar" for multi-station tickets). Kitchen timestamps validated (CHECK). seat_id session constraint: seat must match order’s session.
 - **payments** – Tied to **sessionId** (and optionally legacy orderId). amount, tip, method, paidAt.
 - **reservations** – Can attach **sessionId** once seated.
 
@@ -25,6 +26,7 @@ The restaurant data model is refactored to align with professional POS systems:
 ## Indexes (realtime and analytics)
 
 - **sessions**: (location_id, status), (table_id), partial unique (table_id) WHERE status = 'open'
+- **service_periods**: (location_id)
 - **orders**: (session_id), (location_id), (status)
 - **order_items**: (order_id), (status)
 - **session_events**: (session_id), (session_id, type), (created_at), ((meta->>'orderItemId'))
@@ -55,9 +57,12 @@ Use `src/lib/db/realtime-pos.ts`: `getSessionById`, `getOrdersBySessionId`, `get
 | item_voided | — | — |
 | runner_assigned | — | `{ runnerId: string }` |
 | table_cleaned | — | — |
-| kitchen_delay | — | `{ station: "grill", minutes: 5 }` |
+| kitchen_delay | — | `{ orderItemId: string, minutesLate: number }` |
+| guest_added | — | `{ previous, new, reason }` |
+| guest_removed | — | `{ previous, new, reason }` |
+| guest_count_adjusted | — | `{ previous, new, reason }` |
 
-Index `(session_id, type)` supports analytics queries by session and event type.
+**Actor tracking**: optional `actor_type` (server | kitchen | system | runner | customer) and `actor_id` – e.g. server fired course, kitchen marked item ready. Pass via `recordSessionEvent(..., meta?, actor?)`. Indexes: (session_id, actor_type), (actor_id).
 
 ## Legacy / deprecation
 
@@ -99,8 +104,78 @@ Order lookup by **table_id** without session (in `getOrderForTable` and `closeOr
 
    Later, the legacy `order_items.seat` column can be removed.
 
+5. **Seat-session constraint** (optional, defense in depth)  
+   Ensure `order_items.seat_id` references a seat in the same session as the order:
+
+   ```bash
+   npx tsx scripts/add-order-items-seat-session-constraint.ts
+   ```
+
+6. **Service periods** (optional)  
+   Create `service_periods` rows per location (e.g. Breakfast 08:00–11:00). When a session is created, the current period is assigned automatically based on time. Seed via app or migration.
+
+## Seat management
+
+**syncSeatsWithGuestCount(sessionId, guestCount)** – Syncs seats with guest count: creates seats 1..guestCount if missing; when count decreases, marks excess seats as `removed` (never deletes seats with order_items). Reactivates removed seats when count increases. Seat numbers remain unique per session.
+
+**addSeatToSession(sessionId, seatNumber?)** – Adds a seat. Uses next available seat_number (max + 1) unless `seatNumber` is provided. Maintains unique (session_id, seat_number).
+
+**removeSeatFromSession(seatId)** – Marks seat as `removed` if `order_items` reference it; otherwise deletes it. Preserves `seat_id` references.
+
+**removeSeatBySessionAndNumber(sessionId, seatNumber)** – Convenience wrapper: looks up seat by session + number, then calls `removeSeatFromSession`.
+
+**renameSeat(seatId, newSeatNumber)** – Changes seat_number. Updates legacy `order_items.seat` for items that reference this seat via `seat_id`.
+
+**Integration:** `ensureSeatsForSession` (used by sync) calls `syncSeatsWithGuestCount` when guest count changes. The table page calls `removeSeatBySessionAndNumber` when the user deletes a seat.
+
+## Order waves
+
+**createNextWave(sessionId)** – Creates the next order wave for a session. Finds the highest wave number, creates a new order with wave = highest + 1, status = pending, fired_at = null, station = null. Returns the created order.
+
+**fireWave(orderId)** – Fires a wave: sets fired_at = now, status = confirmed, updates order_items.sent_to_kitchen_at if not set, and records session event `course_fired` with meta `{ wave }`.
+
+**getOrderIdForSessionAndWave(sessionId, waveNumber)** – Returns the order id for a session and wave. Used to wire fireWave from the table page.
+
+**Integration:** The table page calls `createNextWave` when the user adds a wave (+ button) and `fireWave` when the user fires a wave from the timeline. `syncOrderToDb` distributes items by wave: it groups lines by `waveNumber` and syncs each wave’s items to its corresponding order.
+
+## Table status derivation
+
+**computeTableStatus(tableId)** – Derives table status from sessions (ignores `tables.status`):
+
+- No open session → available
+- Open session → occupied
+- Session closed within last 5 minutes → cleaning
+- Cleaning finished → available
+
+`getTablesForLocation` and `getTablesForFloorPlan` use this logic internally via a batch helper.
+
+## Session close validation
+
+Before a session can be closed, the system verifies the table is in a safe state. Use `canCloseSession(sessionId)` to check.
+
+**Validation rules** (all must pass):
+
+1. **Session must exist and be open** – block if `status !== "open"` → `reason: "session_not_open"`.
+2. **No unfinished kitchen items** – all non-voided order items must have `status` in `served` or `voided_at` set. Block on `pending`, `preparing`, `ready` → `reason: "unfinished_items"` with `items: [...]`.
+3. **No unpaid balance** – `remaining = session_total - payments_total`; block if `remaining > 0` → `reason: "unpaid_balance"`, `remaining: number`.
+4. **No active payment** – block if any payment has `status = "pending"` → `reason: "payment_in_progress"`.
+5. **Kitchen mid-fire** – block if any item has `sent_to_kitchen_at IS NOT NULL` and `started_at IS NULL` → `reason: "kitchen_mid_fire"`.
+
+**Helpers:**
+
+- `canCloseSession(sessionId)` – returns `{ ok: true }` or `{ ok: false, reason, items?, remaining? }`.
+- `getSessionOutstandingItems(sessionId)` – returns what is still blocking closure (for UI display).
+
+## Kitchen delay detection
+
+**detectKitchenDelays(sessionId, options?)** – Helper (not auto-run) that finds order items with `sent_to_kitchen_at` set, `ready_at` null, and elapsed time exceeding threshold. Default thresholds: 10 min warning, 20 min critical. Returns `[{ orderItemId, minutesLate, station }]` and records `kitchen_delay` session events per item.
+
+**Force close (manager override):**
+
+- `closeOrderForTable(locationId, tableId, payment?, { force: true })` – skips validation, voids remaining unfinished items, records a session event with meta `{ forced_close: true, reason: "manager_override" }`, then closes. Use with care for auditability.
+
 ## App behavior
 
-- **Table detail / POS** – When a session is created (seating or first sync), seats are auto-created for that session (seat_number 1..guestCount). **getSeatsForSession(sessionId)** returns seats for resolving seat_id. When adding items, `syncOrderToDb` maps POS seat number to `seat_id` and persists both `seat` (legacy) and `seat_id`. `syncOrderToDb` gets or creates a session (and ensures seats exist), then gets or creates an order (wave 1) and writes order_items with seat_id. `getOrderForTable` prefers an open session and aggregates items from all waves; it falls back to legacy (order by tableId) when there is no session. `closeOrderForTable(locationId, tableId, payment?)` records a payment row when payment is provided, then closes the session and marks its orders completed. Kitchen workflow: `advanceOrderWaveStatus` updates order_items status and timestamps; the table page records session events (item_ready, served).
+- **Table detail / POS** – When a session is created, seats are auto-created and **service_period_id** is set from current time if periods exist. **getSeatsForSession**, **getOrderForTable** (prefers seat_id), **closeOrderForTable** (with optional `{ force: true }`), **advanceOrderWaveStatus** – see prior sections. **recordSessionEvent** / **recordSessionEventByTable** accept optional `actor?: { actorType, actorId }` for audit.
 - **KDS** – Uses **orders + order_items only** (no table-based order lookup). GET `/api/kds/orders?locationId=` returns active orders (status pending/preparing/ready) with full order_items; table number comes from session or order. Status changes are persisted via PUT `/api/orders/[id]/items/[itemId]` (which sets startedAt/readyAt/servedAt when status changes).
 - **Analytics** – Use `sessions` (openedAt, closedAt, guestCount, source), `orders` (firedAt, completedAt), and `order_items` timing columns.
