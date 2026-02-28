@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq, and } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
-import { orders, orderItems, orderItemCustomizations } from "@/lib/db/schema/orders";
+import { orders, orderItems } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
-import { items } from "@/lib/db/schema/menus";
+import { addItemToExistingOrder } from "@/domain/serviceActions";
 
 export const runtime = "nodejs";
 
@@ -42,19 +42,9 @@ export async function POST(
       );
     }
 
-    // Get existing order
     const existingOrder = await db.query.orders.findFirst({
       where: eq(orders.id, id),
-      with: {
-        location: {
-          columns: {
-            id: true,
-            merchantId: true,
-            taxRate: true,
-            serviceChargePercentage: true,
-          },
-        },
-      },
+      with: { location: { columns: { merchantId: true } } },
     });
 
     if (!existingOrder) {
@@ -64,16 +54,13 @@ export async function POST(
       );
     }
 
-    // Check user has access to this merchant
     const membership = await db.query.merchantUsers.findFirst({
       where: and(
         eq(merchantUsers.merchantId, existingOrder.location.merchantId),
         eq(merchantUsers.userId, user.id),
         eq(merchantUsers.isActive, true)
       ),
-      columns: {
-        id: true,
-      },
+      columns: { id: true },
     });
 
     if (!membership) {
@@ -83,107 +70,28 @@ export async function POST(
       );
     }
 
-    // Fetch item to get current price
-    const menuItem = await db.query.items.findFirst({
-      where: eq(items.id, itemId),
+    const result = await addItemToExistingOrder(id, {
+      itemId,
+      quantity: Number(quantity),
+      notes: notes ?? undefined,
+      customizations: Array.isArray(customizations)
+        ? customizations.map((c: { groupId?: string; optionId?: string; quantity?: number }) => ({
+            groupId: c.groupId,
+            optionId: c.optionId,
+            quantity: c.quantity,
+          }))
+        : undefined,
     });
 
-    if (!menuItem) {
-      return NextResponse.json(
-        { error: "Item not found" },
-        { status: 404 }
-      );
+    if (!result.ok) {
+      const status = result.reason === "unauthorized" ? 403 : result.reason === "item_not_found" ? 404 : 400;
+      return NextResponse.json({ error: result.reason }, { status });
     }
 
-    const itemPrice = parseFloat(menuItem.price);
-    const itemQuantity = quantity;
-
-    // Calculate customizations total
-    let customizationsTotal = 0;
-    const customizationsToCreate: any[] = [];
-
-    if (customizations && Array.isArray(customizations)) {
-      const { customizationOptions, customizationGroups } = await import("@/lib/db/schema/menus");
-      for (const cust of customizations) {
-        const option = cust.optionId
-          ? await db.query.customizationOptions.findFirst({
-              where: eq(customizationOptions.id, cust.optionId),
-            })
-          : null;
-
-        if (option) {
-          const optionPrice = parseFloat(option.price);
-          const custQuantity = cust.quantity || 1;
-          customizationsTotal += optionPrice * custQuantity;
-
-          const group = await db.query.customizationGroups.findFirst({
-            where: eq(customizationGroups.id, option.groupId),
-          });
-
-          customizationsToCreate.push({
-            groupId: option.groupId,
-            optionId: option.id,
-            groupName: group?.name || "Customization",
-            optionName: option.name,
-            optionPrice: option.price,
-            quantity: custQuantity,
-          });
-        }
-      }
-    }
-
-    const lineTotal = (itemPrice * itemQuantity) + customizationsTotal;
-
-    // Create order item
-    const [newOrderItem] = await db
-      .insert(orderItems)
-      .values({
-        orderId: id,
-        itemId,
-        itemName: menuItem.name,
-        itemPrice: itemPrice.toString(),
-        quantity: itemQuantity,
-        customizationsTotal: customizationsTotal.toString(),
-        lineTotal: lineTotal.toString(),
-        notes: notes || null,
-      })
-      .returning();
-
-    // Create customizations
-    if (customizationsToCreate.length > 0) {
-      await db.insert(orderItemCustomizations).values(
-        customizationsToCreate.map((cust) => ({
-          orderItemId: newOrderItem.id,
-          ...cust,
-        }))
-      );
-    }
-
-    // Recalculate order totals
-    const allItems = await db.query.orderItems.findMany({
-      where: eq(orderItems.orderId, id),
+    const newOrderItem = await db.query.orderItems.findFirst({
+      where: eq(orderItems.id, result.orderItemId),
     });
-
-    const newSubtotal = allItems.reduce((sum, item) => sum + parseFloat(item.lineTotal), 0);
-    const taxRate = parseFloat(existingOrder.location.taxRate || "21.00") / 100;
-    const serviceChargeRate = parseFloat(existingOrder.location.serviceChargePercentage || "0.00") / 100;
-    const taxAmount = newSubtotal * taxRate;
-    const serviceCharge = newSubtotal * serviceChargeRate;
-    const newTotal = newSubtotal + taxAmount + serviceCharge + parseFloat(existingOrder.tipAmount) - parseFloat(existingOrder.discountAmount);
-
-    // Update order totals
-    await db
-      .update(orders)
-      .set({
-        subtotal: newSubtotal.toString(),
-        taxAmount: taxAmount.toString(),
-        serviceCharge: serviceCharge.toString(),
-        total: newTotal.toString(),
-        updatedAt: new Date(),
-      })
-      .where(eq(orders.id, id));
-
-    return NextResponse.json(newOrderItem, { status: 201 });
+    return NextResponse.json(newOrderItem ?? { id: result.orderItemId }, { status: 201 });
   } catch (error) {
     console.error("[POST /api/orders/[id]/items] Error:", error);
     return NextResponse.json(

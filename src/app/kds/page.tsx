@@ -920,7 +920,7 @@ export default function KDSPage() {
     const original = orders.find(o => o.id === orderId);
     if (!original) return;
     if (kdsLiveOrderIds.has(orderId)) {
-      refireItem(item.id, reason).catch(() => {});
+      refireItem(item.id, reason, { eventSource: "kds" }).catch(() => {});
     }
     const remakeId = `${orderId}-R`;
     const remakeOrderNumber = `${original.orderNumber}-R`;

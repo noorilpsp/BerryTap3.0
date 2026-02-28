@@ -8,8 +8,10 @@ import {
   markItemPreparing,
   markItemReady,
   serveItem,
+  updateItemQuantity,
+  updateItemNotes,
+  voidItem,
 } from "@/domain/serviceActions";
-import { canModifyOrderItem } from "@/domain/serviceFlow";
 
 export const runtime = "nodejs";
 
@@ -80,6 +82,15 @@ export async function PUT(
       );
     }
 
+    // Verify item belongs to this order
+    const itemInOrder = await db.query.orderItems.findFirst({
+      where: and(eq(orderItems.orderId, id), eq(orderItems.id, itemId)),
+      columns: { id: true },
+    });
+    if (!itemInOrder) {
+      return NextResponse.json({ error: "Order item not found" }, { status: 404 });
+    }
+
     // Route status changes through service layer (validate transitions, record events)
     if (status !== undefined) {
       if (status === "preparing") {
@@ -88,12 +99,12 @@ export async function PUT(
           return NextResponse.json({ error: result.reason }, { status: 400 });
         }
       } else if (status === "ready") {
-        const result = await markItemReady(itemId);
+        const result = await markItemReady(itemId, { eventSource: "api" });
         if (!result.ok) {
           return NextResponse.json({ error: result.reason }, { status: 400 });
         }
       } else if (status === "served") {
-        const result = await serveItem(itemId);
+        const result = await serveItem(itemId, { eventSource: "api" });
         if (!result.ok) {
           return NextResponse.json({ error: result.reason }, { status: 400 });
         }
@@ -105,89 +116,29 @@ export async function PUT(
       }
     }
 
-    // Build update for quantity/notes only (status handled by lifecycle)
-    const updateData: Record<string, unknown> = {};
-    if (quantity !== undefined) updateData.quantity = quantity;
-    if (notes !== undefined) updateData.notes = notes;
-
-    if (Object.keys(updateData).length > 0) {
-      const orderItemForCheck = await db.query.orderItems.findFirst({
-        where: and(
-          eq(orderItems.orderId, id),
-          eq(orderItems.id, itemId)
-        ),
-        columns: { sentToKitchenAt: true },
-      });
-      if (orderItemForCheck) {
-        const modifyResult = canModifyOrderItem({ sentToKitchenAt: orderItemForCheck.sentToKitchenAt });
-        if (!modifyResult.ok) {
-          return NextResponse.json(
-            { error: "Cannot modify order items that have been sent to kitchen" },
-            { status: 400 }
-          );
-        }
-      }
-    }
-
-    // Recalculate line total if quantity changed
+    // Route quantity/notes through service layer (validate, update, recalculate totals)
     if (quantity !== undefined) {
-      const orderItem = await db.query.orderItems.findFirst({
-        where: and(
-          eq(orderItems.orderId, id),
-          eq(orderItems.id, itemId)
-        ),
-      });
-
-      if (orderItem) {
-        const itemPrice = parseFloat(orderItem.itemPrice);
-        const customizationsTotal = parseFloat(orderItem.customizationsTotal);
-        updateData.lineTotal = ((itemPrice * quantity) + customizationsTotal).toString();
+      const result = await updateItemQuantity(itemId, quantity);
+      if (!result.ok) {
+        return NextResponse.json(
+          { error: result.reason === "item_sent_to_kitchen" ? "Cannot modify order items that have been sent to kitchen" : result.reason },
+          { status: 400 }
+        );
+      }
+    }
+    if (notes !== undefined) {
+      const result = await updateItemNotes(itemId, notes);
+      if (!result.ok) {
+        return NextResponse.json(
+          { error: result.reason === "item_sent_to_kitchen" ? "Cannot modify order items that have been sent to kitchen" : result.reason },
+          { status: 400 }
+        );
       }
     }
 
-    let updatedItem;
-    if (Object.keys(updateData).length > 0) {
-      const [item] = await db
-        .update(orderItems)
-        .set(updateData)
-        .where(and(
-          eq(orderItems.orderId, id),
-          eq(orderItems.id, itemId)
-        ))
-        .returning();
-      updatedItem = item;
-    } else {
-      const item = await db.query.orderItems.findFirst({
-        where: and(
-          eq(orderItems.orderId, id),
-          eq(orderItems.id, itemId)
-        ),
-      });
-      updatedItem = item;
-    }
-
-    // Recalculate order totals when quantity changed
-    const allItems = await db.query.orderItems.findMany({
-      where: eq(orderItems.orderId, id),
+    const updatedItem = await db.query.orderItems.findFirst({
+      where: and(eq(orderItems.orderId, id), eq(orderItems.id, itemId)),
     });
-
-    const newSubtotal = allItems.reduce((sum, item) => sum + parseFloat(item.lineTotal), 0);
-    const taxRate = parseFloat(existingOrder.location.taxRate || "21.00") / 100;
-    const serviceChargeRate = parseFloat(existingOrder.location.serviceChargePercentage || "0.00") / 100;
-    const taxAmount = newSubtotal * taxRate;
-    const serviceCharge = newSubtotal * serviceChargeRate;
-    const newTotal = newSubtotal + taxAmount + serviceCharge + parseFloat(existingOrder.tipAmount) - parseFloat(existingOrder.discountAmount);
-
-    await db
-      .update(orders)
-      .set({
-        subtotal: newSubtotal.toString(),
-        taxAmount: taxAmount.toString(),
-        serviceCharge: serviceCharge.toString(),
-        total: newTotal.toString(),
-        updatedAt: new Date(),
-      })
-      .where(eq(orders.id, id));
 
     return NextResponse.json(updatedItem);
   } catch (error) {
@@ -266,34 +217,22 @@ export async function DELETE(
       );
     }
 
-    // Delete order item (cascade will handle customizations)
-    await db.delete(orderItems).where(and(
-      eq(orderItems.orderId, id),
-      eq(orderItems.id, itemId)
-    ));
-
-    // Recalculate order totals
-    const allItems = await db.query.orderItems.findMany({
-      where: eq(orderItems.orderId, id),
+    // Verify item belongs to this order
+    const itemInOrder = await db.query.orderItems.findFirst({
+      where: and(eq(orderItems.orderId, id), eq(orderItems.id, itemId)),
+      columns: { id: true },
     });
+    if (!itemInOrder) {
+      return NextResponse.json({ error: "Order item not found" }, { status: 404 });
+    }
 
-    const newSubtotal = allItems.reduce((sum, item) => sum + parseFloat(item.lineTotal), 0);
-    const taxRate = parseFloat(existingOrder.location.taxRate || "21.00") / 100;
-    const serviceChargeRate = parseFloat(existingOrder.location.serviceChargePercentage || "0.00") / 100;
-    const taxAmount = newSubtotal * taxRate;
-    const serviceCharge = newSubtotal * serviceChargeRate;
-    const newTotal = newSubtotal + taxAmount + serviceCharge + parseFloat(existingOrder.tipAmount) - parseFloat(existingOrder.discountAmount);
-
-    await db
-      .update(orders)
-      .set({
-        subtotal: newSubtotal.toString(),
-        taxAmount: taxAmount.toString(),
-        serviceCharge: serviceCharge.toString(),
-        total: newTotal.toString(),
-        updatedAt: new Date(),
-      })
-      .where(eq(orders.id, id));
+    const result = await voidItem(itemId, "Removed via API", { eventSource: "api" });
+    if (!result.ok) {
+      return NextResponse.json(
+        { error: result.reason === "item_already_voided" ? "Order item already voided" : result.reason },
+        { status: 400 }
+      );
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

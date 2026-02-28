@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq, and } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
-import { payments, orders } from "@/lib/db/schema/orders";
+import { payments } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { updatePayment } from "@/domain/serviceActions";
 
 export const runtime = "nodejs";
 
@@ -41,40 +42,26 @@ export async function PUT(
       );
     }
 
-    // Get existing payment
     const existingPayment = await db.query.payments.findFirst({
       where: eq(payments.id, id),
-      with: {
-        order: {
-          with: {
-            location: {
-              columns: {
-                id: true,
-                merchantId: true,
-              },
-            },
-          },
-        },
-      },
+      with: { order: { with: { location: { columns: { merchantId: true } } } } },
     });
 
-    if (!existingPayment) {
+    if (!existingPayment?.order?.location) {
       return NextResponse.json(
         { error: "Payment not found" },
         { status: 404 }
       );
     }
 
-    // Check user has access
+    const merchantId = existingPayment.order.location.merchantId;
     const membership = await db.query.merchantUsers.findFirst({
       where: and(
-        eq(merchantUsers.merchantId, existingPayment.order.location.merchantId),
+        eq(merchantUsers.merchantId, merchantId),
         eq(merchantUsers.userId, user.id),
         eq(merchantUsers.isActive, true)
       ),
-      columns: {
-        id: true,
-      },
+      columns: { id: true },
     });
 
     if (!membership) {
@@ -84,55 +71,17 @@ export async function PUT(
       );
     }
 
-    // Update payment
-    const updateData: any = {
-      status: status as any,
-    };
+    const result = await updatePayment(id, status);
 
-    if (status === "completed" && !existingPayment.paidAt) {
-      updateData.paidAt = new Date();
+    if (!result.ok) {
+      const statusCode = result.reason === "unauthorized" ? 403 : 400;
+      return NextResponse.json({ error: result.reason }, { status: statusCode });
     }
 
-    if (status === "refunded") {
-      updateData.refundedAt = new Date();
-    }
-
-    const [updatedPayment] = await db
-      .update(payments)
-      .set(updateData)
-      .where(eq(payments.id, id))
-      .returning();
-
-    // Recalculate order payment status
-    const allPayments = await db.query.payments.findMany({
-      where: and(
-        eq(payments.orderId, existingPayment.orderId),
-        eq(payments.status, "completed")
-      ),
+    const updatedPayment = await db.query.payments.findFirst({
+      where: eq(payments.id, id),
     });
-
-    const totalPaid = allPayments.reduce(
-      (sum, p) => sum + parseFloat(p.amount),
-      0
-    );
-    const orderTotal = parseFloat(existingPayment.order.total);
-
-    let paymentStatus: "unpaid" | "partial" | "paid" = "unpaid";
-    if (totalPaid >= orderTotal) {
-      paymentStatus = "paid";
-    } else if (totalPaid > 0) {
-      paymentStatus = "partial";
-    }
-
-    await db
-      .update(orders)
-      .set({
-        paymentStatus: paymentStatus as any,
-        updatedAt: new Date(),
-      })
-      .where(eq(orders.id, existingPayment.orderId));
-
-    return NextResponse.json(updatedPayment);
+    return NextResponse.json(updatedPayment ?? { id });
   } catch (error) {
     console.error("[PUT /api/payments/[id]] Error:", error);
     return NextResponse.json(

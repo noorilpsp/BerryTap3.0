@@ -3,8 +3,12 @@
 import { eq, and, inArray, ne, or, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { floorPlans } from "@/lib/db/schema/floor-plans";
-import { tables, orders, reservations } from "@/lib/db/schema/orders";
+import { tables } from "@/lib/db/schema/orders";
 import { verifyLocationAccess } from "@/lib/location-access";
+import {
+  handleFloorPlanDeletion,
+  unlinkOrdersAndReservationsFromTableIds,
+} from "@/domain/serviceActions";
 import type { PlacedElement, FloorSection } from "@/lib/floorplan-types";
 import { convertElementsToStoreTables } from "@/lib/floorplan-convert";
 import type { StoreTable } from "@/store/types";
@@ -273,19 +277,9 @@ export async function deleteFloorPlan(
     throw new Error("Floor plan not found");
   }
 
-  // Unlink orders and reservations from tables that will be cascade-deleted.
-  // (orders/reservations lack ON DELETE, so we must null tableId before the cascade.)
-  const planTables = await db.query.tables.findMany({
-    where: and(
-      eq(tables.locationId, locationId),
-      or(eq(tables.floorPlanId, floorPlanId), isNull(tables.floorPlanId))
-    ),
-    columns: { id: true },
-  });
-  const tableIds = planTables.map((t) => t.id);
-  if (tableIds.length > 0) {
-    await db.update(orders).set({ tableId: null }).where(inArray(orders.tableId, tableIds));
-    await db.update(reservations).set({ tableId: null }).where(inArray(reservations.tableId, tableIds));
+  const result = await handleFloorPlanDeletion(locationId, floorPlanId);
+  if (!result.ok) {
+    throw new Error(result.reason ?? "Failed to unlink POS entities");
   }
 
   await db
@@ -366,8 +360,10 @@ async function syncTablesFromElements(
   const toDelete = planTables.filter((t) => t.floorPlanId === floorPlanId || t.floorPlanId === null);
   const tableIds = toDelete.map((t) => t.id);
   if (tableIds.length > 0) {
-    await db.update(orders).set({ tableId: null }).where(inArray(orders.tableId, tableIds));
-    await db.update(reservations).set({ tableId: null }).where(inArray(reservations.tableId, tableIds));
+    const unlinkResult = await unlinkOrdersAndReservationsFromTableIds(locationId, tableIds);
+    if (!unlinkResult.ok) {
+      throw new Error(unlinkResult.reason ?? "Failed to unlink POS entities");
+    }
     await db.delete(tables).where(
       and(
         eq(tables.locationId, locationId),

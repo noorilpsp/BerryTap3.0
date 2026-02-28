@@ -18,6 +18,8 @@ export type Pacing = "quick" | "relaxed"
 
 export interface OrderItem {
   id: string
+  /** Menu item id when known; needed for addItemsToOrder sync. */
+  menuItemId?: string
   name: string
   variant?: string
   mods?: string[]

@@ -1,20 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
+import { eq, and, desc, gte, lte } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
-import {
-  orders,
-  orderItems,
-  orderItemCustomizations,
-  orderTimeline,
-  payments,
-  orderDelivery,
-  customers,
-  tables,
-  reservations,
-} from "@/lib/db/schema/orders";
-import { staff } from "@/lib/db/schema/staff";
+import { orders, orderTimeline } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { createOrderFromApi } from "@/domain/serviceActions";
 
 export const runtime = "nodejs";
 
@@ -197,8 +187,11 @@ export async function GET(request: NextRequest) {
 
 /**
  * POST /api/orders
- * Create order with items and customizations
- * Body: { locationId, customerId?, tableId?, reservationId?, assignedStaffId?, orderType, paymentTiming, items: [{ itemId, quantity, customizations: [{ groupId, optionId, quantity }], notes? }], notes? }
+ * Create order with items and customizations. Routes through service layer.
+ * Body: { locationId, customerId?, sessionId?, tableId?, reservationId?, assignedStaffId?, orderType, paymentTiming, guestCount?, items: [...], notes? }
+ *
+ * Dine-in: ensureSessionByTableUuid + addItemsToOrder (validators, events, totals).
+ * Pickup/delivery: createOrderWithItemsForPickupDelivery.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -219,6 +212,7 @@ export async function POST(request: NextRequest) {
     const {
       locationId,
       customerId,
+      sessionId,
       tableId,
       reservationId,
       assignedStaffId,
@@ -226,6 +220,7 @@ export async function POST(request: NextRequest) {
       paymentTiming,
       items,
       notes,
+      guestCount,
     } = body;
 
     if (!locationId || !orderType || !paymentTiming || !items || !Array.isArray(items) || items.length === 0) {
@@ -235,207 +230,33 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify location exists and user has access
-    const location = await db.query.merchantLocations.findFirst({
-      where: eq(merchantLocations.id, locationId),
-      columns: {
-        id: true,
-        merchantId: true,
-        taxRate: true,
-        serviceChargePercentage: true,
-      },
-    });
-
-    if (!location) {
-      return NextResponse.json(
-        { error: "Location not found" },
-        { status: 404 }
-      );
-    }
-
-    // Check user has access to this merchant
-    const membership = await db.query.merchantUsers.findFirst({
-      where: and(
-        eq(merchantUsers.merchantId, location.merchantId),
-        eq(merchantUsers.userId, user.id),
-        eq(merchantUsers.isActive, true)
-      ),
-      columns: {
-        id: true,
-      },
-    });
-
-    if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
-    }
-
-    // Generate order number (ORD-001 format, incrementing per location per day)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
-    const todayOrders = await db.query.orders.findMany({
-      where: and(
-        eq(orders.locationId, locationId),
-        gte(orders.createdAt, today),
-        lte(orders.createdAt, tomorrow)
-      ),
-      columns: {
-        orderNumber: true,
-      },
-    });
-
-    const orderNumber = `ORD-${String(todayOrders.length + 1).padStart(3, "0")}`;
-
-    // Fetch items to get current prices
-    const { items: menuItems } = await import("@/lib/db/schema/menus");
-    const itemIds = items.map((item: any) => item.itemId).filter(Boolean);
-    const menuItemsData = itemIds.length > 0
-      ? await db.query.items.findMany({
-          where: and(
-            eq(menuItems.locationId, locationId),
-            sql`${menuItems.id} = ANY(${itemIds})`
-          ),
-        })
-      : [];
-
-    const itemMap = new Map(menuItemsData.map((item) => [item.id, item]));
-
-    // Calculate totals
-    let subtotal = 0;
-    const orderItemsToCreate: any[] = [];
-
-    for (const item of items) {
-      const menuItem = item.itemId ? itemMap.get(item.itemId) : null;
-      const itemName = menuItem?.name || item.itemName || "Unknown Item";
-      const itemPrice = menuItem ? parseFloat(menuItem.price) : parseFloat(item.itemPrice || "0");
-      const quantity = item.quantity || 1;
-
-      // Calculate customizations total
-      let customizationsTotal = 0;
-      const customizationsToCreate: any[] = [];
-
-      if (item.customizations && Array.isArray(item.customizations)) {
-        for (const cust of item.customizations) {
-          const { customizationOptions } = await import("@/lib/db/schema/menus");
-          const option = cust.optionId
-            ? await db.query.customizationOptions.findFirst({
-                where: eq(customizationOptions.id, cust.optionId),
-              })
-            : null;
-
-          const optionPrice = option ? parseFloat(option.price) : parseFloat(cust.optionPrice || "0");
-          const custQuantity = cust.quantity || 1;
-          customizationsTotal += optionPrice * custQuantity;
-
-          if (option) {
-            const { customizationGroups } = await import("@/lib/db/schema/menus");
-            const group = await db.query.customizationGroups.findFirst({
-              where: eq(customizationGroups.id, option.groupId),
-            });
-
-            customizationsToCreate.push({
-              groupId: option.groupId,
-              optionId: option.id,
-              groupName: group?.name || cust.groupName || "Customization",
-              optionName: option.name,
-              optionPrice: option.price,
-              quantity: custQuantity,
-            });
-          }
-        }
-      }
-
-      const lineTotal = (itemPrice * quantity) + customizationsTotal;
-      subtotal += lineTotal;
-
-      orderItemsToCreate.push({
-        itemId: item.itemId || null,
-        itemName,
-        itemPrice: itemPrice.toString(),
-        quantity,
-        customizationsTotal: customizationsTotal.toString(),
-        lineTotal: lineTotal.toString(),
-        notes: item.notes || null,
-        customizations: customizationsToCreate,
-      });
-    }
-
-    // Calculate tax and service charge (using location defaults)
-    const taxRate = parseFloat(location.taxRate || "21.00") / 100;
-    const serviceChargeRate = parseFloat(location.serviceChargePercentage || "0.00") / 100;
-    const taxAmount = subtotal * taxRate;
-    const serviceCharge = subtotal * serviceChargeRate;
-    const total = subtotal + taxAmount + serviceCharge;
-
-    // Create order
-    const [newOrder] = await db
-      .insert(orders)
-      .values({
-        locationId,
-        customerId: customerId || null,
-        tableId: tableId || null,
-        reservationId: reservationId || null,
-        assignedStaffId: assignedStaffId || null,
-        orderNumber,
-        orderType: orderType as any,
-        paymentTiming: paymentTiming as any,
-        subtotal: subtotal.toString(),
-        taxAmount: taxAmount.toString(),
-        serviceCharge: serviceCharge.toString(),
-        total: total.toString(),
-        notes: notes || null,
-      })
-      .returning();
-
-    // Create order items and customizations
-    for (const itemData of orderItemsToCreate) {
-      const { customizations, ...itemInsert } = itemData;
-      const [orderItem] = await db
-        .insert(orderItems)
-        .values({
-          orderId: newOrder.id,
-          ...itemInsert,
-        })
-        .returning();
-
-      // Create customizations
-      if (customizations && customizations.length > 0) {
-        await db.insert(orderItemCustomizations).values(
-          customizations.map((cust: any) => ({
-            orderItemId: orderItem.id,
-            ...cust,
-          }))
-        );
-      }
-    }
-
-    // Create initial timeline entry
-    await db.insert(orderTimeline).values({
-      orderId: newOrder.id,
-      status: "pending",
+    const result = await createOrderFromApi({
+      locationId,
+      customerId: customerId ?? null,
+      sessionId: sessionId ?? null,
+      tableId: tableId ?? null,
+      reservationId: reservationId ?? null,
+      assignedStaffId: assignedStaffId ?? null,
+      orderType,
+      paymentTiming,
+      guestCount,
+      notes: notes ?? null,
+      items,
       changedByUserId: user.id,
-      note: "Order created",
     });
 
-    // Update table status if table is assigned
-    if (tableId) {
-      await db
-        .update(tables)
-        .set({ status: "occupied", updatedAt: new Date() })
-        .where(eq(tables.id, tableId));
+    if (!result.ok) {
+      const status =
+        result.reason === "Unauthorized or location not found" ? 403 : 400;
+      return NextResponse.json({ error: result.reason }, { status });
     }
 
-    // Fetch complete order with all relations
     const completeOrder = await db.query.orders.findFirst({
-      where: eq(orders.id, newOrder.id),
+      where: eq(orders.id, result.orderId),
       with: {
         customer: true,
         table: true,
+        session: true,
         reservation: true,
         assignedStaff: true,
         orderItems: {

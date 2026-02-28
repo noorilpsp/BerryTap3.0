@@ -52,27 +52,28 @@ import { useLocationMenu } from "@/lib/hooks/useLocationMenu"
 import { useRestaurantStore } from "@/store/restaurantStore"
 import { useLocation } from "@/lib/contexts/LocationContext"
 import {
-  createNextWave,
   getOrderForTable,
   getOpenSessionIdForTable,
   getSeatsForSession,
-  syncOrderToDb,
-  ensureSessionForTable,
   type OrderForTableItem,
   type OrderForTableResult,
 } from "@/app/actions/orders"
 import {
+  addItemsToOrder,
+  ensureSession,
+  createNextWaveForSession,
   fireWave,
   closeSessionService,
   voidItem,
   serveItem,
   advanceWaveStatus,
+  removeSeatByNumber,
+  renameSeat,
 } from "@/domain/serviceActions"
 import { getSessionOutstandingItems } from "@/app/actions/session-close-validation"
 import { detectKitchenDelays } from "@/app/actions/kitchen-delay-detection"
-import { removeSeatBySessionAndNumber, renameSeatBySessionAndNumber } from "@/app/actions/seat-management"
-import { updateTable } from "@/app/actions/tables"
-import { recordSessionEvent, recordSessionEventByTable } from "@/app/actions/session-events"
+import { updateTableLayout } from "@/domain/serviceActions"
+import { recordSessionEventWithSource } from "@/app/actions/session-events"
 import type {
   StoreAlertType,
   StoreMealStage,
@@ -401,6 +402,7 @@ function orderForTableToSession(
     maxWave = Math.max(maxWave, waveNumber)
     const item: TableOrderItem = {
       id: row.id ?? `db-${tableId}-${index}`,
+      ...(row.itemId && { menuItemId: row.itemId }),
       name: row.name,
       price: row.price,
       status: dbItemStatusToStore(row.status),
@@ -472,6 +474,9 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     [id, storeTables]
   )
   const persistedSession = activeStoreTable?.session ?? null
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  /** Prefer sessionId from store (persisted when loading/syncing); fallback to component state. */
+  const effectiveSessionId = activeStoreTable?.sessionId ?? sessionId
   const floorTablesForModal = useMemo(
     () => storeTablesToFloorTables(storeTables),
     [storeTables]
@@ -487,6 +492,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       prevTableIdRef.current = id
       setTable(tableFromStore)
       setKitchenDelayDismissed(false)
+      setSessionId(null)
     }
   }, [id, tableFromStore])
   const [selectedSeat, setSelectedSeat] = useState<number | null>(null)
@@ -594,11 +600,13 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       )
 
       if (cancelled) return
+      if (data.sessionId) setSessionId(data.sessionId)
       openOrderForTable(activeStoreTable.id, data.guestCount)
       syncOrderSession(activeStoreTable.id, session)
       updateStoreTable(activeStoreTable.id, {
         guests: data.guestCount,
         seatedAt: data.seatedAt ?? undefined,
+        sessionId: data.sessionId ?? undefined,
       })
 
       setTable((prev) => ({
@@ -617,6 +625,18 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     }
   }, [currentLocationId, id, activeStoreTable?.id, activeStoreTable?.capacity, hasSessionData, openOrderForTable, syncOrderSession, updateStoreTable, tableFromStore.seats.length])
 
+  // Backfill sessionId when we have store data but didn't load from DB (e.g. navigated from floor map with existing table state)
+  useEffect(() => {
+    if (!hasSessionData || !currentLocationId || !id || effectiveSessionId) return
+    let cancelled = false
+    getOpenSessionIdForTable(currentLocationId, id).then((sid) => {
+      if (!cancelled && sid) setSessionId(sid)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [hasSessionData, currentLocationId, id, effectiveSessionId])
+
   // Fetch outstanding items when payment modal opens so we can show blocking reasons
   useEffect(() => {
     if (!paymentOpen || !currentLocationId || !id) {
@@ -624,22 +644,20 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       return
     }
     let cancelled = false
-    getOpenSessionIdForTable(currentLocationId, id)
-      .then(async (sessionId) => {
-        if (cancelled || !sessionId) {
-          if (!cancelled) setOutstandingItems(null)
-          return
-        }
-        const result = await getSessionOutstandingItems(sessionId)
-        if (!cancelled) setOutstandingItems(result)
-      })
-      .catch(() => {
+    const load = async () => {
+      const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, id))
+      if (cancelled || !sid) {
         if (!cancelled) setOutstandingItems(null)
-      })
+        return
+      }
+      const result = await getSessionOutstandingItems(sid)
+      if (!cancelled) setOutstandingItems(result)
+    }
+    load()
     return () => {
       cancelled = true
     }
-  }, [paymentOpen, currentLocationId, id])
+  }, [paymentOpen, currentLocationId, id, effectiveSessionId])
 
   const shouldPersistSession = useMemo(
     () =>
@@ -678,19 +696,14 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       return
     }
     let cancelled = false
-    const poll = () => {
-      getOpenSessionIdForTable(currentLocationId, id)
-        .then(async (sessionId) => {
-          if (cancelled || !sessionId) {
-            if (!cancelled) setKitchenDelays(null)
-            return
-          }
-          const result = await detectKitchenDelays(sessionId, { recordEvents: false })
-          if (!cancelled) setKitchenDelays(result)
-        })
-        .catch(() => {
-          if (!cancelled) setKitchenDelays(null)
-        })
+    const poll = async () => {
+      const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, id))
+      if (cancelled || !sid) {
+        if (!cancelled) setKitchenDelays(null)
+        return
+      }
+      const result = await detectKitchenDelays(sid, { recordEvents: false })
+      if (!cancelled) setKitchenDelays(result)
     }
     poll()
     const interval = setInterval(poll, 60_000)
@@ -698,7 +711,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       cancelled = true
       clearInterval(interval)
     }
-  }, [shouldPersistSession, currentLocationId, id])
+  }, [shouldPersistSession, currentLocationId, id, effectiveSessionId])
 
   useEffect(() => {
     if (!activeStoreTable) return
@@ -740,27 +753,13 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     })
 
     if (currentLocationId) {
-      updateTable(currentLocationId, activeStoreTable.id, {
+      updateTableLayout(currentLocationId, activeStoreTable.id, {
         status: nextStoreStatus,
         guests: table.guestCount,
         seatedAt: nextSeatedAt,
         stage: nextStoreStage,
         alerts: nextStoreAlerts,
       }).catch((err) => console.error("[TableDetail] Failed to persist table:", err))
-
-      if (nextStoreSession) {
-        syncOrderToDb(currentLocationId, activeStoreTable.id, nextStoreSession)
-          .then((r) => {
-            if (r?.ok && r?.sessionId) {
-              recordSessionEvent(currentLocationId, r.sessionId, "order_sent", { wave: 1 }).catch(
-                () => {}
-              )
-            }
-          })
-          .catch((err) =>
-            console.error("[TableDetail] Failed to persist order items:", err)
-          )
-      }
     }
   }, [
     activeStoreTable,
@@ -1017,12 +1016,12 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       }
 
       if (currentLocationId && activeStoreTable?.id) {
-        const sessionId = await getOpenSessionIdForTable(
+        const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(
           currentLocationId,
           activeStoreTable.id
-        )
-        if (sessionId) {
-          const result = await removeSeatBySessionAndNumber(sessionId, seatNumber)
+        ))
+        if (sid) {
+          const result = await removeSeatByNumber(sid, seatNumber)
           if (!result.ok) {
             setWarningDialog({
               open: true,
@@ -1042,22 +1041,18 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       setArmedSeatDelete(null)
       setSelectedSeat((prev) => (prev === seatNumber ? null : prev))
     },
-    [orderItems, table.seats.length, currentLocationId, activeStoreTable?.id]
+    [orderItems, table.seats.length, currentLocationId, activeStoreTable?.id, effectiveSessionId, removeSeatByNumber]
   )
 
   const handleRenameSeat = useCallback(
     async (seatNumber: number, newSeatNumber: number) => {
       if (!currentLocationId || !activeStoreTable?.id) return
-      const sessionId = await getOpenSessionIdForTable(
+      const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(
         currentLocationId,
         activeStoreTable.id
-      )
-      if (!sessionId) return
-      const result = await renameSeatBySessionAndNumber(
-        sessionId,
-        seatNumber,
-        newSeatNumber
-      )
+      ))
+      if (!sid) return
+      const result = await renameSeat(sid, seatNumber, newSeatNumber)
       if (!result.ok) {
         setWarningDialog({
           open: true,
@@ -1075,7 +1070,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       setSeatRenameState(null)
       setArmedSeatDelete(null)
     },
-    [currentLocationId, activeStoreTable?.id]
+    [currentLocationId, activeStoreTable?.id, effectiveSessionId, renameSeat]
   )
 
   useEffect(() => {
@@ -1100,11 +1095,11 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
 
   const fireWaveNumber = useCallback((waveNumber: number) => {
     if (currentLocationId && activeStoreTable?.id) {
-      getOpenSessionIdForTable(currentLocationId, activeStoreTable.id)
-        .then((sessionId) =>
-          sessionId ? fireWave(sessionId, { waveNumber }) : Promise.resolve()
-        )
-        .catch(() => {})
+      const run = async () => {
+        const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, activeStoreTable!.id))
+        if (sid) fireWave(sid, { waveNumber, eventSource: "table_page" }).catch(() => {})
+      }
+      run()
     }
 
     const fireItem = (item: TableOrderItem): TableOrderItem => {
@@ -1121,7 +1116,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       })),
     }))
     setTableItems((prev) => prev.map(fireItem))
-  }, [currentLocationId, activeStoreTable?.id])
+  }, [currentLocationId, activeStoreTable?.id, effectiveSessionId])
 
   const handleFireWave = useCallback((waveId: string) => {
     const match = waveId.match(/^mw-(\d+)$/)
@@ -1138,7 +1133,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
 
   const handleMarkServed = useCallback((itemId: string) => {
     if (isDbOrderItemId(itemId)) {
-      serveItem(itemId).catch(() => {})
+      serveItem(itemId, { eventSource: "table_page" }).catch(() => {})
     }
     setTable((prev) => ({
       ...prev,
@@ -1183,22 +1178,25 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       const dbStatus: "preparing" | "ready" | "served" =
         nextStatus === "cooking" ? "preparing" : nextStatus === "ready" ? "ready" : "served"
       if (currentLocationId && activeStoreTable?.id) {
-        getOpenSessionIdForTable(currentLocationId, activeStoreTable.id)
-          .then((sessionId) =>
-            sessionId ? advanceWaveStatus(sessionId, waveNumber, dbStatus) : Promise.resolve()
-          )
-          .catch(() => {})
-        if (nextStatus === "ready" || nextStatus === "served") {
-          recordSessionEventByTable(
-            currentLocationId,
-            activeStoreTable.id,
-            nextStatus === "ready" ? "item_ready" : "served",
-            { waveNumber }
-          ).catch(() => {})
+        const run = async () => {
+          const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, activeStoreTable.id))
+          if (sid) {
+            advanceWaveStatus(sid, waveNumber, dbStatus).catch(() => {})
+            if (nextStatus === "ready" || nextStatus === "served") {
+              recordSessionEventWithSource(
+                currentLocationId!,
+                sid,
+                nextStatus === "ready" ? "item_ready" : "served",
+                "table_page",
+                { waveNumber }
+              ).catch(() => {})
+            }
+          }
         }
+        run()
       }
     },
-    [currentLocationId, activeStoreTable?.id]
+    [currentLocationId, activeStoreTable?.id, effectiveSessionId]
   )
 
   const handleMarkWaveServed = useCallback((waveId: string) => {
@@ -1211,7 +1209,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
 
   const handleVoidItem = useCallback((itemId: string) => {
     if (isDbOrderItemId(itemId)) {
-      voidItem(itemId, "Voided from table view").catch(() => {})
+      voidItem(itemId, "Voided from table view", { eventSource: "table_page" }).catch(() => {})
     }
     setTable((prev) => ({
       ...prev,
@@ -1257,7 +1255,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     setDiscardDraftDialogOpen(false)
   }, [clearSeatHoldTimer, clearWaveHoldTimer])
 
-  const handleSendCurrentOrder = useCallback(() => {
+  const handleSendCurrentOrder = useCallback(async () => {
     if (orderItems.length === 0 && !nextSendableWaveNumber) return
 
     const existingHeldWaveNumbers = [
@@ -1277,40 +1275,107 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
 
     const allHeldWaveNumbers = [...existingHeldWaveNumbers, ...draftHeldWaveNumbers]
     const lowestHeld = allHeldWaveNumbers.length > 0 ? Math.min(...allHeldWaveNumbers) : null
-    // Only auto-fire the first wave; waves 2+ stay held until user explicitly fires them
     const waveToSend = lowestHeld === 1 ? 1 : null
 
     const draftSeatItems: Array<{ seat: number; item: TableOrderItem }> = []
     const draftSharedItems: TableOrderItem[] = []
-    for (const draft of orderItems) {
-      const waveNumber = getDraftItemWaveNumber(draft)
-      const visibleNotes = (draft.notes ?? "")
-        .replace(/\bWave\s+\d+\b/gi, "")
-        .replace(/[·|,-]\s*$/g, "")
-        .replace(/^\s*[·|,-]\s*/g, "")
-        .trim()
-      const baseItem: TableOrderItem = {
-        id: draft.id,
-        name: draft.name,
-        mods: [
-          `Wave ${waveNumber}`,
-          ...Object.values(draft.options),
-          ...draft.extras.map((e) => `+ ${e}`),
-          ...(visibleNotes ? [visibleNotes] : []),
-        ],
-        price: draft.price,
-        status: "held",
-        wave: draft.wave === "drinks" ? "drinks" : "food",
-        waveNumber,
+
+    if (orderItems.length > 0 && currentLocationId && activeStoreTable?.id) {
+      const newDrafts = orderItems.filter((d) => !d.id || !isDbOrderItemId(d.id))
+      if (newDrafts.length === 0) {
+        setOrderItems([])
+        handleExitOrderingView()
+        if (waveToSend !== null) fireWaveNumber(waveToSend)
+        return
       }
-      const expanded = Array.from({ length: Math.max(1, draft.quantity) }, (_, index) => ({
-        ...baseItem,
-        id: draft.quantity > 1 ? `${draft.id}-${index + 1}` : draft.id,
-      }))
-      if (draft.seat === 0) {
-        draftSharedItems.push(...expanded)
-      } else {
-        expanded.forEach((item) => draftSeatItems.push({ seat: draft.seat, item }))
+
+      let sid = effectiveSessionId
+      if (!sid) {
+        const ensureResult = await ensureSession(
+          currentLocationId,
+          activeStoreTable.id,
+          Math.max(1, table.guestCount ?? 0)
+        )
+        sid = ensureResult.ok ? ensureResult.sessionId ?? null : null
+      }
+      if (!sid) {
+        console.error("[TableDetail] No session for add items")
+        return
+      }
+
+      const seatRows = await getSeatsForSession(sid)
+      const seatNumberToId = new Map(seatRows.map((s) => [s.seatNumber, s.id]))
+
+      const addInputs: Array<{
+        itemId: string
+        quantity: number
+        seatId?: string
+        notes?: string
+      }> = []
+      const draftExpanded: Array<{
+        draft: TakeOrderItem
+        seat: number
+        waveNumber: number
+        mods: string[]
+      }> = []
+
+      for (const draft of newDrafts) {
+        const waveNumber = getDraftItemWaveNumber(draft)
+        const visibleNotes = (draft.notes ?? "")
+          .replace(/\bWave\s+\d+\b/gi, "")
+          .replace(/[·|,-]\s*$/g, "")
+          .replace(/^\s*[·|,-]\s*/g, "")
+          .trim()
+        const mods = [
+          `Wave ${waveNumber}`,
+          ...Object.values(draft.options ?? {}),
+          ...(draft.extras ?? []).map((e) => `+ ${e}`),
+          ...(visibleNotes ? [visibleNotes] : []),
+        ]
+        const notesStr = mods.filter(Boolean).join(" · ")
+
+        const seatId = draft.seat > 0 ? seatNumberToId.get(draft.seat) : undefined
+        const qty = Math.max(1, draft.quantity)
+
+        for (let i = 0; i < qty; i++) {
+          addInputs.push({
+            itemId: draft.menuItemId,
+            quantity: 1,
+            seatId,
+            notes: notesStr || undefined,
+          })
+          draftExpanded.push({ draft, seat: draft.seat, waveNumber, mods })
+        }
+      }
+
+      const result = await addItemsToOrder(sid, addInputs, { eventSource: "table_page" })
+      if (!result.ok) {
+        console.error("[TableDetail] addItemsToOrder failed:", result.reason)
+        return
+      }
+
+      if (result.sessionId && !effectiveSessionId) {
+        setSessionId(result.sessionId)
+        updateStoreTable(activeStoreTable.id, { sessionId: result.sessionId })
+      }
+
+      const addedIds = result.addedItemIds ?? []
+      let idIdx = 0
+      const itemStatus = waveToSend === 1 ? ("sent" as ItemStatus) : ("held" as ItemStatus)
+      for (const { draft, seat, waveNumber, mods } of draftExpanded) {
+        const realId = addedIds[idIdx++] ?? `db-${idIdx}`
+        const item: TableOrderItem = {
+          id: realId,
+          menuItemId: draft.menuItemId,
+          name: draft.name,
+          mods: mods.length > 0 ? mods : undefined,
+          price: draft.price,
+          status: itemStatus,
+          wave: draft.wave === "drinks" ? "drinks" : "food",
+          waveNumber,
+        }
+        if (seat === 0) draftSharedItems.push(item)
+        else draftSeatItems.push({ seat, item })
       }
     }
 
@@ -1332,30 +1397,25 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     }
 
     if (waveToSend !== null) {
-      setTable((prev) => ({
-        ...prev,
-        seats: prev.seats.map((seat) => ({
-          ...seat,
-          items: seat.items.map((item) =>
-            item.status === "held" && getItemWaveNumber(item) === waveToSend
-              ? { ...item, status: "sent" as ItemStatus }
-              : item
-          ),
-        })),
-      }))
-      setTableItems((prev) =>
-        prev.map((item) =>
-          item.status === "held" && getItemWaveNumber(item) === waveToSend
-            ? { ...item, status: "sent" as ItemStatus }
-            : item
-        )
-      )
+      fireWaveNumber(waveToSend)
     }
 
-    // Clear add-items draft panel and return to table view.
     setOrderItems([])
     handleExitOrderingView()
-  }, [handleExitOrderingView, nextSendableWaveNumber, orderItems, table.seats, tableItems])
+  }, [
+    currentLocationId,
+    activeStoreTable,
+    effectiveSessionId,
+    table.guestCount,
+    table.seats,
+    table.status,
+    handleExitOrderingView,
+    nextSendableWaveNumber,
+    orderItems,
+    tableItems,
+    fireWaveNumber,
+    updateStoreTable,
+  ])
 
   const handleCloseTable = useCallback(
     async (
@@ -1375,12 +1435,12 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
             method: "other" as const,
           }
       if (currentLocationId && activeStoreTable?.id) {
-        const sessionId = await getOpenSessionIdForTable(
+        const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(
           currentLocationId,
           activeStoreTable.id
-        )
-        const result = sessionId
-          ? await closeSessionService(sessionId, payment, options)
+        ))
+        const result = sid
+          ? await closeSessionService(sid, payment, options)
           : { ok: false as const, reason: "session_not_open" as const }
         if (!result.ok) {
         const msg =
@@ -1400,9 +1460,18 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         setWarningDialog({ open: true, title: "Cannot close table", description: msg })
         return
       }
-      recordSessionEventByTable(currentLocationId, activeStoreTable.id, "payment_completed").catch(
-        () => {}
-      )
+      if (sid && result.ok) {
+        recordSessionEventWithSource(
+          currentLocationId!,
+          sid,
+          "payment_completed",
+          "table_page",
+          undefined,
+          undefined,
+          result.correlationId
+        ).catch(() => {})
+      }
+      setSessionId(null)
     }
     if (activeStoreTable?.orderId) {
       closeOrder(activeStoreTable.orderId, table.bill)
@@ -1414,9 +1483,10 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         seatedAt: null,
         stage: null,
         session: null,
+        sessionId: null,
       })
       if (currentLocationId) {
-        updateTable(currentLocationId, activeStoreTable.id, {
+        updateTableLayout(currentLocationId, activeStoreTable.id, {
           status: "free",
           guests: 0,
           seatedAt: null,
@@ -1456,7 +1526,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     setAlertDismissed(false)
     router.push("/floor-map")
   },
-    [activeStoreTable, closeOrder, currentLocationId, table.bill, updateStoreTable, router]
+    [activeStoreTable, closeOrder, currentLocationId, table.bill, updateStoreTable, router, effectiveSessionId]
   )
 
   const handlePaymentComplete = handleCloseTable
@@ -1567,14 +1637,17 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     setIsOrderingInline(false)
     setSeatPartyOpen(false)
     openOrderForTable(activeStoreTable?.id ?? id, formData.partySize)
-    ensureSessionForTable(currentLocationId ?? "", id, formData.partySize).then((sessionId) => {
-      if (sessionId) {
-        recordSessionEvent(currentLocationId!, sessionId, "guest_seated", {
+    ensureSession(currentLocationId ?? "", id, formData.partySize).then((result) => {
+      if (result.ok && result.sessionId && activeStoreTable) {
+        const sid = result.sessionId
+        setSessionId(sid)
+        updateStoreTable(activeStoreTable.id, { sessionId: sid })
+        recordSessionEventWithSource(currentLocationId!, sid, "guest_seated", "table_page", {
           guestCount: formData.partySize,
         }).catch(() => {})
       }
     })
-  }, [currentLocationId, activeStoreTable?.id, id, openOrderForTable])
+  }, [currentLocationId, activeStoreTable?.id, activeStoreTable, id, openOrderForTable, updateStoreTable])
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background pb-14">
@@ -1727,16 +1800,11 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                               setWaveCount(nextWave)
                               setSelectedWaveNumber(nextWave)
                               if (currentLocationId && activeStoreTable?.id) {
-                                getOpenSessionIdForTable(
-                                  currentLocationId,
-                                  activeStoreTable.id
-                                )
-                                  .then((sessionId) =>
-                                    sessionId
-                                      ? createNextWave(sessionId)
-                                      : Promise.resolve(null)
-                                  )
-                                  .catch(() => {})
+                                const run = async () => {
+                                  const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, activeStoreTable.id))
+                                  if (sid) createNextWaveForSession(sid).catch(() => {})
+                                }
+                                run()
                               }
                             }}
                             className="h-7 shrink-0 rounded-md border border-border bg-background px-2 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-accent"
@@ -2077,8 +2145,11 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         onFireNextWave={handleFireNextWave}
         onSend={handleSendCurrentOrder}
         onBill={() => {
-          if (currentLocationId) {
-            recordSessionEventByTable(currentLocationId, id, "bill_requested").catch(() => {})
+          if (currentLocationId && id) {
+            const record = (sid: string) =>
+              recordSessionEventWithSource(currentLocationId!, sid, "bill_requested", "table_page").catch(() => {})
+            if (effectiveSessionId) record(effectiveSessionId)
+            else getOpenSessionIdForTable(currentLocationId, id).then((sid) => { if (sid) record(sid) })
           }
           setPaymentOpen(true)
         }}

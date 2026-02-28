@@ -7,7 +7,7 @@ import {
   orders as ordersTable,
   sessions as sessionsTable,
 } from "@/lib/db/schema/orders";
-import { recordSessionEvent } from "@/app/actions/session-events";
+import { recordSessionEventWithSource } from "@/app/actions/session-events";
 
 export type KitchenDelayItem = {
   orderItemId: string;
@@ -94,10 +94,13 @@ export async function detectKitchenDelays(
     });
 
     if (recordEvents) {
-      await recordSessionEvent(session.locationId, sessionId, "kitchen_delay", {
-        orderItemId: item.id,
-        minutesLate,
-      });
+      await recordSessionEventWithSource(
+        session.locationId,
+        sessionId,
+        "kitchen_delay",
+        "system",
+        { orderItemId: item.id, minutesLate }
+      );
     }
   }
 

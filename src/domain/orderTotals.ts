@@ -35,6 +35,65 @@ export async function recalculateOrderTotals(
   return { ok: true, subtotal };
 }
 
+/**
+ * Recalculate order totals for standalone (pickup/delivery) orders using location tax and service charge.
+ * Used when adding items to orders without a session.
+ */
+export async function recalculateStandaloneOrderTotals(
+  orderId: string
+): Promise<{ ok: boolean; subtotal?: number; error?: string }> {
+  const order = await db.query.orders.findFirst({
+    where: eq(ordersTable.id, orderId),
+    with: {
+      location: {
+        columns: {
+          id: true,
+          taxRate: true,
+          serviceChargePercentage: true,
+        },
+      },
+    },
+    columns: {
+      id: true,
+      subtotal: true,
+      taxAmount: true,
+      serviceCharge: true,
+      tipAmount: true,
+      discountAmount: true,
+    },
+  });
+  if (!order) return { ok: false, error: "Order not found" };
+
+  const [row] = await db
+    .select({
+      subtotal: sql<string>`COALESCE(SUM((${orderItemsTable.lineTotal})::numeric), 0)::numeric`,
+    })
+    .from(orderItemsTable)
+    .where(and(eq(orderItemsTable.orderId, orderId), isNull(orderItemsTable.voidedAt)));
+  const subtotal = Number(row?.subtotal ?? 0);
+
+  const taxRate = parseFloat(order.location?.taxRate ?? "21.00") / 100;
+  const serviceChargeRate = parseFloat(order.location?.serviceChargePercentage ?? "0.00") / 100;
+  const taxAmount = subtotal * taxRate;
+  const serviceCharge = subtotal * serviceChargeRate;
+  const tipAmount = parseFloat(order.tipAmount ?? "0");
+  const discountAmount = parseFloat(order.discountAmount ?? "0");
+  const total = Math.max(0, subtotal + taxAmount + serviceCharge + tipAmount - discountAmount);
+
+  const now = new Date();
+  await db
+    .update(ordersTable)
+    .set({
+      subtotal: subtotal.toFixed(2),
+      taxAmount: taxAmount.toFixed(2),
+      serviceCharge: serviceCharge.toFixed(2),
+      total: total.toFixed(2),
+      updatedAt: now,
+    })
+    .where(eq(ordersTable.id, orderId));
+  return { ok: true, subtotal };
+}
+
 export type SessionTotalsResult = {
   subtotal: number;
   total: number;

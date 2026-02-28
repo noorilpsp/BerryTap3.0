@@ -4,6 +4,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { orders, payments } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { addPayment } from "@/domain/serviceActions";
 
 export const runtime = "nodejs";
 
@@ -170,54 +171,24 @@ export async function POST(
       );
     }
 
-    // Create payment
-    const [newPayment] = await db
-      .insert(payments)
-      .values({
-        orderId: id,
-        amount: amount.toString(),
-        tipAmount: (tipAmount || 0).toString(),
-        method: method as any,
-        provider: provider || null,
-        providerTransactionId: providerTransactionId || null,
-        providerResponse: providerResponse || null,
-        status: "completed",
-        paidAt: new Date(),
-      })
-      .returning();
-
-    // Calculate total paid
-    const allPayments = await db.query.payments.findMany({
-      where: and(
-        eq(payments.orderId, id),
-        eq(payments.status, "completed")
-      ),
+    const result = await addPayment(id, {
+      amount: Number(amount),
+      tipAmount: tipAmount != null ? Number(tipAmount) : undefined,
+      method,
+      provider: provider ?? undefined,
+      providerTransactionId: providerTransactionId ?? undefined,
+      providerResponse: providerResponse ?? undefined,
     });
 
-    const totalPaid = allPayments.reduce(
-      (sum, p) => sum + parseFloat(p.amount),
-      0
-    );
-    const orderTotal = parseFloat(existingOrder.total);
-
-    // Update order payment status
-    let paymentStatus: "unpaid" | "partial" | "paid" = "unpaid";
-    if (totalPaid >= orderTotal) {
-      paymentStatus = "paid";
-    } else if (totalPaid > 0) {
-      paymentStatus = "partial";
+    if (!result.ok) {
+      const statusCode = result.reason === "unauthorized" ? 403 : 400;
+      return NextResponse.json({ error: result.reason }, { status: statusCode });
     }
 
-    await db
-      .update(orders)
-      .set({
-        paymentStatus: paymentStatus as any,
-        tipAmount: (parseFloat(existingOrder.tipAmount) + parseFloat(newPayment.tipAmount)).toString(),
-        updatedAt: new Date(),
-      })
-      .where(eq(orders.id, id));
-
-    return NextResponse.json(newPayment, { status: 201 });
+    const newPayment = await db.query.payments.findFirst({
+      where: eq(payments.id, result.paymentId!),
+    });
+    return NextResponse.json(newPayment ?? { id: result.paymentId }, { status: 201 });
   } catch (error) {
     console.error("[POST /api/orders/[id]/payments] Error:", error);
     return NextResponse.json(

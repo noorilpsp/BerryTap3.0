@@ -4,7 +4,7 @@
 
 The restaurant data model is refactored to align with professional POS systems:
 
-- **tables** – Physical table layout (section, shape, position, capacity). **Table status is derived from sessions** via `computeTableStatus(tableId)`: no open session → available; open session → occupied; session closed within last 5 min → cleaning; else → available. The `tables.status` column is a legacy cache; source of truth is sessions.
+- **tables** – Physical table layout (section, shape, position, capacity). See [Tables](#tables) for status semantics.
 - **service_periods** – Time windows per location (e.g. Breakfast 08:00–11:00, Lunch 14:00–17:00). Columns: location_id, name, start_time, end_time. Sessions get `service_period_id` assigned at creation based on current time (for analytics).
 - **sessions** – One dining visit per table. **At most one open session per table** (enforced by partial unique index). Holds: locationId, tableId, serverId, guestCount, **servicePeriodId** (optional), openedAt, closedAt, status, source.
 - **session_events** – Operational events per session. Columns: session_id, type, created_at, **actor_type** (server | kitchen | system | runner | customer), **actor_id** (uuid), meta (jsonb). Indexes: (session_id, type), (session_id, actor_type), (actor_id).
@@ -21,6 +21,12 @@ The restaurant data model is refactored to align with professional POS systems:
 - **order_items represent the lifecycle of food** – Line items carry timing (sentToKitchenAt, startedAt, readyAt, servedAt) and state (voidedAt, refiredAt). Seat assignment lives here.
 - **Events provide analytics and audit history** – session_events record what happened (items_added, order_sent, payment_completed, etc.) with optional actor and meta. Use for funnel analytics, debugging, and audit.
 - **Service layer enforces operational correctness** – All mutations flow through serviceActions → serviceFlow (validators) → DB actions. UI never mutates orders/items directly. Validators block invalid transitions before any write.
+
+## Tables
+
+POS table status is derived from sessions via **computeTableStatus(tableId)**: no open session → available; open session → occupied; session closed within last 5 min → cleaning; else → available.
+
+**tables.status is legacy** and should not be used as the source of truth for whether a table is occupied. The authoritative state is the **sessions** table.
 
 ## Rules
 
@@ -63,14 +69,95 @@ database
 - **DB actions** (`src/app/actions/`) – orders, order-item-lifecycle, seat-management, etc. Perform actual inserts/updates/deletes.
 - **database** – Postgres. Source of truth for sessions, orders, order_items, payments.
 
+All order-related mutations (add items, create wave, fire wave, seat logic, totals) go through this single path: **UI → serviceActions → serviceFlow (validators) → DB actions**; there is no legacy bypass (e.g. no direct sync from store to DB).
+
+**Sessions are required** for all table operations. There is no order-by-table lookup without a session; `getOrderForTable` and `closeOrderForTable` operate only on open sessions.
+
+**Mutations use sessionId.** tableId is allowed only for: (1) locating the open session (e.g. `getOpenSessionIdForTable`), (2) floor map display, (3) analytics. All write operations (close session, advance wave status, add items, etc.) are keyed by sessionId. `closeSession(sessionId, ...)` is the canonical close; `closeOrderForTable` uses tableId only to find the session, then delegates to `closeSession`.
+
+## Canonical mutation flow
+
+All POS mutations must go through the service layer:
+
+```
+UI
+ → serviceActions
+ → validators
+ → DB actions
+ → database
+```
+
+The following functions are canonical:
+
+- addItemsToOrder
+- sendWaveToKitchen
+- serveItem
+- voidItem
+- refireItem
+- closeSessionService
+
+Legacy bulk mutation helpers such as syncSessionOrderViaServiceLayer are deprecated and will be removed.
+
+## Order channels
+
+- **Dine-in POS (table page):** Uses `addItemsToOrder` via service layer. Session → waves → order_items.
+- **Pickup / delivery / external dine-in:** Use `POST /api/orders` (separate order channel). No session for pickup/delivery; dine-in resolves session via tableId. See [POST-API-ORDERS-ANALYSIS.md](./POST-API-ORDERS-ANALYSIS.md).
+
 ## Realtime-friendly helpers
 
 Use `src/lib/db/realtime-pos.ts`: `getSessionById`, `getOrdersBySessionId`, `getOrderItemsByOrderId`, `getSessionWithOrdersAndItems`. Queries use indexed columns for efficient refetch after realtime events.
+
+## Debugging tools
+
+**GET `/api/debug/session/[sessionId]`** – Development-only endpoint to inspect the full POS state for a session. Returns a structured JSON payload with:
+
+- **session** – Session row (table, server, location)
+- **seats** – Seats for the session
+- **orders** – Orders (waves) for the session, with order items and customizations
+- **items** – Flattened list of all order items
+- **payments** – Payments tied to the session
+- **events** – Session events ordered by `created_at` ascending
+
+Useful for understanding the complete lifecycle of a table visit during development. Read-only; no mutations.
 
 ## Session events
 
 - **recordSessionEvent(locationId, sessionId, type, meta?)** – log when you have sessionId.
 - **recordSessionEventByTable(locationId, tableId, type, meta?)** – look up open session by table and log (use when you only have table id).
+- **recordSessionEventWithSource(locationId, sessionId, type, source, meta?, actor?, correlationId?)** – log with a standardized `meta.source` (use to avoid repeating source logic at call sites). Pass `correlationId` to group events from the same user action.
+
+**meta.source** – Indicates where the action originated. Use for debugging and analytics when multiple devices interact.
+
+| Source       | Meaning                          |
+|--------------|----------------------------------|
+| `table_page` | Table UI (server/front-of-house) |
+| `kds`        | Kitchen display                  |
+| `api`        | API route (e.g. external KDS)    |
+| `system`     | Internal automated logic         |
+
+**meta.correlationId** – Groups events triggered by the same user action. Use `generateCorrelationId()` once per operation and pass the same ID to all events emitted in that operation.
+
+Example event:
+
+```json
+{
+  "type": "items_added",
+  "meta": {
+    "source": "table_page",
+    "correlationId": "550e8400-e29b-41d4-a716-446655440000",
+    "itemCount": 3,
+    "orderId": "...",
+    "wave": 1
+  }
+}
+```
+
+**Choosing the correct event helper**
+
+- Use **recordSessionEvent(locationId, sessionId, ...)** when the caller already has sessionId.
+- Use **recordSessionEventByTable(locationId, tableId, ...)** only when sessionId is unknown.
+
+Examples: Table page (loads and stores sessionId) → `recordSessionEvent`. Floor map (taps tables by tableId, no session in context) → `recordSessionEventByTable`.
 
 **Event types** (enum `session_event_type`):
 
@@ -132,11 +219,13 @@ These are logical phases derived from events, not a database column. Use for ana
 | **paid**     | Payment completed           | `payment_completed`                   |
 | **closed**   | Session closed              | session `status = closed`             |
 
-## Legacy / deprecation
+## Sessions required
 
-Order lookup by **table_id** without session (in `getOrderForTable` and `closeOrderForTable`) is deprecated and will be removed once all data is migrated to the session-based model.
+**Sessions are the source of truth** for all order operations. The system requires a session for table activity.
 
-**closeSessionService → closeOrderForTable indirection:** The canonical close flow (`closeSessionService`) receives `sessionId` but currently delegates to `closeOrderForTable(locationId, tableId, ...)`, which is legacy table-based logic. A future refactor should introduce a session-native close path (e.g. `closeSession(sessionId, payment?, options?)`) that operates directly on sessionId, avoiding the table lookup and reducing technical debt.
+- **getOrderForTable** – Returns order data only when an open session exists for the table. Returns `null` otherwise (no order to load).
+- **closeOrderForTable** – Uses tableId only to locate the open session (allowed). Delegates to **closeSession(sessionId, payment?, options?)** for all mutations.
+- **closeSession(sessionId, payment?, options?)** – Canonical close; all mutations keyed by sessionId. Called by closeSessionService and by closeOrderForTable after session lookup.
 
 ## Migration
 
@@ -228,7 +317,9 @@ Items:
 
 **getOrderIdForSessionAndWave(sessionId, waveNumber)** – Returns the order id for a session and wave. Used to wire fireWave from the table page.
 
-**Integration:** The table page calls `createNextWave` when the user adds a wave (+ button) and `fireWave` when the user fires a wave from the timeline. `syncOrderToDb` distributes items by wave: it groups lines by `waveNumber` and syncs each wave’s items to its corresponding order.
+**advanceOrderWaveStatusBySession(sessionId, waveNumber, status)** – Advances all non-voided items in a wave to preparing/ready/served. Mutations keyed by sessionId. Call **advanceWaveStatus(sessionId, waveNumber, status)** from the service layer when you have sessionId.
+
+**Integration:** The table page uses the single mutation path: **UI → serviceActions → validators → DB actions**. It calls `addItemsToOrder` when the user adds items and clicks Send, `createNextWave` when the user adds a wave (+ button), and `fireWave` when the user fires a wave from the timeline.
 
 ## Table status derivation
 
@@ -266,7 +357,7 @@ Service functions return `{ ok: boolean; reason?: string; data?: unknown }` for 
 | **markItemReady(orderItemId)** | Calls markItemReady action (validates, sets readyAt, records item_ready) |
 | **voidItem(orderItemId, reason)** | Calls voidItem action (validates canVoidItem, sets voidedAt, records item_voided) |
 | **refireItem(orderItemId, reason)** | Validates canRefireItem, calls refireItem action, resets item to pending |
-| **closeSessionService(sessionId, payment?, options?)** | Calls canCloseSession, then closeOrderForTable; single place that closes sessions |
+| **closeSessionService(sessionId, payment?, options?)** | Calls canCloseSession, then closeSession(sessionId, ...); single place that closes sessions. All mutations keyed by sessionId. |
 | **addItemsToOrder(sessionId, items)** | Validates canAddItems. Finds order where firedAt IS NULL; if none → createNextWave. Never attaches items to fired waves (defensive: if order was fired since query, creates new wave). Validates seatId, inserts order_items, recalculates totals, records items_added. Returns `{ sessionId, orderId, wave, addedItemIds, itemCount, sessionStatus, orderStatus }`. |
 | **sendWaveToKitchen(sessionId, waveNumber)** | Canonical "Send" operation. Validates session open, canFireWave, at least one non-voided item (empty_wave otherwise). Updates order only when fired_at IS NULL (prevents race: returns wave_already_fired if another request fired first), sets sentToKitchenAt on items where null, records course_fired. Returns `{ sessionId, orderId, wave, firedAt, itemCount }`. Errors: order_not_found, wave_already_fired, session_not_open, empty_wave. |
 
@@ -279,7 +370,7 @@ Service functions return `{ ok: boolean; reason?: string; data?: unknown }` for 
 - **recalculateOrderTotals(orderId)** – Sum non-voided order_items.lineTotal, update order.subtotal and order.total. Order totals should always be derived from order_items.
 - **recalculateSessionTotals(sessionId)** – Recalculates each order in the session, returns `{ subtotal, total, paid, remaining }`. Session total = sum of orders; paid = sum of completed payments; remaining = total - paid.
 
-**Wired in:** addItemsToOrder (after items), voidItem (after void), refireItem (after refire), closeSessionService (before validation), closeOrderForTable (before validation; after payment insert). Ensures payment validation uses correct numbers.
+**Wired in:** addItemsToOrder (after items), voidItem (after void), refireItem (after refire), closeSessionService (before validation), closeSession (before validation; after payment insert). Ensures payment validation uses correct numbers.
 
 **Why this matters:** UI does not directly mutate orders. All flows pass through the same lifecycle logic. Future realtime updates remain consistent.
 
@@ -306,7 +397,8 @@ Before a session can be closed, the system verifies the table is in a safe state
 
 **Force close (manager override):**
 
-- `closeOrderForTable(locationId, tableId, payment?, { force: true })` – skips validation, voids remaining unfinished items, records a session event with meta `{ forced_close: true, reason: "manager_override" }`, then closes. Use with care for auditability.
+- `closeSession(sessionId, payment?, { force: true })` – skips validation, voids remaining unfinished items, records a session event with meta `{ forced_close: true, reason: "manager_override" }`, then closes. Use with care for auditability.
+- `closeOrderForTable(locationId, tableId, payment?, { force: true })` – locates session by table, then calls closeSession with force. Use when caller only has tableId.
 
 ## Concurrency and idempotency
 
@@ -338,6 +430,6 @@ Revenue can also be derived from `order_items.line_total` (non-voided) summed vi
 
 ## App behavior
 
-- **Table detail / POS** – When a session is created, seats are auto-created and **service_period_id** is set from current time if periods exist. **getSeatsForSession**, **getOrderForTable** (prefers seat_id), **closeOrderForTable** (with optional `{ force: true }`), **advanceOrderWaveStatus** – see prior sections. **recordSessionEvent** / **recordSessionEventByTable** accept optional `actor?: { actorType, actorId }` for audit.
+- **Table detail / POS** – When a session is created, seats are auto-created and **service_period_id** is set from current time if periods exist. **getSeatsForSession**, **getOrderForTable** (session-only; prefers seat_id), **closeOrderForTable** (locates session by table), **closeSession** (canonical close by sessionId), **advanceOrderWaveStatusBySession** / **advanceWaveStatus** (service layer) – see prior sections. **recordSessionEvent** / **recordSessionEventByTable** accept optional `actor?: { actorType, actorId }` for audit.
 - **KDS** – Uses **orders + order_items only** (no table-based order lookup). GET `/api/kds/orders?locationId=` returns active orders (status pending/preparing/ready) with full order_items; table number comes from session or order. Status changes are persisted via PUT `/api/orders/[id]/items/[itemId]` (which sets startedAt/readyAt/servedAt when status changes).
 - **Analytics** – Use `sessions` (openedAt, closedAt, guestCount, source), `orders` (firedAt, completedAt), and `order_items` timing columns.

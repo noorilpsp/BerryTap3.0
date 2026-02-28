@@ -7,7 +7,11 @@ import {
   orderItems as orderItemsTable,
 } from "@/lib/db/schema/orders";
 import { verifyLocationAccess } from "@/lib/location-access";
-import { recordSessionEvent } from "@/app/actions/session-events";
+import {
+  recordSessionEvent,
+  recordSessionEventWithSource,
+  type EventSource,
+} from "@/app/actions/session-events";
 import {
   canMarkItemPreparing,
   canMarkItemReady,
@@ -68,7 +72,8 @@ export async function markItemPreparing(
 
 /** Mark order item as ready (kitchen done). Valid only from preparing. */
 export async function markItemReady(
-  orderItemId: string
+  orderItemId: string,
+  options?: { eventSource?: EventSource }
 ): Promise<{ ok: boolean; error?: string }> {
   const row = await getItemWithOrder(orderItemId);
   if (!row) return { ok: false, error: "Order item not found" };
@@ -89,17 +94,26 @@ export async function markItemReady(
     .where(eq(orderItemsTable.id, orderItemId));
 
   if (order.sessionId) {
-    await recordSessionEvent(order.locationId, order.sessionId, "item_ready", {
-      orderItemId,
-      status: "ready",
-    });
+    const meta = { orderItemId, status: "ready" as const };
+    if (options?.eventSource) {
+      await recordSessionEventWithSource(
+        order.locationId,
+        order.sessionId,
+        "item_ready",
+        options.eventSource,
+        meta
+      );
+    } else {
+      await recordSessionEvent(order.locationId, order.sessionId, "item_ready", meta);
+    }
   }
   return { ok: true };
 }
 
 /** Mark order item as served. Valid only from ready. */
 export async function markItemServed(
-  orderItemId: string
+  orderItemId: string,
+  options?: { eventSource?: EventSource }
 ): Promise<{ ok: boolean; error?: string }> {
   const row = await getItemWithOrder(orderItemId);
   if (!row) return { ok: false, error: "Order item not found" };
@@ -120,9 +134,18 @@ export async function markItemServed(
     .where(eq(orderItemsTable.id, orderItemId));
 
   if (order.sessionId) {
-    await recordSessionEvent(order.locationId, order.sessionId, "served", {
-      orderItemId,
-    });
+    const meta = { orderItemId };
+    if (options?.eventSource) {
+      await recordSessionEventWithSource(
+        order.locationId,
+        order.sessionId,
+        "served",
+        options.eventSource,
+        meta
+      );
+    } else {
+      await recordSessionEvent(order.locationId, order.sessionId, "served", meta);
+    }
   }
   return { ok: true };
 }
@@ -130,7 +153,8 @@ export async function markItemServed(
 /** Void order item. Sets voided_at and records item_voided event. */
 export async function voidItem(
   orderItemId: string,
-  reason: string
+  reason: string,
+  options?: { eventSource?: EventSource; correlationId?: string }
 ): Promise<{ ok: boolean; error?: string }> {
   const row = await getItemWithOrder(orderItemId);
   if (!row) return { ok: false, error: "Order item not found" };
@@ -153,10 +177,20 @@ export async function voidItem(
   await recalculateOrderTotals(order.id);
   if (order.sessionId) {
     await recalculateSessionTotals(order.sessionId);
-    await recordSessionEvent(order.locationId, order.sessionId, "item_voided", {
-      orderItemId,
-      reason,
-    });
+    const meta = { orderItemId, reason };
+    if (options?.eventSource) {
+      await recordSessionEventWithSource(
+        order.locationId,
+        order.sessionId,
+        "item_voided",
+        options.eventSource,
+        meta,
+        undefined,
+        options.correlationId
+      );
+    } else {
+      await recordSessionEvent(order.locationId, order.sessionId, "item_voided", meta);
+    }
   }
   return { ok: true };
 }
@@ -164,7 +198,8 @@ export async function voidItem(
 /** Mark order item as refired (remake). Sets refired_at and records item_refired event. */
 export async function refireItem(
   orderItemId: string,
-  reason: string
+  reason: string,
+  options?: { eventSource?: EventSource; correlationId?: string }
 ): Promise<{ ok: boolean; error?: string }> {
   const row = await getItemWithOrder(orderItemId);
   if (!row) return { ok: false, error: "Order item not found" };
@@ -191,10 +226,20 @@ export async function refireItem(
   await recalculateOrderTotals(order.id);
   if (order.sessionId) {
     await recalculateSessionTotals(order.sessionId);
-    await recordSessionEvent(order.locationId, order.sessionId, "item_refired", {
-      orderItemId,
-      reason,
-    });
+    const meta = { orderItemId, reason };
+    if (options?.eventSource) {
+      await recordSessionEventWithSource(
+        order.locationId,
+        order.sessionId,
+        "item_refired",
+        options.eventSource,
+        meta,
+        undefined,
+        options.correlationId
+      );
+    } else {
+      await recordSessionEvent(order.locationId, order.sessionId, "item_refired", meta);
+    }
   }
   return { ok: true };
 }

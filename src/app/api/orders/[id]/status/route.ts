@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq, and } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
-import { orders, orderTimeline, tables } from "@/lib/db/schema/orders";
-import { staff } from "@/lib/db/schema/staff";
+import { orders } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { updateOrderStatus } from "@/domain/serviceActions";
 
 export const runtime = "nodejs";
 
@@ -42,18 +42,9 @@ export async function PUT(
       );
     }
 
-    // Get existing order
     const existingOrder = await db.query.orders.findFirst({
       where: eq(orders.id, id),
-      with: {
-        location: {
-          columns: {
-            id: true,
-            merchantId: true,
-          },
-        },
-        table: true,
-      },
+      with: { location: { columns: { merchantId: true } } },
     });
 
     if (!existingOrder) {
@@ -63,16 +54,13 @@ export async function PUT(
       );
     }
 
-    // Check user has access to this merchant
     const membership = await db.query.merchantUsers.findFirst({
       where: and(
         eq(merchantUsers.merchantId, existingOrder.location.merchantId),
         eq(merchantUsers.userId, user.id),
         eq(merchantUsers.isActive, true)
       ),
-      columns: {
-        id: true,
-      },
+      columns: { id: true },
     });
 
     if (!membership) {
@@ -82,51 +70,21 @@ export async function PUT(
       );
     }
 
-    // Update order status
-    const updateData: any = {
-      status: status as any,
-      updatedAt: new Date(),
-    };
-
-    // Set completed_at if status is completed
-    if (status === "completed") {
-      updateData.completedAt = new Date();
-      // Free up table if assigned
-      if (existingOrder.tableId) {
-        await db
-          .update(tables)
-          .set({ status: "available", updatedAt: new Date() })
-          .where(eq(tables.id, existingOrder.tableId));
-      }
-    }
-
-    // Set cancelled_at if status is cancelled
-    if (status === "cancelled") {
-      updateData.cancelledAt = new Date();
-      // Free up table if assigned
-      if (existingOrder.tableId) {
-        await db
-          .update(tables)
-          .set({ status: "available", updatedAt: new Date() })
-          .where(eq(tables.id, existingOrder.tableId));
-      }
-    }
-
-    const [updatedOrder] = await db
-      .update(orders)
-      .set(updateData)
-      .where(eq(orders.id, id))
-      .returning();
-
-    // Create timeline entry
-    await db.insert(orderTimeline).values({
-      orderId: id,
-      status: status as any,
-      changedByStaffId: changedByStaffId || null,
+    const result = await updateOrderStatus(id, {
+      status,
+      note: note ?? undefined,
+      changedByStaffId: changedByStaffId ?? undefined,
       changedByUserId: user.id,
-      note: note || null,
     });
 
+    if (!result.ok) {
+      const statusCode = result.reason === "unauthorized" ? 403 : 400;
+      return NextResponse.json({ error: result.reason }, { status: statusCode });
+    }
+
+    const updatedOrder = await db.query.orders.findFirst({
+      where: eq(orders.id, id),
+    });
     return NextResponse.json({ order: updatedOrder });
   } catch (error) {
     console.error("[PUT /api/orders/[id]/status] Error:", error);

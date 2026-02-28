@@ -35,6 +35,16 @@ export type SessionEventType =
 
 export type SessionActorType = "server" | "kitchen" | "system" | "runner" | "customer";
 
+/** Indicates where the action originated. Use for debugging and analytics. */
+export type EventSource = "table_page" | "kds" | "api" | "system";
+
+/** Metadata stored in session_events.meta (jsonb). source and correlationId are optional but recommended. */
+export type SessionEventMeta = {
+  source?: EventSource;
+  correlationId?: string;
+  [key: string]: unknown;
+};
+
 export type SessionEventActor = {
   actorType: SessionActorType;
   actorId: string;
@@ -45,7 +55,7 @@ export async function recordSessionEvent(
   locationId: string,
   sessionId: string,
   type: SessionEventType,
-  meta?: Record<string, unknown>,
+  meta?: SessionEventMeta | Record<string, unknown>,
   actor?: SessionEventActor
 ): Promise<{ ok: boolean; error?: string }> {
   const location = await verifyLocationAccess(locationId);
@@ -71,6 +81,24 @@ export async function recordSessionEvent(
     }),
   });
   return { ok: true };
+}
+
+/**
+ * Record a session event with a standardized source. Use to avoid repeating source logic at call sites.
+ * Merges source (and optionally correlationId) into meta before calling recordSessionEvent.
+ */
+export async function recordSessionEventWithSource(
+  locationId: string,
+  sessionId: string,
+  type: SessionEventType,
+  source: EventSource,
+  meta?: SessionEventMeta | Record<string, unknown>,
+  actor?: SessionEventActor,
+  correlationId?: string
+): Promise<{ ok: boolean; error?: string }> {
+  const merged = { source, ...meta } as Record<string, unknown>;
+  if (correlationId != null) merged.correlationId = correlationId;
+  return recordSessionEvent(locationId, sessionId, type, merged, actor);
 }
 
 /** Look up open session by table id (e.g. "t1") and record an event. Use when you don't have sessionId. */

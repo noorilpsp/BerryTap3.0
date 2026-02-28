@@ -2,17 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq, and } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
-import {
-  orders,
-  orderItems,
-  orderItemCustomizations,
-  orderTimeline,
-  payments,
-  orderDelivery,
-  tables,
-} from "@/lib/db/schema/orders";
+import { orders, payments, orderDelivery } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
 import { desc } from "drizzle-orm";
+import { updateOrder, cancelOrder } from "@/domain/serviceActions";
 
 export const runtime = "nodejs";
 
@@ -272,22 +265,22 @@ export async function PUT(
       );
     }
 
-    // Update order
-    const updateData: any = {
-      updatedAt: new Date(),
+    const patch = {
+      ...(customerId !== undefined && { customerId }),
+      ...(tableId !== undefined && { tableId }),
+      ...(reservationId !== undefined && { reservationId }),
+      ...(assignedStaffId !== undefined && { assignedStaffId }),
+      ...(notes !== undefined && { notes }),
     };
-    if (customerId !== undefined) updateData.customerId = customerId;
-    if (tableId !== undefined) updateData.tableId = tableId;
-    if (reservationId !== undefined) updateData.reservationId = reservationId;
-    if (assignedStaffId !== undefined) updateData.assignedStaffId = assignedStaffId;
-    if (notes !== undefined) updateData.notes = notes;
 
-    const [updatedOrder] = await db
-      .update(orders)
-      .set(updateData)
-      .where(eq(orders.id, id))
-      .returning();
-
+    const result = await updateOrder(id, patch);
+    if (!result.ok) {
+      const status = result.reason === "unauthorized" ? 403 : 400;
+      return NextResponse.json({ error: result.reason }, { status });
+    }
+    const updatedOrder = await db.query.orders.findFirst({
+      where: eq(orders.id, id),
+    });
     return NextResponse.json({ order: updatedOrder });
   } catch (error) {
     console.error("[PUT /api/orders/[id]] Error:", error);
@@ -366,33 +359,14 @@ export async function DELETE(
       );
     }
 
-    // Cancel order (soft delete)
-    const [cancelledOrder] = await db
-      .update(orders)
-      .set({
-        status: "cancelled",
-        cancelledAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(orders.id, id))
-      .returning();
-
-    // Create timeline entry
-    await db.insert(orderTimeline).values({
-      orderId: id,
-      status: "cancelled",
-      changedByUserId: user.id,
-      note: "Order cancelled",
-    });
-
-    // Free up table if assigned
-    if (existingOrder.tableId) {
-      await db
-        .update(tables)
-        .set({ status: "available", updatedAt: new Date() })
-        .where(eq(tables.id, existingOrder.tableId));
+    const result = await cancelOrder(id, user.id);
+    if (!result.ok) {
+      const status = result.reason === "unauthorized" ? 403 : 400;
+      return NextResponse.json({ error: result.reason }, { status });
     }
-
+    const cancelledOrder = await db.query.orders.findFirst({
+      where: eq(orders.id, id),
+    });
     return NextResponse.json({ success: true, order: cancelledOrder });
   } catch (error) {
     console.error("[DELETE /api/orders/[id]] Error:", error);

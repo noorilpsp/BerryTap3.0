@@ -345,6 +345,7 @@ export const useRestaurantStore = create<RestaurantStore>()((set, get) => ({
           alerts: existing.alerts,
           combinedWith: existing.combinedWith ?? incoming.combinedWith,
           session: existing.session,
+          sessionId: existing.sessionId ?? incoming.sessionId,
         }
       }),
     })),
@@ -558,7 +559,7 @@ export const useRestaurantStore = create<RestaurantStore>()((set, get) => ({
             : order
         ),
         tables: state.tables.map((table) =>
-          table.orderId === orderId ? { ...table, orderId: null } : table
+          table.orderId === orderId ? { ...table, orderId: null, sessionId: null } : table
         ),
       }
     })

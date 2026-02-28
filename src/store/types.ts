@@ -32,6 +32,8 @@ export type StoreOrderWaveType = "drinks" | "food" | "dessert"
 
 export interface StoreOrderItem {
   id: string
+  /** Menu item id when known; needed for addItemsToOrder sync. */
+  menuItemId?: string
   name: string
   variant?: string
   mods?: string[]
@@ -131,6 +133,8 @@ export interface StoreTable {
   height?: number
   rotation?: number
   session?: StoreTableSessionState | null
+  /** DB session id when table has an open session. Use for mutations (recordSessionEvent, closeSession, etc.). */
+  sessionId?: string | null
 }
 
 export type StoreReservationStatus =
