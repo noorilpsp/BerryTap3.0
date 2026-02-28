@@ -1221,6 +1221,7 @@ export default function LoyaltyPage() {
     {
       id: 'trigger_001',
       name: 'Birthday Reward',
+      icon: '🎂',
       trigger: 'Member birthday',
       action: 'Send free dessert reward + 100 bonus points',
       status: 'active',
@@ -1230,6 +1231,7 @@ export default function LoyaltyPage() {
     {
       id: 'trigger_002',
       name: 'Tier Upgrade Celebration',
+      icon: '🏆',
       trigger: 'Member reaches new tier',
       action: 'Send congratulations email + tier welcome bonus',
       status: 'active',
@@ -1239,6 +1241,7 @@ export default function LoyaltyPage() {
     {
       id: 'trigger_003',
       name: 'Inactive Member Re-engagement',
+      icon: '🔔',
       trigger: 'No visit in 30 days',
       action: 'Send 20% off reward + personalized message',
       status: 'active',
@@ -1248,6 +1251,7 @@ export default function LoyaltyPage() {
     {
       id: 'trigger_004',
       name: 'Points Expiration Warning',
+      icon: '⏳',
       trigger: 'Points expiring within 7 days',
       action: 'Send reminder email with quick-redeem options',
       status: 'active',
@@ -1257,6 +1261,7 @@ export default function LoyaltyPage() {
     {
       id: 'trigger_005',
       name: 'High-Value Customer Recognition',
+      icon: '💎',
       trigger: 'Order total > €150',
       action: 'Send thank you + 2x points bonus',
       status: 'active',
@@ -1290,6 +1295,8 @@ export default function LoyaltyPage() {
   // --- NEW MOCK DATA AND HELPER FUNCTIONS ---
 
   // Redemption Calendar Data (for week view)
+  type RedemptionCalendarEntry = { reward: string; count: number } | null
+
   const redemptionCalendarData = {
     weekOf: 'Nov 18-24, 2024',
     days: ['Mon 18', 'Tue 19', 'Wed 20', 'Thu 21', 'Fri 22', 'Sat 23', 'Sun 24'],
@@ -1306,12 +1313,12 @@ export default function LoyaltyPage() {
       '6 PM': [{ reward: '🎟️ Skip Line', count: 5 }, null, { reward: '🎟️ Skip Line', count: 8 }, null, { reward: '🎟️ Skip Line', count: 12 }, { reward: '🎟️ Skip Line', count: 15 }, { reward: '🎟️ Skip Line', count: 11 }],
       '7 PM': [null, { reward: '💰 2x Points', count: 6 }, null, { reward: '💰 2x Points', count: 8 }, null, { reward: '💰 2x Points', count: 14 }, null],
       '8 PM': [null, null, null, null, null, null, null],
-    },
+    } as Record<string, RedemptionCalendarEntry[]>,
     summary: {
       total: 289,
       mostPopular: { name: '10% Off Meal', count: 80 },
       peakTime: 'Friday 6-7 PM (27 redemptions)',
-      peakDay: 'Saturday (78 redemptions)'
+      peakDay: { name: 'Saturday', count: 78 }
     }
   }
 
@@ -5407,7 +5414,7 @@ export default function LoyaltyPage() {
                             </div>
                             <div>
                               <div className="text-muted-foreground">Peak Day</div>
-                              <div className="font-semibold">{redemptionCalendarData.summary.peakDay}</div>
+                              <div className="font-semibold">{redemptionCalendarData.summary.peakDay.name}</div>
                               <div className="text-xs text-muted-foreground">{redemptionCalendarData.summary.peakDay.count} redemptions</div>
                             </div>
                           </div>
@@ -6134,4 +6141,20 @@ export default function LoyaltyPage() {
             {/* Quick Actions */}
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="
+                <CardTitle className="text-base">Quick Actions</CardTitle>
+              </CardHeader>
+              <CardContent className="grid grid-cols-2 gap-2">
+                <Button variant="outline" size="sm" onClick={() => setSidebarOpen(false)}>
+                  Dismiss
+                </Button>
+                <Button size="sm" onClick={() => setSelectedAlert(null)}>
+                  Mark Read
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

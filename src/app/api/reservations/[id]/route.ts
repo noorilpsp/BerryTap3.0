@@ -3,7 +3,11 @@ import { eq, and } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { reservations } from "@/lib/db/schema/orders";
-import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { merchantUsers } from "@/lib/db/schema";
+import {
+  deleteReservationMutation,
+  updateReservationMutation,
+} from "@/domain/reservation-mutations";
 
 export const runtime = "nodejs";
 
@@ -13,9 +17,10 @@ export const runtime = "nodejs";
  */
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const supabase = await supabaseServer();
     const {
       data: { user },
@@ -30,7 +35,7 @@ export async function GET(
     }
 
     const reservation = await db.query.reservations.findFirst({
-      where: eq(reservations.id, params.id),
+      where: eq(reservations.id, id),
       with: {
         location: {
           columns: {
@@ -90,9 +95,10 @@ export async function GET(
  */
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const supabase = await supabaseServer();
     const {
       data: { user },
@@ -122,7 +128,7 @@ export async function PUT(
 
     // Get existing reservation
     const existingReservation = await db.query.reservations.findFirst({
-      where: eq(reservations.id, params.id),
+      where: eq(reservations.id, id),
       with: {
         location: {
           columns: {
@@ -159,26 +165,36 @@ export async function PUT(
       );
     }
 
-    // Update reservation
-    const updateData: any = {
-      updatedAt: new Date(),
-    };
-    if (customerId !== undefined) updateData.customerId = customerId;
-    if (tableId !== undefined) updateData.tableId = tableId;
-    if (partySize !== undefined) updateData.partySize = partySize;
-    if (reservationDate !== undefined) updateData.reservationDate = reservationDate;
-    if (reservationTime !== undefined) updateData.reservationTime = reservationTime;
-    if (status !== undefined) updateData.status = status;
-    if (customerName !== undefined) updateData.customerName = customerName;
-    if (customerPhone !== undefined) updateData.customerPhone = customerPhone;
-    if (customerEmail !== undefined) updateData.customerEmail = customerEmail;
-    if (notes !== undefined) updateData.notes = notes;
-
-    const [updatedReservation] = await db
-      .update(reservations)
-      .set(updateData)
-      .where(eq(reservations.id, params.id))
-      .returning();
+    let updatedReservation;
+    try {
+      updatedReservation = await updateReservationMutation(
+        existingReservation.location.id,
+        id,
+        {
+          customerId,
+          tableId,
+          partySize,
+          reservationDate,
+          reservationTime,
+          status,
+          customerName,
+          customerPhone,
+          customerEmail,
+          notes,
+        }
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.startsWith("Invalid reservation status:")
+      ) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+      throw error;
+    }
+    if (!updatedReservation) {
+      return NextResponse.json({ error: "Reservation not found" }, { status: 404 });
+    }
 
     return NextResponse.json(updatedReservation);
   } catch (error) {
@@ -201,9 +217,10 @@ export async function PUT(
  */
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const supabase = await supabaseServer();
     const {
       data: { user },
@@ -219,7 +236,7 @@ export async function DELETE(
 
     // Get existing reservation
     const existingReservation = await db.query.reservations.findFirst({
-      where: eq(reservations.id, params.id),
+      where: eq(reservations.id, id),
       with: {
         location: {
           columns: {
@@ -256,8 +273,13 @@ export async function DELETE(
       );
     }
 
-    // Delete reservation
-    await db.delete(reservations).where(eq(reservations.id, params.id));
+    const deleted = await deleteReservationMutation(
+      existingReservation.location.id,
+      id
+    );
+    if (!deleted) {
+      return NextResponse.json({ error: "Reservation not found" }, { status: 404 });
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

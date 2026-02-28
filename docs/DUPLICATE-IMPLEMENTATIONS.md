@@ -22,10 +22,10 @@ Business operations that have multiple implementations or entry points.
 
 | Implementation | Location | Entry Point | DB writes |
 |----------------|----------|-------------|-----------|
-| **fireWave** | `serviceActions.ts` → `orders.fireWave` | Table page | Delegates to orders.fireWave; single code path |
-| **sendWaveToKitchen** | `serviceActions.ts` | syncSessionOrderViaServiceLayer (deprecated) | **Parallel implementation** — does its own db.update(orders), db.update(order_items), recordSessionEvent; does NOT call orders.fireWave |
+| **fireWave** | `serviceActions.ts` → `orders.fireWave` | Table page, legacy sync path | Delegates to orders.fireWave; single code path |
+| **sendWaveToKitchen** | `serviceActions.ts` | Removed | Removed to eliminate duplicate wave-fire logic |
 
-**Notes:** Both perform the same business operation (fire a wave). `sendWaveToKitchen` duplicates the logic of `orders.fireWave` inline. `fireWave` (service layer) resolves orderId from sessionId+waveNumber, then calls `orders.fireWave`. Risk: behavior divergence if one is updated and not the other.
+**Notes:** Previously there were two implementations. `sendWaveToKitchen` was removed and legacy sync now calls `fireWave`, so all wave firing converges to one path.
 
 ---
 
@@ -34,10 +34,9 @@ Business operations that have multiple implementations or entry points.
 | Implementation | Location | Entry Point | Notes |
 |----------------|----------|-------------|-------|
 | **closeSessionService** | `serviceActions.ts` → `orders.closeSession` | Table page | Canonical; validates via canCloseSession; delegates to closeSession |
-| **closeOrderForTable** | `orders.ts` → `closeSession` | No current callers | Same underlying closeSession; takes tableId, looks up session, then calls closeSession |
-| **closeSession** | `orders.ts` | closeSessionService, closeOrderForTable | Single implementation; all paths converge here |
+| **closeSession** | `orders.ts` | closeSessionService | Single implementation; all paths converge here |
 
-**Notes:** Only one actual implementation (`closeSession`). `closeOrderForTable` is an alternative entry point (tableId → sessionId) with no current callers. Not a true duplicate.
+**Notes:** Only one implementation remains (`closeSession`). The unused `closeOrderForTable` entry point was removed.
 
 ---
 
@@ -47,10 +46,8 @@ Business operations that have multiple implementations or entry points.
 |----------------|----------|-------------|-------|
 | **recordSessionEvent** | `session-events.ts` | All others ultimately call this | Low-level; inserts into session_events |
 | **recordSessionEventWithSource** | `session-events.ts` | serviceActions, order-item-lifecycle, orders, table page, floor map, kitchen-delay-detection | Wrapper; merges source/correlationId into meta |
-| **recordSessionEventByTable** | `session-events.ts` | No current callers | Wrapper; looks up session by tableId, then recordSessionEvent |
-| **recordEvent** | `serviceActions.ts` | No current callers | Domain wrapper; looks up locationId from session, calls recordSessionEventWithSource |
 
-**Notes:** Multiple layers (recordSessionEvent → recordSessionEventWithSource → recordEvent). Table page and floor map call `recordSessionEventWithSource` directly (bypass domain wrapper). `recordEvent` and `recordSessionEventByTable` exist but are unused. Not truly parallel—same underlying insert—but multiple entry points and the domain wrapper is unused.
+**Notes:** Unused wrappers (`recordEvent`, `recordSessionEventByTable`) were removed. Event writes now use either `recordSessionEvent` directly or `recordSessionEventWithSource`.
 
 ---
 
@@ -79,12 +76,12 @@ Business operations that have multiple implementations or entry points.
 
 | Implementation | Location | Entry Point | Notes |
 |----------------|----------|-------------|-------|
-| **createReservation / updateReservation** | `reservations.ts` (actions) | useRestaurantMutations → timeline-view, list-view | Server actions; direct db.insert/update |
-| **POST /api/reservations** | `api/reservations/route.ts` | External API | Direct db.insert; parallel implementation |
-| **PUT /api/reservations/[id]** | `api/reservations/[id]/route.ts` | External API | Direct db.update; parallel implementation |
-| **DELETE /api/reservations/[id]** | `api/reservations/[id]/route.ts` | External API | Direct db.delete; parallel implementation |
+| **createReservation / updateReservation** | `reservations.ts` (actions) | useRestaurantMutations → timeline-view, list-view | Delegates to shared `domain/reservation-mutations.ts` |
+| **POST /api/reservations** | `api/reservations/route.ts` | External API | Delegates to shared `domain/reservation-mutations.ts` |
+| **PUT /api/reservations/[id]** | `api/reservations/[id]/route.ts` | External API | Delegates to shared `domain/reservation-mutations.ts` |
+| **DELETE /api/reservations/[id]** | `api/reservations/[id]/route.ts` | External API | Delegates to shared `domain/reservation-mutations.ts` |
 
-**Notes:** UI uses server actions. API has its own implementation. Same tables, different code paths. No shared validation layer.
+**Notes:** Entry points are still separate (UI actions vs API), but write logic is now shared, including status normalization and payload handling.
 
 ---
 
@@ -92,13 +89,13 @@ Business operations that have multiple implementations or entry points.
 
 | Implementation | Location | Entry Point | Notes |
 |----------------|----------|-------------|-------|
-| **updateTable** | `tables.ts` (actions) | serviceActions.updateTableLayout | Used for layout updates from table page |
-| **POST /api/tables** | `api/tables/route.ts` | External API | Direct db.insert |
-| **PATCH /api/tables/[id]** | `api/tables/[id]/route.ts` | External API | Direct db.update |
-| **DELETE /api/tables/[id]** | `api/tables/[id]/route.ts` | External API | Direct db.delete |
+| **updateTable** | `tables.ts` (actions) | serviceActions.updateTableLayout | Delegates to shared `domain/table-mutations.ts` for writes |
+| **POST /api/tables** | `api/tables/route.ts` | External API | Delegates to shared `domain/table-mutations.ts` |
+| **PUT /api/tables/[id]** | `api/tables/[id]/route.ts` | External API | Delegates to shared `domain/table-mutations.ts` |
+| **DELETE /api/tables/[id]** | `api/tables/[id]/route.ts` | External API | Delegates to shared `domain/table-mutations.ts` |
 | **floor-plans syncTablesFromElements** | `floor-plans.ts` | saveFloorPlan flow | db.delete + db.insert for tables in floor plan |
 
-**Notes:** Table layout updates go through service layer. Table CRUD from API and floor plan sync use separate paths.
+**Notes:** Action/API writes now share one mutation layer. Floor-plan sync remains a separate bulk-rewrite path.
 
 ---
 
@@ -106,8 +103,8 @@ Business operations that have multiple implementations or entry points.
 
 | Risk | Operation | Issue |
 |------|-----------|-------|
-| **High** | Fire wave | `sendWaveToKitchen` duplicates `orders.fireWave`; two implementations of same logic |
+| **Resolved** | Fire wave | Duplicate `sendWaveToKitchen` path removed; all wave firing uses `fireWave` |
 | **Medium** | Add items | Three paths (addItemsToOrder, addItemToOrderByOrderId, createOrderWithItemsForPickupDelivery); different models (session/waves vs standalone) |
-| **Medium** | Record events | Domain wrapper `recordEvent` unused; UI calls `recordSessionEventWithSource` directly |
-| **Low** | Reservations | Actions vs API; separate implementations |
-| **Low** | Tables | Layout via service; CRUD via API/floor-plans |
+| **Low (reduced)** | Record events | Unused wrappers removed; remaining helpers are intentional (base + source wrapper) |
+| **Low (reduced)** | Reservations | Separate entry points remain, but mutations are centralized |
+| **Low (reduced)** | Tables | Action/API mutations are centralized; floor-plan sync remains separate |

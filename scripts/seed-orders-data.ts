@@ -85,30 +85,32 @@ async function seedOrdersData() {
 
     if (staffMembers.length === 0) {
       console.log("   Creating sample staff members...");
+      const seedStaffMembers: Array<typeof staff.$inferInsert> = [
+        {
+          locationId: location.id,
+          fullName: "John Server",
+          email: "john@example.com",
+          phone: "+1234567890",
+          pinCodeHash: "$2a$10$dummyhash", // Dummy hash for seeding
+          role: "server",
+          isActive: true,
+          hiredAt: "2024-01-01T00:00:00.000Z",
+        },
+        {
+          locationId: location.id,
+          fullName: "Jane Manager",
+          email: "jane@example.com",
+          phone: "+1234567891",
+          pinCodeHash: "$2a$10$dummyhash",
+          role: "manager",
+          isActive: true,
+          hiredAt: "2024-01-01T00:00:00.000Z",
+        },
+      ];
+
       staffMembers = await db
         .insert(staff)
-        .values([
-          {
-            locationId: location.id,
-            fullName: "John Server",
-            email: "john@example.com",
-            phone: "+1234567890",
-            pinCodeHash: "$2a$10$dummyhash", // Dummy hash for seeding
-            role: "server",
-            isActive: true,
-            hiredAt: new Date("2024-01-01"),
-          },
-          {
-            locationId: location.id,
-            fullName: "Jane Manager",
-            email: "jane@example.com",
-            phone: "+1234567891",
-            pinCodeHash: "$2a$10$dummyhash",
-            role: "manager",
-            isActive: true,
-            hiredAt: new Date("2024-01-01"),
-          },
-        ])
+        .values(seedStaffMembers)
         .returning();
     }
 

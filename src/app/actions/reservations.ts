@@ -4,6 +4,10 @@ import { eq, and, desc, gte, lte } from "drizzle-orm";
 import { db } from "@/db";
 import { reservations as reservationsTable } from "@/lib/db/schema/orders";
 import { verifyLocationAccess } from "@/lib/location-access";
+import {
+  createReservationMutation,
+  updateReservationMutation,
+} from "@/domain/reservation-mutations";
 import type { StoreReservation } from "@/store/types";
 
 const DB_STATUS_TO_STORE: Record<string, StoreReservation["status"]> = {
@@ -126,17 +130,6 @@ export async function getReservationsForLocation(
   );
 }
 
-const STORE_STATUS_TO_DB: Record<string, string> = {
-  reserved: "pending",
-  confirmed: "confirmed",
-  seated: "seated",
-  completed: "completed",
-  noShow: "no_show",
-  cancelled: "cancelled",
-  late: "pending",
-  waitlist: "pending",
-};
-
 export async function createReservation(
   locationId: string,
   data: {
@@ -155,23 +148,18 @@ export async function createReservation(
     throw new Error("Unauthorized or location not found");
   }
 
-  const [row] = await db
-    .insert(reservationsTable)
-    .values({
-      locationId,
-      partySize: data.partySize,
-      reservationDate: data.reservationDate,
-      reservationTime: data.reservationTime,
-      status: "pending",
-      customerName: data.customerName,
-      customerPhone: data.customerPhone ?? null,
-      customerEmail: data.customerEmail ?? null,
-      notes: data.notes ?? null,
-      tableId: data.tableId ?? null,
-    })
-    .returning();
+  const row = await createReservationMutation({
+    locationId,
+    partySize: data.partySize,
+    reservationDate: data.reservationDate,
+    reservationTime: data.reservationTime,
+    customerName: data.customerName,
+    customerPhone: data.customerPhone ?? null,
+    customerEmail: data.customerEmail ?? null,
+    notes: data.notes ?? null,
+    tableId: data.tableId ?? null,
+  });
 
-  if (!row) throw new Error("Failed to create reservation");
   return mapRowToStoreReservation({
     id: row.id,
     partySize: row.partySize,
@@ -207,28 +195,15 @@ export async function updateReservation(
     throw new Error("Unauthorized or location not found");
   }
 
-  const updatePayload: Record<string, unknown> = {};
-  if (patch.partySize !== undefined) updatePayload.partySize = patch.partySize;
-  if (patch.reservationDate !== undefined)
-    updatePayload.reservationDate = patch.reservationDate;
-  if (patch.reservationTime !== undefined)
-    updatePayload.reservationTime = patch.reservationTime;
-  if (patch.status !== undefined)
-    updatePayload.status = STORE_STATUS_TO_DB[patch.status] ?? patch.status;
-  if (patch.customerName !== undefined) updatePayload.customerName = patch.customerName;
-  if (patch.customerPhone !== undefined) updatePayload.customerPhone = patch.customerPhone;
-  if (patch.customerEmail !== undefined) updatePayload.customerEmail = patch.customerEmail;
-  if (patch.notes !== undefined) updatePayload.notes = patch.notes;
-  if (patch.tableId !== undefined) updatePayload.tableId = patch.tableId;
-  updatePayload.updatedAt = new Date();
-
-  await db
-    .update(reservationsTable)
-    .set(updatePayload as any)
-    .where(
-      and(
-        eq(reservationsTable.id, id),
-        eq(reservationsTable.locationId, locationId)
-      )
-    );
+  await updateReservationMutation(locationId, id, {
+    partySize: patch.partySize,
+    reservationDate: patch.reservationDate,
+    reservationTime: patch.reservationTime,
+    status: patch.status,
+    customerName: patch.customerName,
+    customerPhone: patch.customerPhone,
+    customerEmail: patch.customerEmail,
+    notes: patch.notes,
+    tableId: patch.tableId,
+  });
 }

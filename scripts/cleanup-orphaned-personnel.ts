@@ -1,5 +1,4 @@
 import { neon } from '@neondatabase/serverless'
-import * as dotenv from 'dotenv'
 import { loadEnvConfig } from '@next/env'
 
 // Load environment variables

@@ -177,7 +177,7 @@ These mutations have **no domain service layer** by design. Config CRUD is typic
 ### High Priority
 
 1. **session-events bypass** — Table page, floor-map, and kitchen-delay-detection call `recordSessionEventWithSource` directly. Consider:
-   - Adding `recordSessionEvent` to the domain layer (e.g. `serviceActions.recordEvent`) if event recording should be gated, or
+   - Adding `recordSessionEvent` to the domain layer if event recording should be gated, or
    - Documenting that session events are intentionally a lightweight audit sink called from UI/actions (acceptable if no business rules depend on them).
 
 ### Medium Priority

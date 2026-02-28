@@ -14,9 +14,10 @@ export const runtime = "nodejs";
  */
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const supabase = await supabaseServer();
     const {
       data: { user },
@@ -31,7 +32,7 @@ export async function GET(
     }
 
     const customer = await db.query.customers.findFirst({
-      where: eq(customers.id, params.id),
+      where: eq(customers.id, id),
       with: {
         location: {
           columns: {
@@ -93,9 +94,10 @@ export async function GET(
  */
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const supabase = await supabaseServer();
     const {
       data: { user },
@@ -114,7 +116,7 @@ export async function PUT(
 
     // Get existing customer
     const existingCustomer = await db.query.customers.findFirst({
-      where: eq(customers.id, params.id),
+      where: eq(customers.id, id),
       with: {
         location: {
           columns: {
@@ -160,7 +162,7 @@ export async function PUT(
     const [updatedCustomer] = await db
       .update(customers)
       .set(updateData)
-      .where(eq(customers.id, params.id))
+      .where(eq(customers.id, id))
       .returning();
 
     return NextResponse.json(updatedCustomer);
@@ -184,9 +186,10 @@ export async function PUT(
  */
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const supabase = await supabaseServer();
     const {
       data: { user },
@@ -202,7 +205,7 @@ export async function DELETE(
 
     // Get existing customer
     const existingCustomer = await db.query.customers.findFirst({
-      where: eq(customers.id, params.id),
+      where: eq(customers.id, id),
       with: {
         location: {
           columns: {
@@ -240,7 +243,7 @@ export async function DELETE(
     }
 
     // Delete customer
-    await db.delete(customers).where(eq(customers.id, params.id));
+    await db.delete(customers).where(eq(customers.id, id));
 
     return NextResponse.json({ success: true });
   } catch (error) {

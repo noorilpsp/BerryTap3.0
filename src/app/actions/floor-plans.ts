@@ -374,20 +374,25 @@ async function syncTablesFromElements(
 
   if (storeTables.length > 0) {
     await db.insert(tables).values(
-      storeTables.map((t) => ({
-        locationId,
-        floorPlanId,
-        displayId: `T${t.number}`,
-        tableNumber: `T${t.number}`,
-        seats: t.capacity,
-        status: t.status === "free" ? "available" : "occupied",
-        section: t.section,
-        shape: t.shape,
-        position: t.position,
-        width: t.width ?? null,
-        height: t.height ?? null,
-        rotation: t.rotation ?? null,
-      }))
+      storeTables.map((t) => {
+        const status: typeof tables.$inferInsert.status =
+          t.status === "free" ? "available" : "occupied";
+
+        return {
+          locationId,
+          floorPlanId,
+          displayId: `T${t.number}`,
+          tableNumber: `T${t.number}`,
+          seats: t.capacity,
+          status,
+          section: t.section,
+          shape: t.shape,
+          position: t.position,
+          width: t.width ?? null,
+          height: t.height ?? null,
+          rotation: t.rotation ?? null,
+        };
+      })
     );
   }
   return storeTables;

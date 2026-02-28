@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { tables } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
 import { getComputedStatusesForTables } from "@/app/actions/tables";
+import { createTableMutation } from "@/domain/table-mutations";
 
 export const runtime = "nodejs";
 
@@ -175,33 +176,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Check if table number already exists for this location
-    const existingTable = await db.query.tables.findFirst({
-      where: and(
-        eq(tables.locationId, locationId),
-        eq(tables.tableNumber, tableNumber)
-      ),
+    const result = await createTableMutation({
+      locationId,
+      tableNumber,
+      seats: seats || null,
+      status,
     });
-
-    if (existingTable) {
+    if (!result.ok) {
+      if (result.reason === "table_number_exists") {
+        return NextResponse.json(
+          { error: "Table number already exists for this location" },
+          { status: 409 }
+        );
+      }
       return NextResponse.json(
-        { error: "Table number already exists for this location" },
-        { status: 409 }
+        { error: "Invalid table status" },
+        { status: 400 }
       );
     }
 
-    // Create table
-    const [newTable] = await db
-      .insert(tables)
-      .values({
-        locationId,
-        tableNumber,
-        seats: seats || null,
-        status: status || "available",
-      })
-      .returning();
-
-    return NextResponse.json(newTable, { status: 201 });
+    return NextResponse.json(result.table, { status: 201 });
   } catch (error) {
     console.error("[POST /api/tables] Error:", error);
     return NextResponse.json(

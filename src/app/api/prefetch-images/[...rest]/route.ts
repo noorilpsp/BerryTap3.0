@@ -15,7 +15,7 @@ function getHostname() {
 
 export async function GET(
   _: NextRequest,
-  { params }: { params: { rest: string[] } },
+  { params }: { params: Promise<{ rest: string[] }> },
 ) {
   const schema = process.env.NODE_ENV === "development" ? "http" : "https";
   const host = getHostname();

@@ -46,7 +46,7 @@ const generateCategories = async () => {
 
   const promises = c.map(async (col) => {
     const { object } = await generateObject({
-      model: client.languageModel("gpt-4o-mini", { structuredOutputs: true }),
+      model: client.languageModel("gpt-4o-mini"),
       schema: z.object({
         categories: z.array(z.string()),
       }),
@@ -82,7 +82,7 @@ const generateSubCollections = async () => {
 
   const promises = c.map(async (cat) => {
     const { object } = await generateObject({
-      model: client.languageModel("gpt-4o-mini", { structuredOutputs: true }),
+      model: client.languageModel("gpt-4o-mini"),
       schema: z.object({
         subcollections: z.array(z.string()),
       }),
@@ -145,7 +145,7 @@ const generateSubcategories = async () => {
 
   const promises = subcollections.map(async (subcol) => {
     const { object } = await generateObject({
-      model: client.languageModel("gpt-4o-mini", { structuredOutputs: true }),
+      model: client.languageModel("gpt-4o-mini"),
       schema: z.object({
         subcategories: z.array(z.string()),
       }),

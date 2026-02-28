@@ -4,6 +4,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { reservations } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { createReservationMutation } from "@/domain/reservation-mutations";
 
 export const runtime = "nodejs";
 
@@ -191,23 +192,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create reservation
-    const [newReservation] = await db
-      .insert(reservations)
-      .values({
+    let newReservation;
+    try {
+      newReservation = await createReservationMutation({
         locationId,
         customerId: customerId || null,
         tableId: tableId || null,
         partySize,
         reservationDate,
         reservationTime,
-        status: status || "pending",
+        status,
         customerName,
         customerPhone: customerPhone || null,
         customerEmail: customerEmail || null,
         notes: notes || null,
-      })
-      .returning();
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.startsWith("Invalid reservation status:")
+      ) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+      throw error;
+    }
 
     return NextResponse.json(newReservation, { status: 201 });
   } catch (error) {

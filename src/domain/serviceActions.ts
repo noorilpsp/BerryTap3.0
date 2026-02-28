@@ -25,7 +25,6 @@ import {
   closeSession as closeSessionAction,
   createNextWave,
   createOrderWithItemsForPickupDelivery,
-  getOpenSessionIdForTable,
   getOrderIdForSessionAndWave,
   ensureSessionForTable,
   ensureSessionForTableByTableUuid,
@@ -53,7 +52,6 @@ import {
   recordSessionEvent,
   recordSessionEventWithSource,
   type EventSource,
-  type SessionEventType,
 } from "@/app/actions/session-events";
 import {
   addSeatToSession as addSeatToSessionAction,
@@ -153,53 +151,6 @@ export async function ensureSessionByTableUuid(
   const sessionId = await ensureSessionForTableByTableUuid(locationId, tableUuid, guestCount, serverId);
   if (!sessionId) return { ok: false, reason: "Failed to ensure session" };
   return { ok: true, sessionId };
-}
-
-export type RecordEventOptions = {
-  source: EventSource;
-  correlationId?: string;
-  /** If provided, skips loading the session to resolve locationId. */
-  locationId?: string;
-  /** If provided, included in event meta. */
-  deviceId?: string;
-};
-
-/**
- * Domain entry point for recording session events.
- * Keeps event writes consistent with the service layer.
- */
-export async function recordEvent(
-  sessionId: string,
-  eventType: SessionEventType,
-  meta?: Record<string, unknown>,
-  options?: RecordEventOptions
-): Promise<{ ok: boolean; error?: string }> {
-  if (!options?.source) return { ok: false, error: "source is required" };
-
-  let locationId: string;
-  if (options.locationId != null) {
-    locationId = options.locationId;
-  } else {
-    const session = await db.query.sessions.findFirst({
-      where: eq(sessionsTable.id, sessionId),
-      columns: { id: true, locationId: true },
-    });
-    if (!session) return { ok: false, error: "Session not found" };
-    locationId = session.locationId;
-  }
-
-  const eventMeta =
-    options.deviceId != null ? { ...meta, deviceId: options.deviceId } : meta;
-
-  return recordSessionEventWithSource(
-    locationId,
-    sessionId,
-    eventType,
-    options.source,
-    eventMeta,
-    undefined,
-    options.correlationId
-  );
 }
 
 /** API order creation input. Matches POST /api/orders body. */
@@ -543,10 +494,6 @@ export async function updateItemNotes(
   };
 }
 
-export type SendWaveToKitchenResult =
-  | { ok: true; sessionId: string; orderId: string; wave: number; firedAt: Date; itemCount: number }
-  | { ok: false; reason: "order_not_found" | "wave_already_fired" | "session_not_open" | "empty_wave"; data?: unknown };
-
 export type FireWaveOptions = {
   waveNumber?: number;
   station?: string;
@@ -889,113 +836,14 @@ export async function syncSessionOrderViaServiceLayer(
     }
 
     if (waveNumber === 1) {
-      const sendResult = await sendWaveToKitchen(sessionId, waveNumber, { eventSource: "system" });
-      if (!sendResult.ok && sendResult.reason !== "empty_wave") {
-        return { ok: false, error: sendResult.reason ?? "Failed to fire wave 1" };
+      const fireResult = await fireWave(sessionId, { waveNumber, eventSource: "system" });
+      if (!fireResult.ok && fireResult.reason !== "no_wave_to_fire") {
+        return { ok: false, error: fireResult.reason ?? "Failed to fire wave 1" };
       }
     }
   }
 
   return { ok: true, sessionId };
-}
-
-/**
- * Canonical operation when server presses "Send" — send wave to kitchen.
- * Centralized: load session + order, validate, update order/items, record course_fired.
- */
-export async function sendWaveToKitchen(
-  sessionId: string,
-  waveNumber: number,
-  options?: { station?: string; eventSource?: EventSource }
-): Promise<SendWaveToKitchenResult> {
-  const session = await db.query.sessions.findFirst({
-    where: eq(sessionsTable.id, sessionId),
-    columns: { id: true, status: true, locationId: true },
-  });
-  if (!session) return { ok: false, reason: "session_not_open" };
-  if (session.status !== "open") return { ok: false, reason: "session_not_open" };
-
-  const location = await verifyLocationAccess(session.locationId);
-  if (!location) return { ok: false, reason: "session_not_open", data: { message: "Unauthorized" } };
-
-  const order = await getOpenWave(sessionId, waveNumber);
-  if (!order) return { ok: false, reason: "order_not_found" };
-
-  const fireResult = canFireWave({ firedAt: order.firedAt });
-  if (!fireResult.ok) return { ok: false, reason: "wave_already_fired" };
-
-  const nonVoidedCount = await db.query.orderItems.findMany({
-    where: and(
-      eq(orderItemsTable.orderId, order.id),
-      isNull(orderItemsTable.voidedAt)
-    ),
-    columns: { id: true },
-  });
-  if (nonVoidedCount.length === 0) return { ok: false, reason: "empty_wave" };
-
-  const itemsToUpdate = await db.query.orderItems.findMany({
-    where: and(
-      eq(orderItemsTable.orderId, order.id),
-      isNull(orderItemsTable.sentToKitchenAt),
-      isNull(orderItemsTable.voidedAt)
-    ),
-    columns: { id: true, quantity: true },
-  });
-  const itemCount = itemsToUpdate.reduce((sum, i) => sum + (i.quantity ?? 1), 0);
-
-  const now = new Date();
-
-  const [updatedOrder] = await db
-    .update(ordersTable)
-    .set({
-      firedAt: now,
-      status: "confirmed",
-      updatedAt: now,
-      ...(options?.station != null && { station: options.station }),
-    })
-    .where(and(eq(ordersTable.id, order.id), isNull(ordersTable.firedAt)))
-    .returning({ id: ordersTable.id });
-
-  if (!updatedOrder) {
-    return { ok: false, reason: "wave_already_fired" };
-  }
-
-  for (const item of itemsToUpdate) {
-    await db
-      .update(orderItemsTable)
-      .set({ sentToKitchenAt: now })
-      .where(eq(orderItemsTable.id, item.id));
-  }
-
-  const correlationId = generateCorrelationId();
-  const station = options?.station ?? order.station ?? null;
-  const courseFiredMeta = {
-    wave: waveNumber,
-    itemCount,
-    ...(station != null && { station }),
-  };
-  if (options?.eventSource) {
-    await recordSessionEventWithSource(
-      session.locationId,
-      sessionId,
-      "course_fired",
-      options.eventSource,
-      courseFiredMeta,
-      undefined,
-      correlationId
-    );
-  } else {
-    await recordSessionEvent(session.locationId, sessionId, "course_fired", courseFiredMeta);
-  }
-
-  return {
-    ok: true,
-    sessionId,
-    orderId: order.id,
-    wave: waveNumber,
-    firedAt: now,
-    itemCount,
-  };
 }
 
 /**

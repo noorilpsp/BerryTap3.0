@@ -4,6 +4,7 @@ import { eq, and, desc, ilike, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { tables as tablesTable, sessions as sessionsTable } from "@/lib/db/schema/orders";
 import { verifyLocationAccess } from "@/lib/location-access";
+import { updateTableMutation } from "@/domain/table-mutations";
 import type { StoreTable } from "@/store/types";
 
 /**
@@ -66,21 +67,6 @@ function mapDbStatusToStoreStatus(
     cleaning: "cleaning",
   };
   return map[dbStatus] ?? "free";
-}
-
-function mapStoreStatusToDb(
-  status: StoreTable["status"]
-): "available" | "occupied" | "reserved" | "unavailable" {
-  const map: Record<StoreTable["status"], "available" | "occupied" | "reserved" | "unavailable"> = {
-    free: "available",
-    active: "occupied",
-    urgent: "occupied",
-    billing: "occupied",
-    closed: "available",
-    reserved: "reserved",
-    cleaning: "unavailable",
-  };
-  return map[status] ?? "available";
 }
 
 /** Minutes after session close that table is considered "cleaning". */
@@ -248,29 +234,22 @@ export async function updateTable(
     return { ok: false, error: "Table not found" };
   }
 
-  const updatePayload: Record<string, unknown> = {
-    updatedAt: new Date(),
-  };
-  if (patch.status !== undefined) {
-    updatePayload.status = mapStoreStatusToDb(patch.status);
+  const result = await updateTableMutation(locationId, row.id, {
+    status: patch.status,
+    guests: patch.guests,
+    seatedAt: patch.seatedAt,
+    stage: patch.stage ?? null,
+    alerts: patch.alerts,
+  });
+  if (!result.ok) {
+    if (result.reason === "table_not_found") {
+      return { ok: false, error: "Table not found" };
+    }
+    if (result.reason === "invalid_status") {
+      return { ok: false, error: "Invalid table status" };
+    }
+    return { ok: false, error: "Failed to update table" };
   }
-  if (patch.guests !== undefined) {
-    updatePayload.guests = patch.guests;
-  }
-  if (patch.seatedAt !== undefined) {
-    updatePayload.seatedAt = patch.seatedAt ? new Date(patch.seatedAt) : null;
-  }
-  if (patch.stage !== undefined) {
-    updatePayload.stage = patch.stage;
-  }
-  if (patch.alerts !== undefined) {
-    updatePayload.alerts = patch.alerts;
-  }
-
-  await db
-    .update(tablesTable)
-    .set(updatePayload as typeof tablesTable.$inferInsert)
-    .where(eq(tablesTable.id, row.id));
 
   return { ok: true };
 }

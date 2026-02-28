@@ -41,7 +41,7 @@ UI / API
 | `src/app/floor-map/page.tsx` | 367 | ensureSessionForTable | Session creation when seating party | Same as above |
 | `src/app/api/orders/route.ts` | 399 | ensureSessionByTableUuid | Session resolution for dine-in orders | ✓ Uses service layer |
 | `src/app/api/orders/route.ts` | 414–456 | db.insert(orders), db.insert(orderItems) | Order creation bypasses addItemsToOrder | **Documented as separate order channel** (pickup, delivery, external dine-in). See [POST-API-ORDERS-ANALYSIS.md](./POST-API-ORDERS-ANALYSIS.md). Dine-in POS uses addItemsToOrder; pickup/delivery have no session. |
-| `src/app/actions/session-events.ts` | 84 | getOpenSessionIdForTable | Read/lookup in recordSessionEventByTable | Acceptable; read operation |
+| `src/app/actions/session-events.ts` | 90 | recordSessionEventWithSource | Thin wrapper over recordSessionEvent; called directly from UI/actions | Acceptable when events are audit-only |
 
 ### 2. order-item-lifecycle.ts
 

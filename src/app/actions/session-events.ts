@@ -7,7 +7,6 @@ import {
   sessions as sessionsTable,
 } from "@/lib/db/schema/orders";
 import { verifyLocationAccess } from "@/lib/location-access";
-import { getOpenSessionIdForTable } from "@/app/actions/orders";
 
 export type SessionEventType =
   | "session_opened"
@@ -99,17 +98,4 @@ export async function recordSessionEventWithSource(
   const merged = { source, ...meta } as Record<string, unknown>;
   if (correlationId != null) merged.correlationId = correlationId;
   return recordSessionEvent(locationId, sessionId, type, merged, actor);
-}
-
-/** Look up open session by table id (e.g. "t1") and record an event. Use when you don't have sessionId. */
-export async function recordSessionEventByTable(
-  locationId: string,
-  tableId: string,
-  type: SessionEventType,
-  meta?: Record<string, unknown>,
-  actor?: SessionEventActor
-): Promise<{ ok: boolean; error?: string }> {
-  const sessionId = await getOpenSessionIdForTable(locationId, tableId);
-  if (!sessionId) return { ok: false, error: "No open session for table" };
-  return recordSessionEvent(locationId, sessionId, type, meta, actor);
 }

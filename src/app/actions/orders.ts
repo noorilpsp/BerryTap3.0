@@ -654,44 +654,6 @@ export async function closeSession(
   return { ok: true };
 }
 
-/**
- * Close the active session for a table. Uses tableId only to locate the open session (allowed).
- * Delegates to closeSession for all mutations.
- */
-export async function closeOrderForTable(
-  locationId: string,
-  tableId: string,
-  payment?: CloseTablePayment,
-  options?: CloseOrderForTableOptions
-): Promise<CloseOrderForTableResult> {
-  const location = await verifyLocationAccess(locationId);
-  if (!location) return { ok: false, error: "Unauthorized or location not found" };
-
-  const tableRows = await db.query.tables.findMany({
-    where: and(
-      eq(tablesTable.locationId, locationId),
-      ilike(tablesTable.tableNumber, tableId)
-    ),
-    columns: { id: true },
-    limit: 1,
-  });
-  const tableRow = tableRows[0];
-  if (!tableRow) return { ok: false, error: "Table not found" };
-
-  const openSession = await db.query.sessions.findFirst({
-    where: and(
-      eq(sessionsTable.locationId, locationId),
-      eq(sessionsTable.tableId, tableRow.id),
-      eq(sessionsTable.status, "open")
-    ),
-    columns: { id: true },
-  });
-
-  if (!openSession) return { ok: true };
-
-  return closeSession(openSession.id, payment, options);
-}
-
 /** Line item input for pickup/delivery order creation. Used by createOrderWithItemsForPickupDelivery. */
 export type PickupDeliveryLineItemInput = {
   itemId: string | null;
@@ -1019,6 +981,12 @@ export async function updatePaymentStatus(
     columns: { id: true, orderId: true, paidAt: true },
   });
   if (!payment) return { ok: false, error: "Payment not found" };
+  if (!payment.order) return { ok: false, error: "Payment order not found" };
+
+  const relatedOrderId = payment.order.id ?? payment.orderId;
+  if (!relatedOrderId) {
+    return { ok: false, error: "Payment is not linked to an order" };
+  }
 
   const location = await verifyLocationAccess(payment.order.locationId);
   if (!location) return { ok: false, error: "Unauthorized or location not found" };
@@ -1030,7 +998,7 @@ export async function updatePaymentStatus(
   await db.update(paymentsTable).set(updateData as any).where(eq(paymentsTable.id, paymentId));
 
   const allPayments = await db.query.payments.findMany({
-    where: and(eq(paymentsTable.orderId, payment.orderId), eq(paymentsTable.status, "completed")),
+    where: and(eq(paymentsTable.orderId, relatedOrderId), eq(paymentsTable.status, "completed")),
     columns: { amount: true },
   });
   const totalPaid = allPayments.reduce((sum, p) => sum + parseFloat(p.amount), 0);
@@ -1042,7 +1010,7 @@ export async function updatePaymentStatus(
   await db
     .update(ordersTable)
     .set({ paymentStatus: paymentStatus as any, updatedAt: new Date() })
-    .where(eq(ordersTable.id, payment.orderId));
+    .where(eq(ordersTable.id, relatedOrderId));
 
   return { ok: true, paymentId };
 }

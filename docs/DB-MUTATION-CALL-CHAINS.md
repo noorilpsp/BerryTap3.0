@@ -19,7 +19,7 @@ Tracing of every `db.insert`, `db.update`, `db.delete`, and `tx.insert/update/de
 | File | Function | Tables Mutated | Call Chain | Through service layer? |
 |------|----------|----------------|------------|------------------------|
 | `src/app/actions/orders.ts` | `createNextWave` | `orders` (insert) | Table page / serviceActions.addItemsToOrder → createNextWave → db.insert | YES |
-| `src/app/actions/orders.ts` | `fireWave` | `orders`, `order_items` (update) | serviceActions.fireWave / sendWaveToKitchen → fireWaveAction → db.update | YES |
+| `src/app/actions/orders.ts` | `fireWave` | `orders`, `order_items` (update) | serviceActions.fireWave → fireWaveAction → db.update | YES |
 | `src/app/actions/orders.ts` | `closeSession` | `orders` (update) | closeSessionService → closeSessionAction → db.update | YES |
 | `src/app/api/orders/route.ts` | POST handler | `orders` (insert) | HTTP POST → route → db.insert | NO |
 | `src/app/api/orders/[id]/route.ts` | PUT handler | `orders` (update) | HTTP PUT → route → db.update | NO |
@@ -35,7 +35,6 @@ Tracing of every `db.insert`, `db.update`, `db.delete`, and `tx.insert/update/de
 | `src/domain/serviceActions.ts` | `updateItemQuantity` | `order_items` (update) | API PUT /api/orders/[id]/items/[itemId] OR table page → updateItemQuantity → db.update | YES |
 | `src/domain/serviceActions.ts` | `updateItemNotes` | `order_items` (update) | API PUT /api/orders/[id]/items/[itemId] → updateItemNotes → db.update | YES |
 | `src/domain/serviceActions.ts` | `addItemsToOrder` | `order_items` (insert) | Table page → addItemsToOrder → db.insert | YES |
-| `src/domain/serviceActions.ts` | `sendWaveToKitchen` | `orders`, `order_items` (update) | Table page → sendWaveToKitchen (via fireWave) → db.update | YES |
 | `src/domain/serviceActions.ts` | `fireWave` | `orders`, `order_items` (update) | Table page → fireWave → fireWaveAction → db.update | YES |
 | `src/domain/serviceActions.ts` | `refireItem` | `order_items` (update) | KDS page / API → refireItem → refireItemAction + db.update | YES |
 | `src/domain/serviceActions.ts` | `updateItemSeat` (assignItemToSeat / moveItemToSeat) | `order_items` (update) | UI → assignItemToSeat / moveItemToSeat → updateItemSeat → db.update | YES |
