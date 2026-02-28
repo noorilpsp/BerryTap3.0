@@ -21,6 +21,8 @@ import {
   markItemServed,
 } from "@/app/actions/order-item-lifecycle";
 import { addSeatToSession, syncSeatsWithGuestCount } from "@/app/actions/seat-management";
+import { canFireWave, canAddItems } from "@/domain/serviceFlow";
+import { recalculateSessionTotals } from "@/domain/orderTotals";
 
 const ORDER_STATUS_ACTIVE = ["pending", "confirmed", "preparing", "ready"] as const;
 
@@ -236,6 +238,19 @@ export async function syncOrderToDb(
   if (!sessionId) {
     return { ok: false, error: "Failed to get or create session" };
   }
+
+  const sessionRow = await db.query.sessions.findFirst({
+    where: eq(sessionsTable.id, sessionId),
+    columns: { status: true },
+  });
+  if (!sessionRow) {
+    return { ok: false, error: "Session not found" };
+  }
+  const addResult = canAddItems({ status: sessionRow.status });
+  if (!addResult.ok) {
+    return { ok: false, error: "Cannot add items: session is not open" };
+  }
+
   const guestCount = Math.max(1, Math.floor(session.guestCount ?? 0));
   await db
     .update(sessionsTable)
@@ -463,12 +478,23 @@ export async function fireWave(
 ): Promise<{ ok: boolean; error?: string }> {
   const order = await db.query.orders.findFirst({
     where: eq(ordersTable.id, orderId),
-    columns: { id: true, sessionId: true, locationId: true, wave: true },
+    columns: {
+      id: true,
+      sessionId: true,
+      locationId: true,
+      wave: true,
+      firedAt: true,
+    },
   });
   if (!order) return { ok: false, error: "Order not found" };
 
   const location = await verifyLocationAccess(order.locationId);
   if (!location) return { ok: false, error: "Unauthorized or location not found" };
+
+  const fireResult = canFireWave({ firedAt: order.firedAt });
+  if (!fireResult.ok) {
+    return { ok: false, error: "Wave already fired" };
+  }
 
   const now = new Date();
 
@@ -820,6 +846,7 @@ export async function closeOrderForTable(
     }
 
     if (!force) {
+      await recalculateSessionTotals(openSession.id);
       const canClose = await canCloseSession(openSession.id, {
         incomingPaymentAmount: payment?.amount,
       });
@@ -878,6 +905,7 @@ export async function closeOrderForTable(
         status: "completed",
         paidAt: now,
       });
+      await recalculateSessionTotals(openSession.id);
     }
 
     await db

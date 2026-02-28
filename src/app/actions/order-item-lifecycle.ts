@@ -8,15 +8,14 @@ import {
 } from "@/lib/db/schema/orders";
 import { verifyLocationAccess } from "@/lib/location-access";
 import { recordSessionEvent } from "@/app/actions/session-events";
-
-type ItemStatus = "pending" | "preparing" | "ready" | "served";
-
-const VALID_TRANSITIONS: Record<ItemStatus, ItemStatus[]> = {
-  pending: ["preparing"],
-  preparing: ["ready"],
-  ready: ["served"],
-  served: [],
-};
+import {
+  canMarkItemPreparing,
+  canMarkItemReady,
+  canServeItem,
+  canVoidItem,
+  canRefireItem,
+} from "@/domain/serviceFlow";
+import { recalculateOrderTotals, recalculateSessionTotals } from "@/domain/orderTotals";
 
 async function getItemWithOrder(orderItemId: string): Promise<{
   item: { id: string; orderId: string; status: string; voidedAt: Date | null };
@@ -51,9 +50,9 @@ export async function markItemPreparing(
   if (!row) return { ok: false, error: "Order item not found" };
 
   const { item, order } = row;
-  const status = item.status as ItemStatus;
-  if (!VALID_TRANSITIONS[status]?.includes("preparing")) {
-    return { ok: false, error: `Invalid transition: ${status} → preparing (expected pending)` };
+  const prepResult = canMarkItemPreparing({ status: item.status, voidedAt: item.voidedAt });
+  if (!prepResult.ok) {
+    return { ok: false, error: `Invalid transition: ${item.status} → preparing (expected pending)` };
   }
 
   const location = await verifyLocationAccess(order.locationId);
@@ -75,9 +74,9 @@ export async function markItemReady(
   if (!row) return { ok: false, error: "Order item not found" };
 
   const { item, order } = row;
-  const status = item.status as ItemStatus;
-  if (!VALID_TRANSITIONS[status]?.includes("ready")) {
-    return { ok: false, error: `Invalid transition: ${status} → ready (expected preparing)` };
+  const readyResult = canMarkItemReady({ status: item.status, voidedAt: item.voidedAt });
+  if (!readyResult.ok) {
+    return { ok: false, error: `Invalid transition: ${item.status} → ready (expected preparing)` };
   }
 
   const location = await verifyLocationAccess(order.locationId);
@@ -106,9 +105,9 @@ export async function markItemServed(
   if (!row) return { ok: false, error: "Order item not found" };
 
   const { item, order } = row;
-  const status = item.status as ItemStatus;
-  if (!VALID_TRANSITIONS[status]?.includes("served")) {
-    return { ok: false, error: `Invalid transition: ${status} → served (expected ready)` };
+  const serveResult = canServeItem({ status: item.status, voidedAt: item.voidedAt });
+  if (!serveResult.ok) {
+    return { ok: false, error: `Invalid transition: ${item.status} → served (expected ready)` };
   }
 
   const location = await verifyLocationAccess(order.locationId);
@@ -137,7 +136,8 @@ export async function voidItem(
   if (!row) return { ok: false, error: "Order item not found" };
 
   const { order } = row;
-  if (row.item.voidedAt) {
+  const voidResult = canVoidItem({ status: row.item.status, voidedAt: row.item.voidedAt });
+  if (!voidResult.ok) {
     return { ok: false, error: "Order item already voided" };
   }
 
@@ -150,7 +150,9 @@ export async function voidItem(
     .set({ voidedAt: now })
     .where(eq(orderItemsTable.id, orderItemId));
 
+  await recalculateOrderTotals(order.id);
   if (order.sessionId) {
+    await recalculateSessionTotals(order.sessionId);
     await recordSessionEvent(order.locationId, order.sessionId, "item_voided", {
       orderItemId,
       reason,
@@ -168,11 +170,12 @@ export async function refireItem(
   if (!row) return { ok: false, error: "Order item not found" };
 
   const { order } = row;
-  const item = await db.query.orderItems.findFirst({
+  const refireCheck = await db.query.orderItems.findFirst({
     where: eq(orderItemsTable.id, orderItemId),
     columns: { refiredAt: true },
   });
-  if (item?.refiredAt) {
+  const refireResult = canRefireItem({ status: row.item.status, refiredAt: refireCheck?.refiredAt });
+  if (!refireResult.ok) {
     return { ok: false, error: "Order item already refired" };
   }
 
@@ -185,7 +188,9 @@ export async function refireItem(
     .set({ refiredAt: now })
     .where(eq(orderItemsTable.id, orderItemId));
 
+  await recalculateOrderTotals(order.id);
   if (order.sessionId) {
+    await recalculateSessionTotals(order.sessionId);
     await recordSessionEvent(order.locationId, order.sessionId, "item_refired", {
       orderItemId,
       reason,

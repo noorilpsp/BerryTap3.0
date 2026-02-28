@@ -1,6 +1,6 @@
 "use server";
 
-import { eq, and, inArray, sql, isNotNull, isNull, ne } from "drizzle-orm";
+import { eq, and, inArray, sql, isNull, ne } from "drizzle-orm";
 import { db } from "@/db";
 import {
   sessions as sessionsTable,
@@ -8,6 +8,7 @@ import {
   orderItems as orderItemsTable,
   payments as paymentsTable,
 } from "@/lib/db/schema/orders";
+import { canCloseSession as canCloseSessionLogic } from "@/domain/serviceFlow";
 
 export type CanCloseSessionResult =
   | { ok: true }
@@ -78,26 +79,9 @@ export async function canCloseSession(
   const unfinishedItems = orderItems.filter((i) =>
     UNFINISHED_STATUSES.includes(i.status as (typeof UNFINISHED_STATUSES)[number])
   );
-  if (unfinishedItems.length > 0) {
-    return {
-      ok: false,
-      reason: "unfinished_items",
-      items: unfinishedItems.map((i) => ({
-        id: i.id,
-        itemName: i.itemName,
-        status: i.status,
-        quantity: i.quantity ?? 1,
-        orderId: i.orderId,
-      })),
-    };
-  }
-
   const kitchenMidFire = orderItems.some(
     (i) => i.sentToKitchenAt != null && i.startedAt == null
   );
-  if (kitchenMidFire) {
-    return { ok: false, reason: "kitchen_mid_fire" };
-  }
 
   const [pendingPayment] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -108,9 +92,7 @@ export async function canCloseSession(
         inArray(paymentsTable.status, ["pending"])
       )
     );
-  if ((pendingPayment?.count ?? 0) > 0) {
-    return { ok: false, reason: "payment_in_progress" };
-  }
+  const hasPaymentInProgress = (pendingPayment?.count ?? 0) > 0;
 
   const [sessionTotalRow] = await db
     .select({
@@ -140,14 +122,43 @@ export async function canCloseSession(
 
   const remaining = sessionTotal - paymentsTotal;
   const tolerance = 0.01;
-  if (remaining > tolerance) {
-    return {
-      ok: false,
-      reason: "unpaid_balance",
-      remaining: Math.round(remaining * 100) / 100,
-      sessionTotal: Math.round(sessionTotal * 100) / 100,
-      paymentsTotal: Math.round(paymentsTotal * 100) / 100,
-    };
+  const hasUnpaidBalance = remaining > tolerance;
+
+  const ctx = {
+    sessionStatus: session.status,
+    hasUnfinishedItems: unfinishedItems.length > 0,
+    hasKitchenMidFire: kitchenMidFire,
+    hasPaymentInProgress,
+    hasUnpaidBalance,
+  };
+
+  const closeResult = canCloseSessionLogic(ctx);
+  if (!closeResult.ok) {
+    if (unfinishedItems.length > 0) {
+      return {
+        ok: false,
+        reason: "unfinished_items",
+        items: unfinishedItems.map((i) => ({
+          id: i.id,
+          itemName: i.itemName,
+          status: i.status,
+          quantity: i.quantity ?? 1,
+          orderId: i.orderId,
+        })),
+      };
+    }
+    if (kitchenMidFire) return { ok: false, reason: "kitchen_mid_fire" };
+    if (hasPaymentInProgress) return { ok: false, reason: "payment_in_progress" };
+    if (hasUnpaidBalance) {
+      return {
+        ok: false,
+        reason: "unpaid_balance",
+        remaining: Math.round(remaining * 100) / 100,
+        sessionTotal: Math.round(sessionTotal * 100) / 100,
+        paymentsTotal: Math.round(paymentsTotal * 100) / 100,
+      };
+    }
+    return { ok: false, reason: "session_not_open" };
   }
 
   return { ok: true };

@@ -7,8 +7,9 @@ import { merchantLocations, merchantUsers } from "@/lib/db/schema";
 import {
   markItemPreparing,
   markItemReady,
-  markItemServed,
-} from "@/app/actions/order-item-lifecycle";
+  serveItem,
+} from "@/domain/serviceActions";
+import { canModifyOrderItem } from "@/domain/serviceFlow";
 
 export const runtime = "nodejs";
 
@@ -79,22 +80,22 @@ export async function PUT(
       );
     }
 
-    // Route status changes through lifecycle helpers (validate transitions, record events)
+    // Route status changes through service layer (validate transitions, record events)
     if (status !== undefined) {
       if (status === "preparing") {
         const result = await markItemPreparing(itemId);
         if (!result.ok) {
-          return NextResponse.json({ error: result.error }, { status: 400 });
+          return NextResponse.json({ error: result.reason }, { status: 400 });
         }
       } else if (status === "ready") {
         const result = await markItemReady(itemId);
         if (!result.ok) {
-          return NextResponse.json({ error: result.error }, { status: 400 });
+          return NextResponse.json({ error: result.reason }, { status: 400 });
         }
       } else if (status === "served") {
-        const result = await markItemServed(itemId);
+        const result = await serveItem(itemId);
         if (!result.ok) {
-          return NextResponse.json({ error: result.error }, { status: 400 });
+          return NextResponse.json({ error: result.reason }, { status: 400 });
         }
       } else {
         return NextResponse.json(
@@ -108,6 +109,25 @@ export async function PUT(
     const updateData: Record<string, unknown> = {};
     if (quantity !== undefined) updateData.quantity = quantity;
     if (notes !== undefined) updateData.notes = notes;
+
+    if (Object.keys(updateData).length > 0) {
+      const orderItemForCheck = await db.query.orderItems.findFirst({
+        where: and(
+          eq(orderItems.orderId, id),
+          eq(orderItems.id, itemId)
+        ),
+        columns: { sentToKitchenAt: true },
+      });
+      if (orderItemForCheck) {
+        const modifyResult = canModifyOrderItem({ sentToKitchenAt: orderItemForCheck.sentToKitchenAt });
+        if (!modifyResult.ok) {
+          return NextResponse.json(
+            { error: "Cannot modify order items that have been sent to kitchen" },
+            { status: 400 }
+          );
+        }
+      }
+    }
 
     // Recalculate line total if quantity changed
     if (quantity !== undefined) {

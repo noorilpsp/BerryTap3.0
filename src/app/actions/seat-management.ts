@@ -1,6 +1,6 @@
 "use server";
 
-import { eq, and, sql, isNull } from "drizzle-orm";
+import { eq, and, sql, isNull, isNotNull } from "drizzle-orm";
 import { db } from "@/db";
 import {
   seats as seatsTable,
@@ -146,6 +146,18 @@ export async function renameSeat(
   });
   if (existing && existing.id !== seatId) {
     return { ok: false, error: `Seat ${newSeatNumber} already exists` };
+  }
+
+  const sentItems = await db.query.orderItems.findMany({
+    where: and(
+      eq(orderItemsTable.seatId, seatId),
+      isNotNull(orderItemsTable.sentToKitchenAt)
+    ),
+    columns: { id: true },
+    limit: 1,
+  });
+  if (sentItems.length > 0) {
+    return { ok: false, error: "Cannot modify order items that have been sent to kitchen" };
   }
 
   const now = new Date();

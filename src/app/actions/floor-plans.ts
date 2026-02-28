@@ -269,7 +269,24 @@ export async function deleteFloorPlan(
       eq(floorPlans.locationId, locationId)
     ),
   });
-  const wasActive = row?.isActive ?? false;
+  if (!row) {
+    throw new Error("Floor plan not found");
+  }
+
+  // Unlink orders and reservations from tables that will be cascade-deleted.
+  // (orders/reservations lack ON DELETE, so we must null tableId before the cascade.)
+  const planTables = await db.query.tables.findMany({
+    where: and(
+      eq(tables.locationId, locationId),
+      or(eq(tables.floorPlanId, floorPlanId), isNull(tables.floorPlanId))
+    ),
+    columns: { id: true },
+  });
+  const tableIds = planTables.map((t) => t.id);
+  if (tableIds.length > 0) {
+    await db.update(orders).set({ tableId: null }).where(inArray(orders.tableId, tableIds));
+    await db.update(reservations).set({ tableId: null }).where(inArray(reservations.tableId, tableIds));
+  }
 
   await db
     .delete(floorPlans)
@@ -279,19 +296,6 @@ export async function deleteFloorPlan(
         eq(floorPlans.locationId, locationId)
       )
     );
-
-  if (wasActive) {
-    const existingTables = await db.query.tables.findMany({
-      where: eq(tables.locationId, locationId),
-      columns: { id: true },
-    });
-    const tableIds = existingTables.map((t) => t.id);
-    if (tableIds.length > 0) {
-      await db.update(orders).set({ tableId: null }).where(inArray(orders.tableId, tableIds));
-      await db.update(reservations).set({ tableId: null }).where(inArray(reservations.tableId, tableIds));
-    }
-    await db.delete(tables).where(eq(tables.locationId, locationId));
-  }
 }
 
 function getUsedTableNumbersExcludingPlan(

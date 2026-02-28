@@ -10,12 +10,18 @@ import { verifyLocationAccess } from "@/lib/location-access";
 import { getOpenSessionIdForTable } from "@/app/actions/orders";
 
 export type SessionEventType =
+  | "session_opened"
   | "guest_seated"
+  | "items_added"
   | "order_sent"
   | "item_ready"
   | "served"
   | "bill_requested"
   | "payment_completed"
+  | "payment_attempted"
+  | "payment_failed"
+  | "refund_issued"
+  | "bill_split"
   | "course_fired"
   | "course_completed"
   | "item_refired"

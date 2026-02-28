@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { DisplayModeProvider, useDisplayMode } from "@/components/kds/DisplayModeContext";
 import { getCurrentLocationId } from "@/app/actions/location";
-import { refireItem } from "@/app/actions/order-item-lifecycle";
+import { refireItem } from "@/domain/serviceActions";
 import { KDSHeader } from "@/components/kds/KDSHeader";
 import { KDSColumns } from "@/components/kds/KDSColumns";
 import { AllDayView } from "@/components/kds/AllDayView";

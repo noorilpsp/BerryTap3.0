@@ -52,22 +52,24 @@ import { useLocationMenu } from "@/lib/hooks/useLocationMenu"
 import { useRestaurantStore } from "@/store/restaurantStore"
 import { useLocation } from "@/lib/contexts/LocationContext"
 import {
-  advanceOrderWaveStatus,
   createNextWave,
-  fireWave,
   getOrderForTable,
-  getOrderIdForSessionAndWave,
   getOpenSessionIdForTable,
   getSeatsForSession,
   syncOrderToDb,
-  closeOrderForTable,
   ensureSessionForTable,
   type OrderForTableItem,
   type OrderForTableResult,
 } from "@/app/actions/orders"
+import {
+  fireWave,
+  closeSessionService,
+  voidItem,
+  serveItem,
+  advanceWaveStatus,
+} from "@/domain/serviceActions"
 import { getSessionOutstandingItems } from "@/app/actions/session-close-validation"
 import { detectKitchenDelays } from "@/app/actions/kitchen-delay-detection"
-import { voidItem, markItemServed } from "@/app/actions/order-item-lifecycle"
 import { removeSeatBySessionAndNumber, renameSeatBySessionAndNumber } from "@/app/actions/seat-management"
 import { updateTable } from "@/app/actions/tables"
 import { recordSessionEvent, recordSessionEventByTable } from "@/app/actions/session-events"
@@ -1100,11 +1102,8 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     if (currentLocationId && activeStoreTable?.id) {
       getOpenSessionIdForTable(currentLocationId, activeStoreTable.id)
         .then((sessionId) =>
-          sessionId
-            ? getOrderIdForSessionAndWave(sessionId, waveNumber)
-            : Promise.resolve(null)
+          sessionId ? fireWave(sessionId, { waveNumber }) : Promise.resolve()
         )
-        .then((orderId) => (orderId ? fireWave(orderId) : Promise.resolve()))
         .catch(() => {})
     }
 
@@ -1139,7 +1138,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
 
   const handleMarkServed = useCallback((itemId: string) => {
     if (isDbOrderItemId(itemId)) {
-      markItemServed(itemId).catch(() => {})
+      serveItem(itemId).catch(() => {})
     }
     setTable((prev) => ({
       ...prev,
@@ -1184,9 +1183,11 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       const dbStatus: "preparing" | "ready" | "served" =
         nextStatus === "cooking" ? "preparing" : nextStatus === "ready" ? "ready" : "served"
       if (currentLocationId && activeStoreTable?.id) {
-        advanceOrderWaveStatus(currentLocationId, activeStoreTable.id, waveNumber, dbStatus).catch(
-          () => {}
-        )
+        getOpenSessionIdForTable(currentLocationId, activeStoreTable.id)
+          .then((sessionId) =>
+            sessionId ? advanceWaveStatus(sessionId, waveNumber, dbStatus) : Promise.resolve()
+          )
+          .catch(() => {})
         if (nextStatus === "ready" || nextStatus === "served") {
           recordSessionEventByTable(
             currentLocationId,
@@ -1374,13 +1375,14 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
             method: "other" as const,
           }
       if (currentLocationId && activeStoreTable?.id) {
-        const result = await closeOrderForTable(
+        const sessionId = await getOpenSessionIdForTable(
           currentLocationId,
-          activeStoreTable.id,
-          payment,
-          options
+          activeStoreTable.id
         )
-      if (!result.ok) {
+        const result = sessionId
+          ? await closeSessionService(sessionId, payment, options)
+          : { ok: false as const, reason: "session_not_open" as const }
+        if (!result.ok) {
         const msg =
           result.reason === "unfinished_items"
             ? `Cannot close: ${result.items?.length ?? 0} item(s) still pending, preparing, or ready. Finish or void them first.`
