@@ -4,8 +4,14 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { orders, payments } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import {
+  computeRequestHash,
+  getIdempotentResponse,
+  IDEMPOTENCY_CONFLICT,
+  saveIdempotentResponse,
+} from "@/domain/idempotency";
 import { addPayment } from "@/domain";
-import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
+import { posFailure, posSuccess, requireIdempotencyKey, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -79,6 +85,8 @@ export async function GET(
   }
 }
 
+const ROUTE_POST_PAYMENTS = "POST /api/orders/[id]/payments";
+
 /**
  * POST /api/orders/[id]/payments
  * Create payment
@@ -88,7 +96,12 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  let idempotencyKey: string | undefined;
   try {
+    const keyRes = requireIdempotencyKey(request);
+    if (!keyRes.ok) return keyRes.failure;
+    idempotencyKey = keyRes.key;
+
     const { id } = await params;
     const supabase = await supabaseServer();
     const {
@@ -97,7 +110,7 @@ export async function POST(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401, correlationId: idempotencyKey });
     }
 
     const body = await request.json().catch(() => ({}));
@@ -111,7 +124,26 @@ export async function POST(
     } = body;
 
     if (!amount || !method) {
-      return posFailure("BAD_REQUEST", "Amount and method are required", { status: 400 });
+      return posFailure("BAD_REQUEST", "Amount and method are required", { status: 400, correlationId: idempotencyKey });
+    }
+
+    const requestHash = computeRequestHash({ ...body, id });
+    const cached = await getIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_POST_PAYMENTS,
+      requestHash,
+    });
+    if (cached) {
+      if (!cached.ok) {
+        return posFailure(IDEMPOTENCY_CONFLICT, "Idempotency-Key reuse with different request", {
+          status: 409,
+          correlationId: idempotencyKey,
+        });
+      }
+      const saved = cached.response as { body: Record<string, unknown>; status: number };
+      const replayBody = { ...(saved.body ?? cached.response) as Record<string, unknown>, correlationId: idempotencyKey };
+      return NextResponse.json(replayBody, { status: saved.status ?? 201 });
     }
 
     // Get existing order
@@ -128,7 +160,7 @@ export async function POST(
     });
 
     if (!existingOrder) {
-      return posFailure("NOT_FOUND", "Order not found", { status: 404 });
+      return posFailure("NOT_FOUND", "Order not found", { status: 404, correlationId: idempotencyKey });
     }
 
     // Check user has access
@@ -146,6 +178,7 @@ export async function POST(
     if (!membership) {
       return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
         status: 403,
+        correlationId: idempotencyKey,
       });
     }
 
@@ -160,21 +193,37 @@ export async function POST(
 
     if (!result.ok) {
       const statusCode = result.reason === "unauthorized" ? 403 : 400;
-      return posFailure(statusCode === 403 ? "FORBIDDEN" : "BAD_REQUEST", result.reason, {
-        status: statusCode,
+      const code = statusCode === 403 ? "FORBIDDEN" : "BAD_REQUEST";
+      const failureBody = { ok: false as const, error: { code, message: result.reason }, correlationId: idempotencyKey };
+      await saveIdempotentResponse({
+        key: idempotencyKey,
+        userId: user.id,
+        route: ROUTE_POST_PAYMENTS,
+        requestHash,
+        responseJson: { body: failureBody, status: statusCode },
       });
+      return posFailure(code, result.reason, { status: statusCode, correlationId: idempotencyKey });
     }
 
     const newPayment = await db.query.payments.findFirst({
       where: eq(payments.id, result.paymentId!),
     });
-    return posSuccess(newPayment ?? { id: result.paymentId }, { status: 201 });
+    const data = newPayment ?? { id: result.paymentId };
+    const successBody = { ok: true as const, data, correlationId: idempotencyKey };
+    await saveIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_POST_PAYMENTS,
+      requestHash,
+      responseJson: { body: successBody, status: 201 },
+    });
+    return posSuccess(data, { status: 201, correlationId: idempotencyKey });
   } catch (error) {
     console.error("[POST /api/orders/[id]/payments] Error:", error);
     return posFailure(
       "INTERNAL_ERROR",
       toErrorMessage(error, "Internal server error - Failed to create payment"),
-      { status: 500 }
+      { status: 500, correlationId: idempotencyKey }
     );
   }
 }

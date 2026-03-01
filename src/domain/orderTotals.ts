@@ -8,14 +8,17 @@ import {
   payments as paymentsTable,
 } from "@/lib/db/schema/orders";
 
+type DbOrTx = typeof db;
+
 /**
  * Recalculate order totals from order_items (non-voided).
  * Order totals should always be derived from order_items.
  */
 export async function recalculateOrderTotals(
-  orderId: string
+  orderId: string,
+  dbOrTx: DbOrTx = db
 ): Promise<{ ok: boolean; subtotal?: number; error?: string }> {
-  const [row] = await db
+  const [row] = await dbOrTx
     .select({
       subtotal: sql<string>`COALESCE(SUM((${orderItemsTable.lineTotal})::numeric), 0)::numeric`,
     })
@@ -23,7 +26,7 @@ export async function recalculateOrderTotals(
     .where(and(eq(orderItemsTable.orderId, orderId), isNull(orderItemsTable.voidedAt)));
   const subtotal = Number(row?.subtotal ?? 0);
   const now = new Date();
-  await db
+  await dbOrTx
     .update(ordersTable)
     .set({
       subtotal: subtotal.toFixed(2),
@@ -107,9 +110,10 @@ export type SessionTotalsResult = {
  * Also returns paid (sum of completed payments) and remaining (total - paid).
  */
 export async function recalculateSessionTotals(
-  sessionId: string
+  sessionId: string,
+  dbOrTx: DbOrTx = db
 ): Promise<{ ok: boolean; subtotal?: number; total?: number; paid?: number; remaining?: number; error?: string }> {
-  const orders = await db
+  const orders = await dbOrTx
     .select({ id: ordersTable.id })
     .from(ordersTable)
     .where(
@@ -117,12 +121,12 @@ export async function recalculateSessionTotals(
     );
   let total = 0;
   for (const o of orders) {
-    const result = await recalculateOrderTotals(o.id);
+    const result = await recalculateOrderTotals(o.id, dbOrTx);
     if (result.ok && result.subtotal != null) {
       total += result.subtotal;
     }
   }
-  const [paidRow] = await db
+  const [paidRow] = await dbOrTx
     .select({
       paid: sql<string>`COALESCE(SUM((${paymentsTable.amount})::numeric), 0)::numeric`,
     })

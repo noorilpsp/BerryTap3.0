@@ -10,6 +10,8 @@ import {
 } from "@/lib/db/schema/orders";
 import { canCloseSession as canCloseSessionLogic } from "@/domain/serviceFlow";
 
+type DbOrTx = typeof db;
+
 export type CanCloseSessionResult =
   | { ok: true }
   | { ok: false; reason: "session_not_open" }
@@ -36,10 +38,11 @@ export type CanCloseSessionOptions = {
 /** Check if a session can be closed. Returns structured result instead of throwing. */
 export async function canCloseSession(
   sessionId: string,
-  options?: CanCloseSessionOptions
+  options?: CanCloseSessionOptions,
+  dbOrTx: DbOrTx = db
 ): Promise<CanCloseSessionResult> {
   const incomingAmount = options?.incomingPaymentAmount ?? 0;
-  const session = await db.query.sessions.findFirst({
+  const session = await dbOrTx.query.sessions.findFirst({
     where: eq(sessionsTable.id, sessionId),
     columns: { id: true, status: true },
   });
@@ -51,7 +54,7 @@ export async function canCloseSession(
     return { ok: false, reason: "session_not_open" };
   }
 
-  const orders = await db.query.orders.findMany({
+  const orders = await dbOrTx.query.orders.findMany({
     where: eq(ordersTable.sessionId, sessionId),
     columns: { id: true },
   });
@@ -60,7 +63,7 @@ export async function canCloseSession(
     return { ok: true };
   }
 
-  const orderItems = await db.query.orderItems.findMany({
+  const orderItems = await dbOrTx.query.orderItems.findMany({
     where: and(
       inArray(orderItemsTable.orderId, orderIds),
       isNull(orderItemsTable.voidedAt)
@@ -83,7 +86,7 @@ export async function canCloseSession(
     (i) => i.sentToKitchenAt != null && i.startedAt == null
   );
 
-  const [pendingPayment] = await db
+  const [pendingPayment] = await dbOrTx
     .select({ count: sql<number>`count(*)::int` })
     .from(paymentsTable)
     .where(
@@ -94,7 +97,7 @@ export async function canCloseSession(
     );
   const hasPaymentInProgress = (pendingPayment?.count ?? 0) > 0;
 
-  const [sessionTotalRow] = await db
+  const [sessionTotalRow] = await dbOrTx
     .select({
       total: sql<string>`COALESCE(SUM(${ordersTable.total}), 0)::numeric`,
     })
@@ -107,7 +110,7 @@ export async function canCloseSession(
     );
   const sessionTotal = Number(sessionTotalRow?.total ?? 0);
 
-  const [paymentsTotalRow] = await db
+  const [paymentsTotalRow] = await dbOrTx
     .select({
       total: sql<string>`COALESCE(SUM(${paymentsTable.amount}), 0)::numeric`,
     })

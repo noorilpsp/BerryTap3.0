@@ -11,6 +11,8 @@ export type OpenWaveOrder = {
   station?: string | null;
 };
 
+type DbOrTx = typeof db;
+
 /**
  * Find the open (unfired) wave for a session.
  * Returns the first order where session_id = sessionId AND fired_at IS NULL, ordered by wave.
@@ -20,7 +22,8 @@ export type OpenWaveOrder = {
 export async function getOpenWave(
   sessionId: string,
   waveNumber?: number,
-  minWave?: number
+  minWave?: number,
+  dbOrTx: DbOrTx = db
 ): Promise<OpenWaveOrder | null> {
   const conditions = [
     eq(ordersTable.sessionId, sessionId),
@@ -29,7 +32,7 @@ export async function getOpenWave(
     ...(minWave != null && waveNumber == null ? [gt(ordersTable.wave, minWave)] : []),
   ];
 
-  const [order] = await db
+  const [order] = await dbOrTx
     .select({
       id: ordersTable.id,
       wave: ordersTable.wave,

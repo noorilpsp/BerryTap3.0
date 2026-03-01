@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
+# POS Mutation Guardrail
+# Ensures scoped routes perform no direct DB writes. All writes must go through @/domain.
+#
+# Scope: src/app/api/{orders,payments,tables,reservations,sessions}
+# Allowed: auth queries, membership checks (db.query.*, findFirst, findMany, etc.)
+# Disallowed: db.insert, db.update, db.delete, db.upsert (and tx/prisma equivalents)
+#
+# Sessions: src/app/api/sessions/** (ensure, [sessionId]/close, waves/next, waves/.../fire, waves/.../advance)
 set -euo pipefail
 
 TARGETS=(
   "src/app/api/orders"
-  "src/app/api/payments/[id]/route.ts"
+  "src/app/api/payments"
   "src/app/api/tables"
   "src/app/api/reservations"
   "src/app/api/sessions"

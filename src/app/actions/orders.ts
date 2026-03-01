@@ -205,14 +205,17 @@ export async function getOpenSessionIdForTable(
   return session?.id ?? null;
 }
 
+type DbOrTx = typeof db;
+
 /**
  * Create the next order wave for a session. Finds highest wave number and creates a new order
  * with wave = highest + 1, status = pending, fired_at = null, station = null.
  */
 export async function createNextWave(
-  sessionId: string
+  sessionId: string,
+  dbOrTx: DbOrTx = db
 ): Promise<{ ok: true; order: { id: string; wave: number } } | { ok: false; error: string }> {
-  const session = await db.query.sessions.findFirst({
+  const session = await dbOrTx.query.sessions.findFirst({
     where: eq(sessionsTable.id, sessionId),
     columns: { id: true, locationId: true, tableId: true },
   });
@@ -221,7 +224,7 @@ export async function createNextWave(
   const location = await verifyLocationAccess(session.locationId);
   if (!location) return { ok: false, error: "Unauthorized or location not found" };
 
-  const [maxRow] = await db
+  const [maxRow] = await dbOrTx
     .select({
       maxWave: sql<number>`COALESCE(MAX(${ordersTable.wave}), 0)::int`,
     })
@@ -231,7 +234,7 @@ export async function createNextWave(
   const nextWave = highestWave + 1;
 
   const tableRow = session.tableId
-    ? await db.query.tables.findFirst({
+    ? await dbOrTx.query.tables.findFirst({
         where: eq(tablesTable.id, session.tableId),
         columns: { tableNumber: true },
       })
@@ -240,7 +243,7 @@ export async function createNextWave(
   const orderNumber = `T${tableNum}-${Date.now().toString(36).slice(-6)}`.slice(0, 20);
   const now = new Date();
 
-  const [inserted] = await db
+  const [inserted] = await dbOrTx
     .insert(ordersTable)
     .values({
       sessionId,
@@ -274,9 +277,10 @@ export async function createNextWave(
  */
 export async function fireWave(
   orderId: string,
-  options?: { eventSource?: EventSource }
+  options?: { eventSource?: EventSource },
+  dbOrTx: DbOrTx = db
 ): Promise<{ ok: boolean; error?: string }> {
-  const order = await db.query.orders.findFirst({
+  const order = await dbOrTx.query.orders.findFirst({
     where: eq(ordersTable.id, orderId),
     columns: {
       id: true,
@@ -298,7 +302,7 @@ export async function fireWave(
 
   const now = new Date();
 
-  await db
+  await dbOrTx
     .update(ordersTable)
     .set({
       firedAt: now,
@@ -307,7 +311,7 @@ export async function fireWave(
     })
     .where(eq(ordersTable.id, orderId));
 
-  const items = await db.query.orderItems.findMany({
+  const items = await dbOrTx.query.orderItems.findMany({
     where: and(
       eq(orderItemsTable.orderId, orderId),
       isNull(orderItemsTable.sentToKitchenAt)
@@ -315,7 +319,7 @@ export async function fireWave(
     columns: { id: true },
   });
   for (const item of items) {
-    await db
+    await dbOrTx
       .update(orderItemsTable)
       .set({ sentToKitchenAt: now })
       .where(eq(orderItemsTable.id, item.id));
@@ -329,10 +333,13 @@ export async function fireWave(
         order.sessionId,
         "course_fired",
         options.eventSource,
-        meta
+        meta,
+        undefined,
+        undefined,
+        dbOrTx
       );
     } else {
-      await recordSessionEvent(order.locationId, order.sessionId, "course_fired", meta);
+      await recordSessionEvent(order.locationId, order.sessionId, "course_fired", meta, undefined, dbOrTx);
     }
   }
 
@@ -567,9 +574,10 @@ export type CloseOrderForTableResult =
 export async function closeSession(
   sessionId: string,
   payment?: CloseTablePayment,
-  options?: CloseOrderForTableOptions
+  options?: CloseOrderForTableOptions,
+  dbOrTx: DbOrTx = db
 ): Promise<CloseOrderForTableResult> {
-  const session = await db.query.sessions.findFirst({
+  const session = await dbOrTx.query.sessions.findFirst({
     where: eq(sessionsTable.id, sessionId),
     columns: { id: true, locationId: true, status: true },
   });
@@ -587,8 +595,8 @@ export async function closeSession(
   }
 
   if (!force) {
-    await recalculateSessionTotals(sessionId);
-    const canClose = await canCloseSession(sessionId, { incomingPaymentAmount: payment?.amount });
+    await recalculateSessionTotals(sessionId, dbOrTx);
+    const canClose = await canCloseSession(sessionId, { incomingPaymentAmount: payment?.amount }, dbOrTx);
     if (!canClose.ok) {
       const err: CloseOrderForTableResult = {
         ok: false,
@@ -604,13 +612,13 @@ export async function closeSession(
       return err;
     }
   } else {
-    const ordersForSession = await db.query.orders.findMany({
+    const ordersForSession = await dbOrTx.query.orders.findMany({
       where: eq(ordersTable.sessionId, sessionId),
       columns: { id: true },
     });
     const orderIds = ordersForSession.map((o) => o.id);
     if (orderIds.length > 0) {
-      const unfinishedItems = await db.query.orderItems.findMany({
+      const unfinishedItems = await dbOrTx.query.orderItems.findMany({
         where: and(
           inArray(orderItemsTable.orderId, orderIds),
           inArray(orderItemsTable.status, ["pending", "preparing", "ready"]),
@@ -619,7 +627,7 @@ export async function closeSession(
         columns: { id: true },
       });
       for (const item of unfinishedItems) {
-        await db
+        await dbOrTx
           .update(orderItemsTable)
           .set({ voidedAt: now })
           .where(eq(orderItemsTable.id, item.id));
@@ -632,12 +640,13 @@ export async function closeSession(
       "system",
       { forced_close: true, reason: "manager_override" },
       undefined,
-      options?.correlationId
+      options?.correlationId,
+      dbOrTx
     );
   }
 
   if (payment && payment.amount > 0) {
-    await db.insert(paymentsTable).values({
+    await dbOrTx.insert(paymentsTable).values({
       sessionId,
       amount: payment.amount.toFixed(2),
       tipAmount: (payment.tipAmount ?? 0).toFixed(2),
@@ -645,15 +654,15 @@ export async function closeSession(
       status: "completed",
       paidAt: now,
     });
-    await recalculateSessionTotals(sessionId);
+    await recalculateSessionTotals(sessionId, dbOrTx);
   }
 
-  await db
+  await dbOrTx
     .update(sessionsTable)
     .set({ status: "closed", closedAt: now, updatedAt: now })
     .where(eq(sessionsTable.id, sessionId));
 
-  await db
+  await dbOrTx
     .update(ordersTable)
     .set({ status: "completed", completedAt: now, updatedAt: now })
     .where(eq(ordersTable.sessionId, sessionId));

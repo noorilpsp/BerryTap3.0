@@ -41,3 +41,4 @@ export {
 
 export { checkKitchenDelays } from "@/domain/kitchen";
 export { recordEventRaw, recordEventWithSource } from "@/domain/events";
+export { emit, emitter, type DomainEvent, type Emitter } from "@/domain/emitter";

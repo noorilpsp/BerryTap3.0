@@ -3,6 +3,7 @@
 import * as React from "react"
 import { Button } from "@/components/ui/button"
 import { ItemDrawer } from "@/components/item-drawer"
+import { MenuProvider } from "@/app/dashboard/(dashboard)/menu/menu-context"
 import type { MenuItem } from "@/types/menu-item"
 
 const mockItem: MenuItem = {
@@ -39,6 +40,7 @@ export default function ItemDrawerDemo() {
   }
 
   return (
+    <MenuProvider>
     <div className="container mx-auto p-8">
       <div className="mb-8">
         <h1 className="mb-2 text-3xl font-bold">ItemDrawer Demo</h1>
@@ -74,5 +76,6 @@ export default function ItemDrawerDemo() {
         onDelete={handleDelete}
       />
     </div>
+    </MenuProvider>
   )
 }

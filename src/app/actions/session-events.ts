@@ -49,20 +49,23 @@ export type SessionEventActor = {
   actorId: string;
 };
 
+type DbOrTx = typeof db;
+
 /** Record an operational event for a session. Use for analytics and audit. */
 export async function recordSessionEvent(
   locationId: string,
   sessionId: string,
   type: SessionEventType,
   meta?: SessionEventMeta | Record<string, unknown>,
-  actor?: SessionEventActor
+  actor?: SessionEventActor,
+  dbOrTx: DbOrTx = db
 ): Promise<{ ok: boolean; error?: string }> {
   const location = await verifyLocationAccess(locationId);
   if (!location) {
     return { ok: false, error: "Unauthorized or location not found" };
   }
 
-  const session = await db.query.sessions.findFirst({
+  const session = await dbOrTx.query.sessions.findFirst({
     where: eq(sessionsTable.id, sessionId),
     columns: { id: true, locationId: true },
   });
@@ -70,7 +73,7 @@ export async function recordSessionEvent(
     return { ok: false, error: "Session not found" };
   }
 
-  await db.insert(sessionEventsTable).values({
+  await dbOrTx.insert(sessionEventsTable).values({
     sessionId,
     type,
     meta: meta ?? null,
@@ -93,9 +96,10 @@ export async function recordSessionEventWithSource(
   source: EventSource,
   meta?: SessionEventMeta | Record<string, unknown>,
   actor?: SessionEventActor,
-  correlationId?: string
+  correlationId?: string,
+  dbOrTx: DbOrTx = db
 ): Promise<{ ok: boolean; error?: string }> {
   const merged = { source, ...meta } as Record<string, unknown>;
   if (correlationId != null) merged.correlationId = correlationId;
-  return recordSessionEvent(locationId, sessionId, type, merged, actor);
+  return recordSessionEvent(locationId, sessionId, type, merged, actor, dbOrTx);
 }

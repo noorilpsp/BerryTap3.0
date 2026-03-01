@@ -4,8 +4,14 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { reservations } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import {
+  computeRequestHash,
+  getIdempotentResponse,
+  IDEMPOTENCY_CONFLICT,
+  saveIdempotentResponse,
+} from "@/domain/idempotency";
 import { createReservationMutation } from "@/domain";
-import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
+import { posFailure, posSuccess, requireIdempotencyKey, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -98,13 +104,20 @@ export async function GET(request: NextRequest) {
   }
 }
 
+const ROUTE_POST_RESERVATIONS = "POST /api/reservations";
+
 /**
  * POST /api/reservations
  * Create reservation
  * Body: { locationId, customerId?, tableId?, partySize, reservationDate, reservationTime, status?, customerName, customerPhone?, customerEmail?, notes? }
  */
 export async function POST(request: NextRequest) {
+  let idempotencyKey: string | undefined;
   try {
+    const keyRes = requireIdempotencyKey(request);
+    if (!keyRes.ok) return keyRes.failure;
+    idempotencyKey = keyRes.key;
+
     const supabase = await supabaseServer();
     const {
       data: { user },
@@ -112,7 +125,7 @@ export async function POST(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401, correlationId: idempotencyKey });
     }
 
     const body = await request.json().catch(() => ({}));
@@ -134,8 +147,27 @@ export async function POST(request: NextRequest) {
       return posFailure(
         "BAD_REQUEST",
         "Location ID, party size, reservation date, time, and customer name are required",
-        { status: 400 }
+        { status: 400, correlationId: idempotencyKey }
       );
+    }
+
+    const requestHash = computeRequestHash(body);
+    const cached = await getIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_POST_RESERVATIONS,
+      requestHash,
+    });
+    if (cached) {
+      if (!cached.ok) {
+        return posFailure(IDEMPOTENCY_CONFLICT, "Idempotency-Key reuse with different request", {
+          status: 409,
+          correlationId: idempotencyKey,
+        });
+      }
+      const saved = cached.response as { body: Record<string, unknown>; status: number };
+      const replayBody = { ...(saved.body ?? cached.response) as Record<string, unknown>, correlationId: idempotencyKey };
+      return NextResponse.json(replayBody, { status: saved.status ?? 201 });
     }
 
     // Verify location exists and user has access
@@ -148,7 +180,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (!location) {
-      return posFailure("NOT_FOUND", "Location not found", { status: 404 });
+      return posFailure("NOT_FOUND", "Location not found", { status: 404, correlationId: idempotencyKey });
     }
 
     // Check user has access to this merchant
@@ -166,6 +198,7 @@ export async function POST(request: NextRequest) {
     if (!membership) {
       return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
         status: 403,
+        correlationId: idempotencyKey,
       });
     }
 
@@ -189,18 +222,34 @@ export async function POST(request: NextRequest) {
         error instanceof Error &&
         error.message.startsWith("Invalid reservation status:")
       ) {
-        return posFailure("BAD_REQUEST", error.message, { status: 400 });
+        const failureBody = { ok: false as const, error: { code: "BAD_REQUEST", message: error.message }, correlationId: idempotencyKey };
+        await saveIdempotentResponse({
+          key: idempotencyKey,
+          userId: user.id,
+          route: ROUTE_POST_RESERVATIONS,
+          requestHash,
+          responseJson: { body: failureBody, status: 400 },
+        });
+        return posFailure("BAD_REQUEST", error.message, { status: 400, correlationId: idempotencyKey });
       }
       throw error;
     }
 
-    return posSuccess({ ...newReservation }, { status: 201 });
+    const successBody = { ok: true as const, data: { ...newReservation }, correlationId: idempotencyKey };
+    await saveIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_POST_RESERVATIONS,
+      requestHash,
+      responseJson: { body: successBody, status: 201 },
+    });
+    return posSuccess(successBody.data, { status: 201, correlationId: idempotencyKey });
   } catch (error) {
     console.error("[POST /api/reservations] Error:", error);
     return posFailure(
       "INTERNAL_ERROR",
       toErrorMessage(error, "Internal server error - Failed to create reservation"),
-      { status: 500 }
+      { status: 500, correlationId: idempotencyKey }
     );
   }
 }

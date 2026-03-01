@@ -61,8 +61,6 @@ import {
 } from "@/app/actions/orders"
 import {
   checkKitchenDelays,
-  ensureSession,
-  createNextWaveForSession,
   recordEventWithSource,
   removeSeatByNumber,
   renameSeat,
@@ -77,6 +75,7 @@ import type {
   StoreTableStatus,
 } from "@/store/types"
 import { storeTablesToFloorTables } from "@/lib/floor-map-data"
+import { fetchPos, makeIdempotencyKey } from "@/lib/pos/fetchPos"
 
 function getAutoSelectedOptions(item: MenuItem): Record<string, string> {
   const options: Record<string, string> = {}
@@ -1102,7 +1101,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       const run = async () => {
         const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, activeStoreTable!.id))
         if (!sid) return
-        await fetch(`/api/sessions/${sid}/waves/${waveNumber}/fire`, {
+        await fetchPos(`/api/sessions/${sid}/waves/${waveNumber}/fire`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ eventSource: "table_page" }),
@@ -1172,7 +1171,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       const run = async () => {
         const orderId = await resolveOrderIdForItem(itemId)
         if (!orderId) return
-        await fetch(`/api/orders/${orderId}/items/${itemId}`, {
+        await fetchPos(`/api/orders/${orderId}/items/${itemId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ status: "served", eventSource: "table_page" }),
@@ -1259,7 +1258,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         const run = async () => {
           const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, activeStoreTable.id))
           if (sid) {
-            const response = await fetch(`/api/sessions/${sid}/waves/${waveNumber}/advance`, {
+            const response = await fetchPos(`/api/sessions/${sid}/waves/${waveNumber}/advance`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -1318,7 +1317,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       const run = async () => {
         const orderId = await resolveOrderIdForItem(itemId)
         if (!orderId) return
-        await fetch(`/api/orders/${orderId}/items/${itemId}`, {
+        await fetchPos(`/api/orders/${orderId}/items/${itemId}`, {
           method: "DELETE",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1376,6 +1375,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   const handleSendCurrentOrder = useCallback(async () => {
     if (orderItems.length === 0 && !nextSendableWaveNumber) return
 
+    const idempotencyKey = makeIdempotencyKey()
     const existingHeldWaveNumbers = [
       ...table.seats.flatMap((seat) =>
         seat.items
@@ -1409,12 +1409,24 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
 
       let sid = effectiveSessionId
       if (!sid) {
-        const ensureResult = await ensureSession(
-          currentLocationId,
-          activeStoreTable.id,
-          Math.max(1, table.guestCount ?? 0)
-        )
-        sid = ensureResult.ok ? ensureResult.sessionId ?? null : null
+        try {
+          const res = await fetchPos("/api/sessions/ensure", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              tableUuid: activeStoreTable.id,
+              locationId: currentLocationId,
+              guestCount: Math.max(1, table.guestCount ?? 0),
+            }),
+          }, { idempotencyKey })
+          const payload = await res.json()
+          if (!payload.ok) throw new Error(payload.error?.message ?? "Failed to ensure session")
+          const data = payload.data
+          sid = data.sessionId ?? null
+        } catch (e) {
+          console.error("[TableDetail] No session for add items", e)
+          return
+        }
       }
       if (!sid) {
         console.error("[TableDetail] No session for add items")
@@ -1466,7 +1478,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         }
       }
 
-      const response = await fetch("/api/orders", {
+      const response = await fetchPos("/api/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1483,7 +1495,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
             notes: input.notes ?? null,
           })),
         }),
-      }).catch(() => null)
+      }, { idempotencyKey }).catch(() => null)
       const payload = response ? await response.json().catch(() => null) : null
       if (!response?.ok) {
         const errMsg =
@@ -1571,6 +1583,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     async (
       arg?: { force?: boolean } | { mode: string; method: string; subtotal: number; tip: number; total: number; charges: Array<{ label: string; amount: number }> }
     ) => {
+      const idempotencyKey = makeIdempotencyKey()
       const isPaymentSummary = arg != null && "total" in arg
       const options = isPaymentSummary ? undefined : (arg as { force?: boolean } | undefined)
       const payment = isPaymentSummary
@@ -1590,7 +1603,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
           activeStoreTable.id
         ))
         const result = sid
-          ? await fetch(`/api/sessions/${sid}/close`, {
+          ? await fetchPos(`/api/sessions/${sid}/close`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -1598,7 +1611,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                 options,
                 eventSource: "table_page",
               }),
-            })
+            }, { idempotencyKey })
               .then(async (response) => {
                 const payload = await response.json().catch(() => null)
                 if (payload && typeof payload === "object") {
@@ -1816,16 +1829,31 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     setIsOrderingInline(false)
     setSeatPartyOpen(false)
     openOrderForTable(activeStoreTable?.id ?? id, formData.partySize)
-    ensureSession(currentLocationId ?? "", id, formData.partySize).then((result) => {
-      if (result.ok && result.sessionId && activeStoreTable) {
-        const sid = result.sessionId
-        setSessionId(sid)
-        updateStoreTable(activeStoreTable.id, { sessionId: sid })
-        recordEventWithSource(currentLocationId!, sid, "guest_seated", "table_page", {
-          guestCount: formData.partySize,
-        }).catch(() => {})
-      }
+    fetch("/api/sessions/ensure", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tableUuid: id,
+        locationId: currentLocationId ?? "",
+        guestCount: formData.partySize,
+      }),
     })
+      .then(async (res) => {
+        const payload = await res.json()
+        if (!payload.ok) throw new Error(payload.error?.message ?? "Failed to ensure session")
+        return payload.data
+      })
+      .then((data) => {
+        if (data?.sessionId && activeStoreTable) {
+          const sid = data.sessionId
+          setSessionId(sid)
+          updateStoreTable(activeStoreTable.id, { sessionId: sid })
+          recordEventWithSource(currentLocationId!, sid, "guest_seated", "table_page", {
+            guestCount: formData.partySize,
+          }).catch(() => {})
+        }
+      })
+      .catch(() => {})
   }, [currentLocationId, activeStoreTable?.id, activeStoreTable, id, openOrderForTable, updateStoreTable])
 
   return (
@@ -1981,7 +2009,19 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                               if (currentLocationId && activeStoreTable?.id) {
                                 const run = async () => {
                                   const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, activeStoreTable.id))
-                                  if (sid) createNextWaveForSession(sid).catch(() => {})
+                                  if (sid) {
+                                    fetch(`/api/sessions/${sid}/waves/next`, {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ eventSource: "table_page" }),
+                                    })
+                                      .then(async (res) => {
+                                        const payload = await res.json()
+                                        if (!payload.ok) throw new Error(payload.error?.message ?? "Failed to create next wave")
+                                        return payload.data
+                                      })
+                                      .catch(() => {})
+                                  }
                                 }
                                 run()
                               }

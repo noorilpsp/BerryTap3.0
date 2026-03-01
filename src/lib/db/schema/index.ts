@@ -24,6 +24,7 @@ export * from "./platform-personnel";
 export * from "./menus";
 export * from "./orders";
 export * from "./floor-plans";
+export * from "./pos-idempotency";
 
 // Import tables for relations
 import { merchants } from "./merchants";

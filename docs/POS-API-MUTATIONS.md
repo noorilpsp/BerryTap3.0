@@ -3,6 +3,30 @@
 Documented from current route handlers in `src/app/api/**` as implemented today.
 This is a factual snapshot (no redesign).
 
+## Idempotency-Key (Required for mutations)
+
+**Idempotency-Key is REQUIRED for all POS mutation routes (POST/PUT/DELETE).**  
+GET routes do not require this header.
+
+If the header is missing on a mutation, the API returns `BAD_REQUEST` (400) with message `Missing Idempotency-Key`.
+
+The idempotency key must be a unique string per logical request (e.g. UUID). For retries with the same key and identical request body (and path params where applicable), the API returns the same response as the first successful call. If the same key is used with a different request body, the API returns `CONFLICT` (409).
+
+**Example:**
+```http
+POST /api/orders HTTP/1.1
+Content-Type: application/json
+Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
+
+{ "locationId": "...", "items": [...], ... }
+```
+
+**Endpoints that enforce Idempotency-Key (as of this doc):**
+- POST /api/orders
+- POST /api/sessions/[sessionId]/close
+
+---
+
 ## Response Envelope
 
 All POS API routes use the standard envelope:
@@ -19,6 +43,7 @@ Error codes: `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `BAD_REQUEST`, `CONFLICT`
 
 ### POST /api/sessions/[sessionId]/close
 - Method: `POST`
+- Headers: `Idempotency-Key` (required)
 - Purpose: Close an open session (optionally with payment + force option)
 - Body:
 ```json
@@ -51,6 +76,7 @@ closeSessionService(sessionId, payment, options)
 
 ### POST /api/orders
 - Method: `POST`
+- Headers: `Idempotency-Key` (required)
 - Purpose: Create order (dine-in / pickup / delivery)
 - Body:
 ```json

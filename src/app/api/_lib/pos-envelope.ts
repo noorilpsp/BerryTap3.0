@@ -44,3 +44,13 @@ export function posFailure(
 export function toErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
+
+export function requireIdempotencyKey(req: Request):
+  | { ok: true; key: string }
+  | { ok: false; failure: NextResponse } {
+  const key = req.headers.get("Idempotency-Key")?.trim();
+  if (!key) {
+    return { ok: false, failure: posFailure("BAD_REQUEST", "Missing Idempotency-Key", { status: 400 }) };
+  }
+  return { ok: true, key };
+}

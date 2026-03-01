@@ -45,6 +45,8 @@ export function CategoryDraggableList({
   onCategoryToggle,
   onAddItemToCategory,
 }: CategoryDraggableListProps) {
+  const safeCategories = categories ?? []
+  const safeItems = items ?? []
   const [activeId, setActiveId] = useState<string | null>(null)
   const [activeType, setActiveType] = useState<"category" | "item" | null>(null)
   const [hoveredCategoryId, setHoveredCategoryId] = useState<string | null>(null)
@@ -67,12 +69,12 @@ export function CategoryDraggableList({
 
   // Get items for a specific category
   const getItemsForCategory = (categoryId: string) => {
-    return items.filter((item) => item.categories?.includes(categoryId))
+    return safeItems.filter((item) => item.categories?.includes(categoryId))
   }
 
   // Find which category an item belongs to
   const findCategoryForItem = (itemId: string) => {
-    const item = items.find((i) => i.id === itemId)
+    const item = safeItems.find((i) => i.id === itemId)
     if (!item || !item.categories || item.categories.length === 0) return null
     return item.categories[0] // Return first category
   }
@@ -82,7 +84,7 @@ export function CategoryDraggableList({
     setActiveId(active.id as string)
 
     // Determine if dragging a category or an item
-    const isCategory = categories.some((cat) => cat.id === active.id)
+    const isCategory = safeCategories.some((cat) => cat.id === active.id)
     setActiveType(isCategory ? "category" : "item")
   }
 
@@ -99,14 +101,14 @@ export function CategoryDraggableList({
 
     if (activeType === "item") {
       // Check if hovering over a category container (droppable)
-      const overCategory = categories.find((cat) => cat.id === overId)
+      const overCategory = safeCategories.find((cat) => cat.id === overId)
       if (overCategory) {
         setHoveredCategoryId(overCategory.id)
         return
       }
       
       // Check if hovering over an item, and get its category
-      const overItem = items.find((item) => item.id === overId)
+      const overItem = safeItems.find((item) => item.id === overId)
       if (overItem && overItem.categories && overItem.categories.length > 0) {
         setHoveredCategoryId(overItem.categories[0])
         return
@@ -145,11 +147,11 @@ export function CategoryDraggableList({
 
     if (activeType === "category") {
       // Reordering categories
-      const oldIndex = categories.findIndex((cat) => cat.id === activeId)
-      const newIndex = categories.findIndex((cat) => cat.id === overId)
+      const oldIndex = safeCategories.findIndex((cat) => cat.id === activeId)
+      const newIndex = safeCategories.findIndex((cat) => cat.id === overId)
 
       if (oldIndex !== newIndex && oldIndex !== -1 && newIndex !== -1) {
-        const reordered = arrayMove(categories, oldIndex, newIndex)
+        const reordered = arrayMove(safeCategories, oldIndex, newIndex)
         onReorderCategories(reordered)
       }
     } else if (activeType === "item") {
@@ -163,7 +165,7 @@ export function CategoryDraggableList({
       }
 
       // First, check if dropped directly on a category container (droppable)
-      const targetCategory = categories.find((cat) => cat.id === overId)
+      const targetCategory = safeCategories.find((cat) => cat.id === overId)
       
       if (targetCategory) {
         // Dropped on a category container
@@ -174,7 +176,7 @@ export function CategoryDraggableList({
         // If dropped on the same category, do nothing (no reorder needed)
       } else {
         // Check if dropped on an item
-        const overItem = items.find((item) => item.id === overId)
+        const overItem = safeItems.find((item) => item.id === overId)
 
         if (overItem && overItem.categories && overItem.categories.length > 0) {
           const overItemCategory = overItem.categories[0]
@@ -211,8 +213,8 @@ export function CategoryDraggableList({
   }
 
   // Get the active item or category for the drag overlay
-  const activeItem = activeType === "item" ? items.find((item) => item.id === activeId) : null
-  const activeCategory = activeType === "category" ? categories.find((cat) => cat.id === activeId) : null
+  const activeItem = activeType === "item" ? safeItems.find((item) => item.id === activeId) : null
+  const activeCategory = activeType === "category" ? safeCategories.find((cat) => cat.id === activeId) : null
 
   const activeCategoryId = activeType === "item" && activeId ? findCategoryForItem(activeId) : null
 
@@ -221,7 +223,7 @@ export function CategoryDraggableList({
   if (!isMounted) {
     return (
       <div className="space-y-4">
-        {categories.map((category) => {
+        {safeCategories.map((category) => {
           const categoryItems = getItemsForCategory(category.id)
           return (
             <div key={category.id} className="border border-border rounded-xl bg-card overflow-hidden">
@@ -261,9 +263,9 @@ export function CategoryDraggableList({
       onDragEnd={handleDragEnd}
       onDragCancel={handleDragCancel}
     >
-      <SortableContext items={categories.map((cat) => cat.id)} strategy={verticalListSortingStrategy}>
+      <SortableContext items={safeCategories.map((cat) => cat.id)} strategy={verticalListSortingStrategy}>
         <div className="space-y-4">
-          {categories.map((category) => {
+          {safeCategories.map((category) => {
             const categoryItems = getItemsForCategory(category.id)
             const isHoveredByDifferentItem =
               activeType === "item" && hoveredCategoryId === category.id && activeCategoryId !== category.id

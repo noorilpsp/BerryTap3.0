@@ -5,8 +5,14 @@ import { db } from "@/db";
 import { merchantUsers } from "@/lib/db/schema";
 import { sessions } from "@/lib/db/schema/orders";
 import { closeSessionService } from "@/domain";
+import {
+  computeRequestHash,
+  getIdempotentResponse,
+  IDEMPOTENCY_CONFLICT,
+  saveIdempotentResponse,
+} from "@/domain/idempotency";
 import type { CloseTablePayment, CloseOrderForTableOptions } from "@/app/actions/orders";
-import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
+import { posFailure, posSuccess, requireIdempotencyKey, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -62,15 +68,24 @@ function parseOptions(value: unknown): CloseOrderForTableOptions | null | undefi
   return parsed;
 }
 
+const ROUTE_SESSIONS_CLOSE = "POST /api/sessions/[sessionId]/close";
+
 /**
  * POST /api/sessions/[sessionId]/close
  * Body: { payment?, options?, eventSource? }
+ *
+ * Requires Idempotency-Key header.
  */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> }
 ) {
+  let idempotencyKey: string | undefined;
   try {
+    const keyRes = requireIdempotencyKey(request);
+    if (!keyRes.ok) return keyRes.failure;
+    idempotencyKey = keyRes.key;
+
     const { sessionId } = await params;
 
     const supabase = await supabaseServer();
@@ -80,17 +95,36 @@ export async function POST(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401, correlationId: idempotencyKey });
     }
 
     const body = (await request.json().catch(() => ({}))) as CloseBody;
     const payment = parsePayment(body.payment);
     if (payment === null) {
-      return posFailure("BAD_REQUEST", "Invalid payment payload", { status: 400 });
+      return posFailure("BAD_REQUEST", "Invalid payment payload", { status: 400, correlationId: idempotencyKey });
     }
     const options = parseOptions(body.options);
     if (options === null) {
-      return posFailure("BAD_REQUEST", "Invalid options payload", { status: 400 });
+      return posFailure("BAD_REQUEST", "Invalid options payload", { status: 400, correlationId: idempotencyKey });
+    }
+
+    const requestHash = computeRequestHash({ ...body, sessionId });
+    const cached = await getIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_SESSIONS_CLOSE,
+      requestHash,
+    });
+    if (cached) {
+      if (!cached.ok) {
+        return posFailure(IDEMPOTENCY_CONFLICT, "Idempotency-Key reuse with different request", {
+          status: 409,
+          correlationId: idempotencyKey,
+        });
+      }
+      const saved = cached.response as { body: Record<string, unknown>; status: number };
+      const replayBody = { ...(saved.body ?? cached.response) as Record<string, unknown>, correlationId: idempotencyKey };
+      return NextResponse.json(replayBody, { status: saved.status ?? 200 });
     }
 
     const existingSession = await db.query.sessions.findFirst({
@@ -108,7 +142,7 @@ export async function POST(
       },
     });
     if (!existingSession?.location) {
-      return posFailure("NOT_FOUND", "Session not found", { status: 404 });
+      return posFailure("NOT_FOUND", "Session not found", { status: 404, correlationId: idempotencyKey });
     }
 
     const membership = await db.query.merchantUsers.findFirst({
@@ -122,6 +156,7 @@ export async function POST(
     if (!membership) {
       return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
         status: 403,
+        correlationId: idempotencyKey,
       });
     }
 
@@ -145,22 +180,32 @@ export async function POST(
               : "BAD_REQUEST";
       return posFailure(code, result.error ?? result.reason, {
         status: statusCode,
-        correlationId: result.correlationId,
+        correlationId: idempotencyKey,
       });
     }
 
-    return posSuccess(
-      {
-        sessionId: result.sessionId,
-      },
-      { correlationId: result.correlationId }
-    );
+    const data = { sessionId: result.sessionId };
+    const responseBody = {
+      ok: true as const,
+      data,
+      correlationId: idempotencyKey,
+    };
+
+    await saveIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_SESSIONS_CLOSE,
+      requestHash,
+      responseJson: { body: responseBody, status: 200 },
+    });
+
+    return posSuccess(data, { correlationId: idempotencyKey });
   } catch (error) {
     console.error("[POST /api/sessions/[sessionId]/close] Error:", error);
     return posFailure(
       "INTERNAL_ERROR",
       toErrorMessage(error, "Internal server error - Failed to close session"),
-      { status: 500 }
+      { status: 500, correlationId: idempotencyKey }
     );
   }
 }

@@ -328,7 +328,7 @@ export const getAdminPersonnel = unstable_cache(
         },
       })
       .from(platformPersonnel)
-      .leftJoin(users, eq(users.id, platformPersonnel.userId))
+      .leftJoin(users, sql`${users.id} = ${platformPersonnel.userId}::text`)
       .orderBy(desc(platformPersonnel.createdAt))
       .limit(100),
   ["admin-personnel-list"],

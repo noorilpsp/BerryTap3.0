@@ -5,10 +5,16 @@ import { db } from "@/db";
 import { reservations } from "@/lib/db/schema/orders";
 import { merchantUsers } from "@/lib/db/schema";
 import {
+  computeRequestHash,
+  getIdempotentResponse,
+  IDEMPOTENCY_CONFLICT,
+  saveIdempotentResponse,
+} from "@/domain/idempotency";
+import {
   deleteReservationMutation,
   updateReservationMutation,
 } from "@/domain";
-import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
+import { posFailure, posSuccess, requireIdempotencyKey, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -77,6 +83,9 @@ export async function GET(
   }
 }
 
+const ROUTE_PUT_RESERVATION = "PUT /api/reservations/[id]";
+const ROUTE_DELETE_RESERVATION = "DELETE /api/reservations/[id]";
+
 /**
  * PUT /api/reservations/[id]
  * Update reservation (including status)
@@ -85,7 +94,12 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  let idempotencyKey: string | undefined;
   try {
+    const keyRes = requireIdempotencyKey(request);
+    if (!keyRes.ok) return keyRes.failure;
+    idempotencyKey = keyRes.key;
+
     const { id } = await params;
     const supabase = await supabaseServer();
     const {
@@ -94,7 +108,7 @@ export async function PUT(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401, correlationId: idempotencyKey });
     }
 
     const body = await request.json().catch(() => ({}));
@@ -111,6 +125,25 @@ export async function PUT(
       notes,
     } = body;
 
+    const requestHash = computeRequestHash({ ...body, id });
+    const cached = await getIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_PUT_RESERVATION,
+      requestHash,
+    });
+    if (cached) {
+      if (!cached.ok) {
+        return posFailure(IDEMPOTENCY_CONFLICT, "Idempotency-Key reuse with different request", {
+          status: 409,
+          correlationId: idempotencyKey,
+        });
+      }
+      const saved = cached.response as { body: Record<string, unknown>; status: number };
+      const replayBody = { ...(saved.body ?? cached.response) as Record<string, unknown>, correlationId: idempotencyKey };
+      return NextResponse.json(replayBody, { status: saved.status ?? 200 });
+    }
+
     // Get existing reservation
     const existingReservation = await db.query.reservations.findFirst({
       where: eq(reservations.id, id),
@@ -125,7 +158,7 @@ export async function PUT(
     });
 
     if (!existingReservation) {
-      return posFailure("NOT_FOUND", "Reservation not found", { status: 404 });
+      return posFailure("NOT_FOUND", "Reservation not found", { status: 404, correlationId: idempotencyKey });
     }
 
     // Check user has access to this merchant
@@ -143,6 +176,7 @@ export async function PUT(
     if (!membership) {
       return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
         status: 403,
+        correlationId: idempotencyKey,
       });
     }
 
@@ -169,21 +203,45 @@ export async function PUT(
         error instanceof Error &&
         error.message.startsWith("Invalid reservation status:")
       ) {
-        return posFailure("BAD_REQUEST", error.message, { status: 400 });
+        const failureBody = { ok: false as const, error: { code: "BAD_REQUEST", message: error.message }, correlationId: idempotencyKey };
+        await saveIdempotentResponse({
+          key: idempotencyKey,
+          userId: user.id,
+          route: ROUTE_PUT_RESERVATION,
+          requestHash,
+          responseJson: { body: failureBody, status: 400 },
+        });
+        return posFailure("BAD_REQUEST", error.message, { status: 400, correlationId: idempotencyKey });
       }
       throw error;
     }
     if (!updatedReservation) {
-      return posFailure("NOT_FOUND", "Reservation not found", { status: 404 });
+      const failureBody = { ok: false as const, error: { code: "NOT_FOUND", message: "Reservation not found" }, correlationId: idempotencyKey };
+      await saveIdempotentResponse({
+        key: idempotencyKey,
+        userId: user.id,
+        route: ROUTE_PUT_RESERVATION,
+        requestHash,
+        responseJson: { body: failureBody, status: 404 },
+      });
+      return posFailure("NOT_FOUND", "Reservation not found", { status: 404, correlationId: idempotencyKey });
     }
 
-    return posSuccess({ ...updatedReservation });
+    const successBody = { ok: true as const, data: { ...updatedReservation }, correlationId: idempotencyKey };
+    await saveIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_PUT_RESERVATION,
+      requestHash,
+      responseJson: { body: successBody, status: 200 },
+    });
+    return posSuccess(successBody.data, { correlationId: idempotencyKey });
   } catch (error) {
     console.error("[PUT /api/reservations/[id]] Error:", error);
     return posFailure(
       "INTERNAL_ERROR",
       toErrorMessage(error, "Internal server error - Failed to update reservation"),
-      { status: 500 }
+      { status: 500, correlationId: idempotencyKey }
     );
   }
 }
@@ -196,7 +254,12 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  let idempotencyKey: string | undefined;
   try {
+    const keyRes = requireIdempotencyKey(request);
+    if (!keyRes.ok) return keyRes.failure;
+    idempotencyKey = keyRes.key;
+
     const { id } = await params;
     const supabase = await supabaseServer();
     const {
@@ -205,7 +268,7 @@ export async function DELETE(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401, correlationId: idempotencyKey });
     }
 
     // Get existing reservation
@@ -222,7 +285,7 @@ export async function DELETE(
     });
 
     if (!existingReservation) {
-      return posFailure("NOT_FOUND", "Reservation not found", { status: 404 });
+      return posFailure("NOT_FOUND", "Reservation not found", { status: 404, correlationId: idempotencyKey });
     }
 
     // Check user has access to this merchant
@@ -240,7 +303,28 @@ export async function DELETE(
     if (!membership) {
       return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
         status: 403,
+        correlationId: idempotencyKey,
       });
+    }
+
+    const body = await request.json().catch(() => ({}));
+    const requestHash = computeRequestHash({ ...body, id });
+    const cached = await getIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_DELETE_RESERVATION,
+      requestHash,
+    });
+    if (cached) {
+      if (!cached.ok) {
+        return posFailure(IDEMPOTENCY_CONFLICT, "Idempotency-Key reuse with different request", {
+          status: 409,
+          correlationId: idempotencyKey,
+        });
+      }
+      const saved = cached.response as { body: Record<string, unknown>; status: number };
+      const replayBody = { ...(saved.body ?? cached.response) as Record<string, unknown>, correlationId: idempotencyKey };
+      return NextResponse.json(replayBody, { status: saved.status ?? 200 });
     }
 
     const deleted = await deleteReservationMutation(
@@ -248,16 +332,32 @@ export async function DELETE(
       id
     );
     if (!deleted) {
-      return posFailure("NOT_FOUND", "Reservation not found", { status: 404 });
+      const failureBody = { ok: false as const, error: { code: "NOT_FOUND", message: "Reservation not found" }, correlationId: idempotencyKey };
+      await saveIdempotentResponse({
+        key: idempotencyKey,
+        userId: user.id,
+        route: ROUTE_DELETE_RESERVATION,
+        requestHash,
+        responseJson: { body: failureBody, status: 404 },
+      });
+      return posFailure("NOT_FOUND", "Reservation not found", { status: 404, correlationId: idempotencyKey });
     }
 
-    return posSuccess({ success: true });
+    const successBody = { ok: true as const, data: { success: true }, correlationId: idempotencyKey };
+    await saveIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_DELETE_RESERVATION,
+      requestHash,
+      responseJson: { body: successBody, status: 200 },
+    });
+    return posSuccess(successBody.data, { correlationId: idempotencyKey });
   } catch (error) {
     console.error("[DELETE /api/reservations/[id]] Error:", error);
     return posFailure(
       "INTERNAL_ERROR",
       toErrorMessage(error, "Internal server error - Failed to delete reservation"),
-      { status: 500 }
+      { status: 500, correlationId: idempotencyKey }
     );
   }
 }

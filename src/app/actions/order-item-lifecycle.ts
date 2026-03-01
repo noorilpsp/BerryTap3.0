@@ -21,17 +21,22 @@ import {
 } from "@/domain/serviceFlow";
 import { recalculateOrderTotals, recalculateSessionTotals } from "@/domain/orderTotals";
 
-async function getItemWithOrder(orderItemId: string): Promise<{
+type DbOrTx = typeof db;
+
+async function getItemWithOrder(
+  orderItemId: string,
+  dbOrTx: DbOrTx = db
+): Promise<{
   item: { id: string; orderId: string; status: string; voidedAt: Date | null };
   order: { id: string; sessionId: string | null; locationId: string };
 } | null> {
-  const item = await db.query.orderItems.findFirst({
+  const item = await dbOrTx.query.orderItems.findFirst({
     where: eq(orderItemsTable.id, orderItemId),
     columns: { id: true, orderId: true, status: true, voidedAt: true },
   });
   if (!item) return null;
 
-  const order = await db.query.orders.findFirst({
+  const order = await dbOrTx.query.orders.findFirst({
     where: eq(ordersTable.id, item.orderId),
     columns: { id: true, sessionId: true, locationId: true },
   });
@@ -48,9 +53,10 @@ async function getItemWithOrder(orderItemId: string): Promise<{
 
 /** Mark order item as preparing (kitchen started). Valid only from pending. */
 export async function markItemPreparing(
-  orderItemId: string
+  orderItemId: string,
+  dbOrTx: DbOrTx = db
 ): Promise<{ ok: boolean; error?: string }> {
-  const row = await getItemWithOrder(orderItemId);
+  const row = await getItemWithOrder(orderItemId, dbOrTx);
   if (!row) return { ok: false, error: "Order item not found" };
 
   const { item, order } = row;
@@ -63,7 +69,7 @@ export async function markItemPreparing(
   if (!location) return { ok: false, error: "Unauthorized or location not found" };
 
   const now = new Date();
-  await db
+  await dbOrTx
     .update(orderItemsTable)
     .set({ status: "preparing", startedAt: now })
     .where(eq(orderItemsTable.id, orderItemId));
@@ -73,9 +79,10 @@ export async function markItemPreparing(
 /** Mark order item as ready (kitchen done). Valid only from preparing. */
 export async function markItemReady(
   orderItemId: string,
-  options?: { eventSource?: EventSource }
+  options?: { eventSource?: EventSource },
+  dbOrTx: DbOrTx = db
 ): Promise<{ ok: boolean; error?: string }> {
-  const row = await getItemWithOrder(orderItemId);
+  const row = await getItemWithOrder(orderItemId, dbOrTx);
   if (!row) return { ok: false, error: "Order item not found" };
 
   const { item, order } = row;
@@ -88,7 +95,7 @@ export async function markItemReady(
   if (!location) return { ok: false, error: "Unauthorized or location not found" };
 
   const now = new Date();
-  await db
+  await dbOrTx
     .update(orderItemsTable)
     .set({ status: "ready", readyAt: now })
     .where(eq(orderItemsTable.id, orderItemId));
@@ -101,10 +108,13 @@ export async function markItemReady(
         order.sessionId,
         "item_ready",
         options.eventSource,
-        meta
+        meta,
+        undefined,
+        undefined,
+        dbOrTx
       );
     } else {
-      await recordSessionEvent(order.locationId, order.sessionId, "item_ready", meta);
+      await recordSessionEvent(order.locationId, order.sessionId, "item_ready", meta, undefined, dbOrTx);
     }
   }
   return { ok: true };
@@ -113,9 +123,10 @@ export async function markItemReady(
 /** Mark order item as served. Valid only from ready. */
 export async function markItemServed(
   orderItemId: string,
-  options?: { eventSource?: EventSource }
+  options?: { eventSource?: EventSource },
+  dbOrTx: DbOrTx = db
 ): Promise<{ ok: boolean; error?: string }> {
-  const row = await getItemWithOrder(orderItemId);
+  const row = await getItemWithOrder(orderItemId, dbOrTx);
   if (!row) return { ok: false, error: "Order item not found" };
 
   const { item, order } = row;
@@ -128,7 +139,7 @@ export async function markItemServed(
   if (!location) return { ok: false, error: "Unauthorized or location not found" };
 
   const now = new Date();
-  await db
+  await dbOrTx
     .update(orderItemsTable)
     .set({ status: "served", servedAt: now })
     .where(eq(orderItemsTable.id, orderItemId));
@@ -141,10 +152,13 @@ export async function markItemServed(
         order.sessionId,
         "served",
         options.eventSource,
-        meta
+        meta,
+        undefined,
+        undefined,
+        dbOrTx
       );
     } else {
-      await recordSessionEvent(order.locationId, order.sessionId, "served", meta);
+      await recordSessionEvent(order.locationId, order.sessionId, "served", meta, undefined, dbOrTx);
     }
   }
   return { ok: true };

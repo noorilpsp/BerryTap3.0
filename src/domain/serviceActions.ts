@@ -53,6 +53,17 @@ import {
   recordSessionEventWithSource,
   type EventSource,
 } from "@/app/actions/session-events";
+import { withTx } from "@/domain/tx";
+import { emit } from "@/domain/emitter";
+
+function safeEmit(event: Parameters<typeof emit>[0]) {
+  try {
+    const p = emit(event);
+    if (p instanceof Promise) p.catch(() => {});
+  } catch {
+    /* swallow */
+  }
+}
 import {
   addSeatToSession as addSeatToSessionAction,
   removeSeatFromSession as removeSeatFromSessionAction,
@@ -575,81 +586,80 @@ export async function addItemsToOrder(
     }
   }
 
-  let orderId: string;
-  let wave: number;
+  return withTx(async (tx) => {
+    let orderId: string;
+    let wave: number;
 
-  const openWave = await getOpenWave(sessionId);
+    const openWave = await getOpenWave(sessionId, undefined, undefined, tx);
 
-  if (openWave) {
-    orderId = openWave.id;
-    wave = openWave.wave;
-  } else {
-    const createResult = await createNextWave(sessionId);
-    if (!createResult.ok) {
-      return { ok: false, reason: "create_wave_failed", data: { error: createResult.error } };
+    if (openWave) {
+      orderId = openWave.id;
+      wave = openWave.wave;
+    } else {
+      const createResult = await createNextWave(sessionId, tx);
+      if (!createResult.ok) {
+        return { ok: false, reason: "create_wave_failed", data: { error: createResult.error } };
+      }
+      orderId = createResult.order.id;
+      wave = createResult.order.wave;
     }
-    orderId = createResult.order.id;
-    wave = createResult.order.wave;
-  }
 
-  let order = await db.query.orders.findFirst({
+    let order = await tx.query.orders.findFirst({
     where: eq(ordersTable.id, orderId),
     columns: { id: true, locationId: true, status: true, firedAt: true },
   });
-  if (!order) return { ok: false, reason: "order_not_found" };
-  // Do not attach items to fired waves: if order was fired (e.g. race), create new wave
-  if (order.firedAt != null) {
-    const createResult = await createNextWave(sessionId);
-    if (!createResult.ok) {
-      return { ok: false, reason: "create_wave_failed", data: { error: createResult.error } };
-    }
-    orderId = createResult.order.id;
-    wave = createResult.order.wave;
-    const newOrder = await db.query.orders.findFirst({
+    if (!order) return { ok: false, reason: "order_not_found" };
+    // Do not attach items to fired waves: if order was fired (e.g. race), create new wave
+    if (order.firedAt != null) {
+      const createResult = await createNextWave(sessionId, tx);
+      if (!createResult.ok) {
+        return { ok: false, reason: "create_wave_failed", data: { error: createResult.error } };
+      }
+      orderId = createResult.order.id;
+      wave = createResult.order.wave;
+      const newOrder = await tx.query.orders.findFirst({
       where: eq(ordersTable.id, orderId),
       columns: { id: true, locationId: true, status: true, firedAt: true },
     });
-    if (!newOrder) return { ok: false, reason: "order_not_found" };
-    order = newOrder;
-  }
-  const orderRef = order;
+      if (!newOrder) return { ok: false, reason: "order_not_found" };
+      order = newOrder;
+    }
+    const orderRef = order;
 
-  const itemIds = [...new Set(items.map((i) => i.itemId))];
-  const menuItems = await db
+    const itemIds = [...new Set(items.map((i) => i.itemId))];
+    const menuItems = await tx
     .select({ id: itemsTable.id, name: itemsTable.name, price: itemsTable.price })
     .from(itemsTable)
     .where(
       and(eq(itemsTable.locationId, orderRef.locationId), inArray(itemsTable.id, itemIds))
     );
-  const menuItemMap = new Map(menuItems.map((m) => [m.id, m]));
+    const menuItemMap = new Map(menuItems.map((m) => [m.id, m]));
 
-  const now = new Date();
-  const inserted: string[] = [];
-  const seatBreakdown: Record<string, number> = {};
-  let itemCount = 0;
+    const now = new Date();
+    const inserted: string[] = [];
+    const seatBreakdown: Record<string, number> = {};
+    let itemCount = 0;
 
-  // TODO: Use transaction when DB layer supports it (neon-http does not). Avoids partial writes when multiple devices add items.
-
-  const optionIds = [...new Set(items.flatMap((i) => (i.customizations ?? []).map((c) => c.optionId)).filter(Boolean))];
-  let optionMap = new Map<string, { id: string; groupId: string; name: string; price: string }>();
-  let groupMap = new Map<string, string>();
-  if (optionIds.length > 0) {
-    const options = await db.query.customizationOptions.findMany({
+    const optionIds = [...new Set(items.flatMap((i) => (i.customizations ?? []).map((c) => c.optionId)).filter(Boolean))];
+    let optionMap = new Map<string, { id: string; groupId: string; name: string; price: string }>();
+    let groupMap = new Map<string, string>();
+    if (optionIds.length > 0) {
+      const options = await tx.query.customizationOptions.findMany({
       where: inArray(customizationOptionsTable.id, optionIds),
       columns: { id: true, groupId: true, name: true, price: true },
     });
-    optionMap = new Map(options.map((o) => [o.id, o]));
-    const groupIds = [...new Set(options.map((o) => o.groupId).filter(Boolean))] as string[];
-    if (groupIds.length > 0) {
-      const groups = await db.query.customizationGroups.findMany({
+      optionMap = new Map(options.map((o) => [o.id, o]));
+      const groupIds = [...new Set(options.map((o) => o.groupId).filter(Boolean))] as string[];
+      if (groupIds.length > 0) {
+        const groups = await tx.query.customizationGroups.findMany({
         where: inArray(customizationGroupsTable.id, groupIds),
         columns: { id: true, name: true },
       });
-      groupMap = new Map(groups.map((g) => [g.id, g.name]));
+        groupMap = new Map(groups.map((g) => [g.id, g.name]));
+      }
     }
-  }
 
-  for (const input of items) {
+    for (const input of items) {
     const menuItem = menuItemMap.get(input.itemId);
     if (!menuItem) {
       return { ok: false, reason: "item_not_found", data: { itemId: input.itemId } };
@@ -675,11 +685,11 @@ export async function addItemsToOrder(
     const lineTotal = price * qty + customizationsTotal;
     itemCount += qty;
 
-    const seatKey = input.seatId ?? "shared";
-    seatBreakdown[seatKey] = (seatBreakdown[seatKey] ?? 0) + qty;
+      const seatKey = input.seatId ?? "shared";
+      seatBreakdown[seatKey] = (seatBreakdown[seatKey] ?? 0) + qty;
 
-    const [row] = await db
-      .insert(orderItemsTable)
+      const [row] = await tx
+        .insert(orderItemsTable)
       .values({
         orderId: orderRef.id,
         itemId: input.itemId,
@@ -694,10 +704,10 @@ export async function addItemsToOrder(
         status: "pending",
       })
       .returning({ id: orderItemsTable.id });
-    if (row) {
-      inserted.push(row.id);
-      if (custRows.length > 0) {
-        await db.insert(orderItemCustomizationsTable).values(
+      if (row) {
+        inserted.push(row.id);
+        if (custRows.length > 0) {
+          await tx.insert(orderItemCustomizationsTable).values(
           custRows.map((c) => ({
             orderItemId: row.id,
             groupId: c.groupId,
@@ -706,47 +716,61 @@ export async function addItemsToOrder(
             optionName: c.optionName,
             optionPrice: c.optionPrice,
             quantity: c.quantity,
-          }))
-        );
+            }))
+          );
+        }
       }
     }
-  }
 
-  await recalculateOrderTotals(orderRef.id);
-  await recalculateSessionTotals(sessionId);
+    await recalculateOrderTotals(orderRef.id, tx);
+    await recalculateSessionTotals(sessionId, tx);
 
-  const correlationId = generateCorrelationId();
-  const itemsAddedMeta = {
-    orderId: orderRef.id,
-    addedItemIds: inserted,
-    wave,
-    itemCount,
-    seatBreakdown,
-  };
-  if (options?.eventSource) {
-    await recordSessionEventWithSource(
-      orderRef.locationId,
+    const correlationId = generateCorrelationId();
+    const itemsAddedMeta = {
+      orderId: orderRef.id,
+      addedItemIds: inserted,
+      wave,
+      itemCount,
+      seatBreakdown,
+    };
+    if (options?.eventSource) {
+      await recordSessionEventWithSource(
+        orderRef.locationId,
+        sessionId,
+        "items_added",
+        options.eventSource,
+        itemsAddedMeta,
+        undefined,
+        correlationId,
+        tx
+      );
+    } else {
+      await recordSessionEvent(orderRef.locationId, sessionId, "items_added", itemsAddedMeta, undefined, tx);
+    }
+
+    safeEmit({
+      type: "order.items_added",
+      payload: {
+        sessionId,
+        orderId: orderRef.id,
+        wave,
+        addedItemIds: inserted,
+        itemCount,
+      },
+      correlationId,
+    });
+
+    return {
+      ok: true,
       sessionId,
-      "items_added",
-      options.eventSource,
-      itemsAddedMeta,
-      undefined,
-      correlationId
-    );
-  } else {
-    await recordSessionEvent(orderRef.locationId, sessionId, "items_added", itemsAddedMeta);
-  }
-
-  return {
-    ok: true,
-    sessionId,
-    orderId: orderRef.id,
-    wave,
-    addedItemIds: inserted,
-    itemCount,
-    sessionStatus: session.status,
-    orderStatus: orderRef.status,
-  };
+      orderId: orderRef.id,
+      wave,
+      addedItemIds: inserted,
+      itemCount,
+      sessionStatus: session.status,
+      orderStatus: orderRef.status,
+    };
+  });
 }
 
 export type SyncSessionOrderResult =
@@ -910,83 +934,95 @@ export async function fireWave(
   sessionId: string,
   options?: FireWaveOptions
 ): Promise<ServiceResult> {
-  const session = await db.query.sessions.findFirst({
+  return withTx(async (tx) => {
+    const session = await tx.query.sessions.findFirst({
     where: eq(sessionsTable.id, sessionId),
-    columns: { id: true, locationId: true },
-  });
-  if (!session) return { ok: false, reason: "session_not_found" };
+      columns: { id: true, locationId: true },
+    });
+    if (!session) return { ok: false, reason: "session_not_found" };
 
-  const location = await verifyLocationAccess(session.locationId);
-  if (!location) return { ok: false, reason: "unauthorized" };
+    const location = await verifyLocationAccess(session.locationId);
+    if (!location) return { ok: false, reason: "unauthorized" };
 
-  let orderId: string | null;
-  if (options?.waveNumber != null) {
-    const openWave = await getOpenWave(sessionId, options.waveNumber);
-    orderId = openWave?.id ?? null;
-  } else {
-    let openWave = await getOpenWave(sessionId);
-    while (openWave) {
-      const items = await db.query.orderItems.findMany({
+    let orderId: string | null;
+    if (options?.waveNumber != null) {
+      const openWave = await getOpenWave(sessionId, options.waveNumber, undefined, tx);
+      orderId = openWave?.id ?? null;
+    } else {
+      let openWave = await getOpenWave(sessionId, undefined, undefined, tx);
+      while (openWave) {
+        const items = await tx.query.orderItems.findMany({
         where: and(
           eq(orderItemsTable.orderId, openWave.id),
           isNull(orderItemsTable.voidedAt)
         ),
-        columns: { id: true },
-        limit: 1,
-      });
-      if (items.length > 0) {
-        orderId = openWave.id;
-        break;
+          columns: { id: true },
+          limit: 1,
+        });
+        if (items.length > 0) {
+          orderId = openWave.id;
+          break;
+        }
+        openWave = await getOpenWave(sessionId, undefined, openWave.wave, tx);
       }
-      openWave = await getOpenWave(sessionId, undefined, openWave.wave);
+      orderId ??= null;
     }
-    orderId ??= null;
-  }
 
-  if (!orderId) return { ok: false, reason: "no_wave_to_fire" };
+    if (!orderId) return { ok: false, reason: "no_wave_to_fire" };
 
-  const order = await db.query.orders.findFirst({
+    const order = await tx.query.orders.findFirst({
     where: eq(ordersTable.id, orderId),
-    columns: { id: true, firedAt: true, wave: true },
-  });
-  if (!order) return { ok: false, reason: "order_not_found" };
+      columns: { id: true, firedAt: true, wave: true },
+    });
+    if (!order) return { ok: false, reason: "order_not_found" };
 
-  const fireResult = canFireWave({ firedAt: order.firedAt });
-  if (!fireResult.ok) return { ok: false, reason: fireResult.reason };
+    const fireResult = canFireWave({ firedAt: order.firedAt });
+    if (!fireResult.ok) return { ok: false, reason: fireResult.reason };
 
-  const result = await fireWaveAction(orderId, {
-    eventSource: options?.eventSource,
-  });
-  if (!result.ok) return { ok: false, reason: "fire_failed", data: { error: result.error } };
+    const result = await fireWaveAction(orderId, { eventSource: options?.eventSource }, tx);
+    if (!result.ok) return { ok: false, reason: "fire_failed", data: { error: result.error } };
 
-  if (options?.station) {
-    await db
-      .update(ordersTable)
-      .set({ station: options.station })
-      .where(eq(ordersTable.id, orderId));
-  }
+    if (options?.station) {
+      await tx
+        .update(ordersTable)
+        .set({ station: options.station })
+        .where(eq(ordersTable.id, orderId));
+    }
 
-  const now = new Date();
-  const itemRows = await db.query.orderItems.findMany({
+    const now = new Date();
+    const itemRows = await tx.query.orderItems.findMany({
     where: and(
       eq(orderItemsTable.orderId, orderId),
       isNull(orderItemsTable.voidedAt)
     ),
-    columns: { id: true, quantity: true },
-  });
-  const itemCount = itemRows.reduce((s, i) => s + (i.quantity ?? 1), 0);
-  const affectedItems = itemRows.map((i) => i.id);
+      columns: { id: true, quantity: true },
+    });
+    const itemCount = itemRows.reduce((s, i) => s + (i.quantity ?? 1), 0);
+    const affectedItems = itemRows.map((i) => i.id);
 
-  return {
-    ok: true,
-    sessionId,
-    orderId,
-    wave: order.wave,
-    firedAt: now,
-    itemCount,
-    affectedItems,
-    meta: options?.station ? { station: options.station } : undefined,
-  };
+    safeEmit({
+      type: "wave.fired",
+      payload: {
+        sessionId,
+        orderId,
+        wave: order.wave,
+        firedAt: now.toISOString(),
+        itemCount,
+        affectedItems,
+      },
+    });
+
+    return {
+      ok: true,
+      sessionId,
+      orderId,
+      wave: order.wave,
+      firedAt: now,
+      itemCount,
+      affectedItems,
+      meta: options?.station ? { station: options.station } : undefined,
+    };
+  });
 }
 
 /**
@@ -999,79 +1035,102 @@ export async function advanceWaveStatus(
   status: "preparing" | "ready" | "served",
   options?: { eventSource?: EventSource }
 ): Promise<BatchWaveAdvanceResult> {
-  const session = await db.query.sessions.findFirst({
+  return withTx(async (tx) => {
+    const session = await tx.query.sessions.findFirst({
     where: eq(sessionsTable.id, sessionId),
-    columns: { id: true, status: true, locationId: true },
-  });
-  if (!session) return { ok: false, reason: "session_not_found", updatedItemIds: [], failed: [] };
+      columns: { id: true, status: true, locationId: true },
+    });
+    if (!session) return { ok: false, reason: "session_not_found", updatedItemIds: [], failed: [] };
 
-  const addResult = canAddItems({ status: session.status });
-  if (!addResult.ok) return { ok: false, reason: addResult.reason, updatedItemIds: [], failed: [] };
+    const addResult = canAddItems({ status: session.status });
+    if (!addResult.ok) return { ok: false, reason: addResult.reason, updatedItemIds: [], failed: [] };
 
-  const location = await verifyLocationAccess(session.locationId);
-  if (!location) return { ok: false, reason: "unauthorized", updatedItemIds: [], failed: [] };
+    const location = await verifyLocationAccess(session.locationId);
+    if (!location) return { ok: false, reason: "unauthorized", updatedItemIds: [], failed: [] };
 
-  const order = await db.query.orders.findFirst({
+    const order = await tx.query.orders.findFirst({
     where: and(eq(ordersTable.sessionId, sessionId), eq(ordersTable.wave, waveNumber)),
-    columns: { id: true },
-  });
-  if (!order) {
-    return {
-      ok: false,
-      reason: "order_not_found",
-      sessionId,
-      wave: waveNumber,
-      updatedItemIds: [],
-      failed: [],
-    };
-  }
+      columns: { id: true },
+    });
+    if (!order) {
+      return {
+        ok: false,
+        reason: "order_not_found",
+        sessionId,
+        wave: waveNumber,
+        updatedItemIds: [],
+        failed: [],
+      };
+    }
 
-  const items = await db.query.orderItems.findMany({
+    const items = await tx.query.orderItems.findMany({
     where: and(
       eq(orderItemsTable.orderId, order.id),
       isNull(orderItemsTable.voidedAt)
     ),
-    columns: { id: true },
-  });
+      columns: { id: true },
+    });
 
-  const updatedItemIds: string[] = [];
-  const failed: BatchWaveAdvanceFailure[] = [];
+    const updatedItemIds: string[] = [];
+    const failed: BatchWaveAdvanceFailure[] = [];
 
-  for (const item of items) {
-    const result =
-      status === "preparing"
-        ? await markItemPreparingAction(item.id)
-        : status === "ready"
-          ? await markItemReadyAction(item.id, { eventSource: options?.eventSource })
-          : await markItemServedAction(item.id, { eventSource: options?.eventSource });
-    if (result.ok) {
-      updatedItemIds.push(item.id);
-      continue;
+    for (const item of items) {
+      const result =
+        status === "preparing"
+          ? await markItemPreparingAction(item.id, tx)
+          : status === "ready"
+            ? await markItemReadyAction(item.id, { eventSource: options?.eventSource }, tx)
+            : await markItemServedAction(item.id, { eventSource: options?.eventSource }, tx);
+      if (result.ok) {
+        updatedItemIds.push(item.id);
+        continue;
+      }
+      failed.push({ itemId: item.id, error: result.error ?? "advance_failed" });
     }
-    failed.push({ itemId: item.id, error: result.error ?? "advance_failed" });
-  }
 
-  if (failed.length > 0) {
+    if (failed.length > 0) {
+      safeEmit({
+        type: "wave.advanced",
+        payload: {
+          sessionId,
+          orderId: order.id,
+          wave: waveNumber,
+          status,
+          updatedItemIds,
+          failed,
+        },
+      });
+      return {
+        ok: false,
+        reason: "advance_partial_failure",
+        sessionId,
+        orderId: order.id,
+        wave: waveNumber,
+        updatedItemIds,
+        failed,
+        data: { status, failedCount: failed.length, totalItems: items.length },
+      };
+    }
+
+    safeEmit({
+      type: "wave.advanced",
+      payload: {
+        sessionId,
+        orderId: order.id,
+        wave: waveNumber,
+        status,
+        updatedItemIds,
+      },
+    });
     return {
-      ok: false,
-      reason: "advance_partial_failure",
+      ok: true,
       sessionId,
       orderId: order.id,
       wave: waveNumber,
       updatedItemIds,
-      failed,
-      data: { status, failedCount: failed.length, totalItems: items.length },
+      failed: [],
     };
-  }
-
-  return {
-    ok: true,
-    sessionId,
-    orderId: order.id,
-    wave: waveNumber,
-    updatedItemIds,
-    failed: [],
-  };
+  });
 }
 
 /** Mark item preparing: validate, set startedAt. */
@@ -1096,6 +1155,15 @@ export async function serveItem(
     return { ok: false, reason: "item_not_ready", data: { error: result.error } };
   }
   const ctx = await getItemContext(orderItemId);
+  safeEmit({
+    type: "item.status_changed",
+    payload: {
+      itemId: orderItemId,
+      orderId: ctx?.orderId ?? "",
+      sessionId: ctx?.sessionId ?? null,
+      status: "served",
+    },
+  });
   return ctx
     ? { ok: true, itemId: orderItemId, orderId: ctx.orderId, sessionId: ctx.sessionId ?? undefined, affectedItems: [orderItemId] }
     : { ok: true, itemId: orderItemId, affectedItems: [orderItemId] };
@@ -1111,6 +1179,15 @@ export async function markItemReady(
     return { ok: false, reason: "item_not_preparing", data: { error: result.error } };
   }
   const ctx = await getItemContext(orderItemId);
+  safeEmit({
+    type: "item.status_changed",
+    payload: {
+      itemId: orderItemId,
+      orderId: ctx?.orderId ?? "",
+      sessionId: ctx?.sessionId ?? null,
+      status: "ready",
+    },
+  });
   return ctx
     ? { ok: true, itemId: orderItemId, orderId: ctx.orderId, sessionId: ctx.sessionId ?? undefined, affectedItems: [orderItemId] }
     : { ok: true, itemId: orderItemId, affectedItems: [orderItemId] };
@@ -1128,6 +1205,16 @@ export async function voidItem(
     return { ok: false, reason: "item_already_voided", data: { error: result.error } };
   }
   const ctx = await getItemContext(orderItemId);
+  safeEmit({
+    type: "item.status_changed",
+    payload: {
+      itemId: orderItemId,
+      orderId: ctx?.orderId ?? "",
+      sessionId: ctx?.sessionId ?? null,
+      status: "voided",
+    },
+    correlationId,
+  });
   return ctx
     ? { ok: true, itemId: orderItemId, orderId: ctx.orderId, sessionId: ctx.sessionId ?? undefined, affectedItems: [orderItemId], meta: { reason } }
     : { ok: true, itemId: orderItemId, affectedItems: [orderItemId], meta: { reason } };
@@ -1165,6 +1252,15 @@ export async function refireItem(
     .where(eq(orderItemsTable.id, orderItemId));
 
   const ctx = await getItemContext(orderItemId);
+  safeEmit({
+    type: "item.status_changed",
+    payload: {
+      itemId: orderItemId,
+      orderId: ctx?.orderId ?? "",
+      sessionId: ctx?.sessionId ?? null,
+      status: "refired",
+    },
+  });
   return ctx
     ? { ok: true, itemId: orderItemId, orderId: ctx.orderId, sessionId: ctx.sessionId ?? undefined, affectedItems: [orderItemId], meta: { reason } }
     : { ok: true, itemId: orderItemId, affectedItems: [orderItemId], meta: { reason } };
@@ -1527,66 +1623,80 @@ export async function closeSessionService(
   payment?: CloseSessionPayment,
   options?: CloseOrderForTableOptions
 ): Promise<ServiceResult> {
-  const correlationId = generateCorrelationId();
-  const session = await db.query.sessions.findFirst({
+  return withTx(async (tx) => {
+    const correlationId = generateCorrelationId();
+    const session = await tx.query.sessions.findFirst({
     where: eq(sessionsTable.id, sessionId),
-    columns: { id: true, locationId: true, tableId: true },
-  });
-  if (!session) return { ok: false, reason: "session_not_found" };
+      columns: { id: true, locationId: true, tableId: true, status: true },
+    });
+    if (!session) return { ok: false, reason: "session_not_found" };
+    if (session.status !== "open") {
+      return { ok: false, reason: "session_already_closed", error: "Session already closed" };
+    }
 
-  const location = await verifyLocationAccess(session.locationId);
-  if (!location) return { ok: false, reason: "unauthorized" };
+    const location = await verifyLocationAccess(session.locationId);
+    if (!location) return { ok: false, reason: "unauthorized" };
 
-  await recalculateSessionTotals(sessionId);
-  const canClose = await canCloseSessionAction(sessionId, {
-    incomingPaymentAmount: payment?.amount,
-  });
-  if (!canClose.ok) {
-    return {
-      ok: false,
-      reason: canClose.reason,
-      ...(canClose.reason === "unfinished_items" && { items: canClose.items }),
-      ...(canClose.reason === "unpaid_balance" && {
-        remaining: canClose.remaining,
-        sessionTotal: canClose.sessionTotal,
-        paymentsTotal: canClose.paymentsTotal,
-      }),
-      data:
-        canClose.reason === "unfinished_items"
-          ? { items: canClose.items }
-          : canClose.reason === "unpaid_balance"
-            ? {
-                remaining: canClose.remaining,
-                sessionTotal: canClose.sessionTotal,
-                paymentsTotal: canClose.paymentsTotal,
-              }
-            : undefined,
-    };
-  }
+    await recalculateSessionTotals(sessionId, tx);
+    const canClose = await canCloseSessionAction(sessionId, {
+      incomingPaymentAmount: payment?.amount,
+    }, tx);
+    if (!canClose.ok) {
+      return {
+        ok: false,
+        reason: canClose.reason,
+        ...(canClose.reason === "unfinished_items" && { items: canClose.items }),
+        ...(canClose.reason === "unpaid_balance" && {
+          remaining: canClose.remaining,
+          sessionTotal: canClose.sessionTotal,
+          paymentsTotal: canClose.paymentsTotal,
+        }),
+        data:
+          canClose.reason === "unfinished_items"
+            ? { items: canClose.items }
+            : canClose.reason === "unpaid_balance"
+              ? {
+                  remaining: canClose.remaining,
+                  sessionTotal: canClose.sessionTotal,
+                  paymentsTotal: canClose.paymentsTotal,
+                }
+              : undefined,
+      };
+    }
 
-  const result = await closeSessionAction(sessionId, payment, { ...options, correlationId });
+    const result = await closeSessionAction(sessionId, payment, { ...options, correlationId }, tx);
 
-  if (!result.ok) {
-    return {
-      ok: false,
-      reason: result.reason ?? "close_failed",
-      error: result.error,
-      items: result.items,
-      remaining: result.remaining,
-      sessionTotal: result.sessionTotal,
-      paymentsTotal: result.paymentsTotal,
-      data: {
+    if (result.ok) {
+      safeEmit({
+        type: "session.closed",
+        payload: { sessionId, closedAt: new Date().toISOString() },
+        correlationId,
+      });
+    }
+
+    if (!result.ok) {
+      return {
+        ok: false,
+        reason: result.reason ?? "close_failed",
         error: result.error,
         items: result.items,
         remaining: result.remaining,
         sessionTotal: result.sessionTotal,
         paymentsTotal: result.paymentsTotal,
-      },
-    };
-  }
+        data: {
+          error: result.error,
+          items: result.items,
+          remaining: result.remaining,
+          sessionTotal: result.sessionTotal,
+          paymentsTotal: result.paymentsTotal,
+        },
+      };
+    }
 
-  return { ok: true, sessionId, meta: { closedAt: new Date() }, correlationId };
+    return { ok: true, sessionId, meta: { closedAt: new Date() }, correlationId };
+  });
 }
+
 
 // -----------------------------------------------------------------------------
 // Seat lifecycle

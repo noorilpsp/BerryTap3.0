@@ -5,7 +5,13 @@ import { db } from "@/db";
 import { orders, orderTimeline } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
 import { createOrderFromApi } from "@/domain";
-import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
+import {
+  computeRequestHash,
+  getIdempotentResponse,
+  IDEMPOTENCY_CONFLICT,
+  saveIdempotentResponse,
+} from "@/domain/idempotency";
+import { posFailure, posSuccess, requireIdempotencyKey, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -165,6 +171,8 @@ export async function GET(request: NextRequest) {
   }
 }
 
+const ROUTE_ORDERS_CREATE = "POST /api/orders";
+
 /**
  * POST /api/orders
  * Create order with items and customizations. Routes through service layer.
@@ -172,9 +180,16 @@ export async function GET(request: NextRequest) {
  *
  * Dine-in: ensureSessionByTableUuid + addItemsToOrder (validators, events, totals).
  * Pickup/delivery: createOrderWithItemsForPickupDelivery.
+ *
+ * Requires Idempotency-Key header.
  */
 export async function POST(request: NextRequest) {
+  let idempotencyKey: string | undefined;
   try {
+    const idem = requireIdempotencyKey(request);
+    if (!idem.ok) return idem.failure;
+    idempotencyKey = idem.key;
+
     const supabase = await supabaseServer();
     const {
       data: { user },
@@ -182,7 +197,7 @@ export async function POST(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401, correlationId: idempotencyKey });
     }
 
     const body = await request.json().catch(() => ({}));
@@ -205,8 +220,27 @@ export async function POST(request: NextRequest) {
       return posFailure(
         "BAD_REQUEST",
         "Location ID, order type, payment timing, and at least one item are required",
-        { status: 400 }
+        { status: 400, correlationId: idempotencyKey }
       );
+    }
+
+    const requestHash = computeRequestHash(body);
+    const cached = await getIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_ORDERS_CREATE,
+      requestHash,
+    });
+    if (cached) {
+      if (!cached.ok) {
+        return posFailure(IDEMPOTENCY_CONFLICT, "Idempotency-Key reuse with different request", {
+          status: 409,
+          correlationId: idempotencyKey,
+        });
+      }
+      const saved = cached.response as { body: Record<string, unknown>; status: number };
+      const replayBody = { ...(saved.body ?? cached.response) as Record<string, unknown>, correlationId: idempotencyKey };
+      return NextResponse.json(replayBody, { status: saved.status ?? 201 });
     }
 
     const result = await createOrderFromApi({
@@ -231,7 +265,7 @@ export async function POST(request: NextRequest) {
       return posFailure(
         status === 403 ? "FORBIDDEN" : "BAD_REQUEST",
         result.reason,
-        { status }
+        { status, correlationId: idempotencyKey }
       );
     }
 
@@ -256,21 +290,29 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    return posSuccess(
-      {
-        order: completeOrder,
-        orderId: result.orderId,
-        sessionId: result.sessionId ?? null,
-        addedItemIds: result.addedItemIds ?? [],
-      },
-      { status: 201 }
-    );
+    const data = {
+      order: completeOrder,
+      orderId: result.orderId,
+      sessionId: result.sessionId ?? null,
+      addedItemIds: result.addedItemIds ?? [],
+    };
+    const responseBody = { ok: true as const, data, correlationId: idempotencyKey };
+
+    await saveIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_ORDERS_CREATE,
+      requestHash,
+      responseJson: { body: responseBody, status: 201 },
+    });
+
+    return posSuccess(data, { status: 201, correlationId: idempotencyKey });
   } catch (error) {
     console.error("[POST /api/orders] Error:", error);
     return posFailure(
       "INTERNAL_ERROR",
       toErrorMessage(error, "Internal server error - Failed to create order"),
-      { status: 500 }
+      { status: 500, correlationId: idempotencyKey }
     );
   }
 }

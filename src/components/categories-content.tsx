@@ -18,7 +18,7 @@ import type { MenuItem } from "@/types/menu-item"
 
 interface CategoriesContentProps {
   categories: Category[]
-  items: MenuItem[]
+  items?: MenuItem[]
   onCreateCategory: () => void
   onEditCategory: (id: string) => void
   onDeleteCategory: (id: string) => void
@@ -37,6 +37,7 @@ export function CategoriesContent({
   uncategorizedCount = 0,
   isLoading = false,
 }: CategoriesContentProps) {
+  const safeItems = items ?? []
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set())
 
   const toggleCategory = useCallback(
@@ -80,7 +81,7 @@ export function CategoriesContent({
   }
 
   const renderCategoryHeader = (category: Category) => {
-    const categoryItems = items.filter((item) => item.categories && item.categories.includes(category.id))
+    const categoryItems = safeItems.filter((item) => item.categories && item.categories.includes(category.id))
 
     return (
       <div
@@ -191,7 +192,7 @@ export function CategoriesContent({
           ...cat,
           isExpanded: expandedCategories.has(cat.id),
         }))}
-        items={items}
+        items={safeItems}
         onReorderCategories={handleReorderCategories}
         onMoveItemToCategory={handleMoveItemToCategory}
         onReorderItemsInCategory={handleReorderItemsInCategory}

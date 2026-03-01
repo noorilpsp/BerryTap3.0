@@ -5,8 +5,14 @@ import { db } from "@/db";
 import { orders, orderTimeline, payments, orderDelivery } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
 import { desc } from "drizzle-orm";
+import {
+  computeRequestHash,
+  getIdempotentResponse,
+  IDEMPOTENCY_CONFLICT,
+  saveIdempotentResponse,
+} from "@/domain/idempotency";
 import { updateOrder, cancelOrder } from "@/domain";
-import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
+import { posFailure, posSuccess, requireIdempotencyKey, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -187,6 +193,9 @@ export async function GET(
   }
 }
 
+const ROUTE_PUT_ORDER = "PUT /api/orders/[id]";
+const ROUTE_DELETE_ORDER = "DELETE /api/orders/[id]";
+
 /**
  * PUT /api/orders/[id]
  * Update order
@@ -196,7 +205,12 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  let idempotencyKey: string | undefined;
   try {
+    const keyRes = requireIdempotencyKey(request);
+    if (!keyRes.ok) return keyRes.failure;
+    idempotencyKey = keyRes.key;
+
     const { id } = await params;
     const supabase = await supabaseServer();
     const {
@@ -205,11 +219,30 @@ export async function PUT(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401, correlationId: idempotencyKey });
     }
 
     const body = await request.json().catch(() => ({}));
     const { customerId, tableId, reservationId, assignedStaffId, notes } = body;
+
+    const requestHash = computeRequestHash({ ...body, id });
+    const cached = await getIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_PUT_ORDER,
+      requestHash,
+    });
+    if (cached) {
+      if (!cached.ok) {
+        return posFailure(IDEMPOTENCY_CONFLICT, "Idempotency-Key reuse with different request", {
+          status: 409,
+          correlationId: idempotencyKey,
+        });
+      }
+      const saved = cached.response as { body: Record<string, unknown>; status: number };
+      const replayBody = { ...(saved.body ?? cached.response) as Record<string, unknown>, correlationId: idempotencyKey };
+      return NextResponse.json(replayBody, { status: saved.status ?? 200 });
+    }
 
     // Get existing order
     const existingOrder = await db.query.orders.findFirst({
@@ -225,7 +258,7 @@ export async function PUT(
     });
 
     if (!existingOrder) {
-      return posFailure("NOT_FOUND", "Order not found", { status: 404 });
+      return posFailure("NOT_FOUND", "Order not found", { status: 404, correlationId: idempotencyKey });
     }
 
     // Check user has access to this merchant
@@ -243,6 +276,7 @@ export async function PUT(
     if (!membership) {
       return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
         status: 403,
+        correlationId: idempotencyKey,
       });
     }
 
@@ -257,18 +291,35 @@ export async function PUT(
     const result = await updateOrder(id, patch);
     if (!result.ok) {
       const status = result.reason === "unauthorized" ? 403 : 400;
-      return posFailure(status === 403 ? "FORBIDDEN" : "BAD_REQUEST", result.reason, { status });
+      const code = status === 403 ? "FORBIDDEN" : "BAD_REQUEST";
+      const failureBody = { ok: false as const, error: { code, message: result.reason }, correlationId: idempotencyKey };
+      await saveIdempotentResponse({
+        key: idempotencyKey,
+        userId: user.id,
+        route: ROUTE_PUT_ORDER,
+        requestHash,
+        responseJson: { body: failureBody, status },
+      });
+      return posFailure(code, result.reason, { status, correlationId: idempotencyKey });
     }
     const updatedOrder = await db.query.orders.findFirst({
       where: eq(orders.id, id),
     });
-    return posSuccess({ order: updatedOrder });
+    const successBody = { ok: true as const, data: { order: updatedOrder }, correlationId: idempotencyKey };
+    await saveIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_PUT_ORDER,
+      requestHash,
+      responseJson: { body: successBody, status: 200 },
+    });
+    return posSuccess(successBody.data, { correlationId: idempotencyKey });
   } catch (error) {
     console.error("[PUT /api/orders/[id]] Error:", error);
     return posFailure(
       "INTERNAL_ERROR",
       toErrorMessage(error, "Internal server error - Failed to update order"),
-      { status: 500 }
+      { status: 500, correlationId: idempotencyKey }
     );
   }
 }
@@ -281,7 +332,12 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  let idempotencyKey: string | undefined;
   try {
+    const keyRes = requireIdempotencyKey(request);
+    if (!keyRes.ok) return keyRes.failure;
+    idempotencyKey = keyRes.key;
+
     const { id } = await params;
     const supabase = await supabaseServer();
     const {
@@ -290,7 +346,7 @@ export async function DELETE(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401, correlationId: idempotencyKey });
     }
 
     // Get existing order
@@ -308,7 +364,7 @@ export async function DELETE(
     });
 
     if (!existingOrder) {
-      return posFailure("NOT_FOUND", "Order not found", { status: 404 });
+      return posFailure("NOT_FOUND", "Order not found", { status: 404, correlationId: idempotencyKey });
     }
 
     // Check user has access to this merchant
@@ -326,24 +382,62 @@ export async function DELETE(
     if (!membership) {
       return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
         status: 403,
+        correlationId: idempotencyKey,
       });
+    }
+
+    const body = await request.json().catch(() => ({}));
+    const requestHash = computeRequestHash({ ...body, id });
+    const cached = await getIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_DELETE_ORDER,
+      requestHash,
+    });
+    if (cached) {
+      if (!cached.ok) {
+        return posFailure(IDEMPOTENCY_CONFLICT, "Idempotency-Key reuse with different request", {
+          status: 409,
+          correlationId: idempotencyKey,
+        });
+      }
+      const saved = cached.response as { body: Record<string, unknown>; status: number };
+      const replayBody = { ...(saved.body ?? cached.response) as Record<string, unknown>, correlationId: idempotencyKey };
+      return NextResponse.json(replayBody, { status: saved.status ?? 200 });
     }
 
     const result = await cancelOrder(id, user.id);
     if (!result.ok) {
       const status = result.reason === "unauthorized" ? 403 : 400;
-      return posFailure(status === 403 ? "FORBIDDEN" : "BAD_REQUEST", result.reason, { status });
+      const code = status === 403 ? "FORBIDDEN" : "BAD_REQUEST";
+      const failureBody = { ok: false as const, error: { code, message: result.reason }, correlationId: idempotencyKey };
+      await saveIdempotentResponse({
+        key: idempotencyKey,
+        userId: user.id,
+        route: ROUTE_DELETE_ORDER,
+        requestHash,
+        responseJson: { body: failureBody, status },
+      });
+      return posFailure(code, result.reason, { status, correlationId: idempotencyKey });
     }
     const cancelledOrder = await db.query.orders.findFirst({
       where: eq(orders.id, id),
     });
-    return posSuccess({ success: true, order: cancelledOrder });
+    const successBody = { ok: true as const, data: { success: true, order: cancelledOrder }, correlationId: idempotencyKey };
+    await saveIdempotentResponse({
+      key: idempotencyKey,
+      userId: user.id,
+      route: ROUTE_DELETE_ORDER,
+      requestHash,
+      responseJson: { body: successBody, status: 200 },
+    });
+    return posSuccess(successBody.data, { correlationId: idempotencyKey });
   } catch (error) {
     console.error("[DELETE /api/orders/[id]] Error:", error);
     return posFailure(
       "INTERNAL_ERROR",
       toErrorMessage(error, "Internal server error - Failed to cancel order"),
-      { status: 500 }
+      { status: 500, correlationId: idempotencyKey }
     );
   }
 }
