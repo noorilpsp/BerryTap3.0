@@ -79,7 +79,12 @@ export async function POST(request: NextRequest) {
     );
 
     if (!result.ok) {
-      return posFailure("BAD_REQUEST", result.reason, { status: 400, correlationId: idemKey });
+      const isForbidden = result.reason === "You are not staff at this location";
+      return posFailure(
+        isForbidden ? "FORBIDDEN" : "BAD_REQUEST",
+        result.reason,
+        { status: isForbidden ? 403 : 400, correlationId: idemKey }
+      );
     }
 
     return posSuccess(

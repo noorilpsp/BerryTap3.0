@@ -4,6 +4,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { items, categoryItems, itemTags, itemAllergens, itemCustomizations } from "@/db/schema";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -21,10 +22,7 @@ export async function GET(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
@@ -32,10 +30,7 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get("status");
 
     if (!locationId) {
-      return NextResponse.json(
-        { error: "Location ID is required" },
-        { status: 400 }
-      );
+      return posFailure("BAD_REQUEST", "Location ID is required", { status: 400 });
     }
 
     // Verify location exists and user has access
@@ -48,10 +43,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!location) {
-      return NextResponse.json(
-        { error: "Location not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Location not found", { status: 404 });
     }
 
     // Check user has access to this merchant
@@ -67,10 +59,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "You don't have access to this location", { status: 403 });
     }
 
     // Fetch items with relations (no caching to ensure fresh data)
@@ -124,20 +113,14 @@ export async function GET(request: NextRequest) {
       customizationGroups: item.itemCustomizations?.map((ic) => ic.group.id) || [],
     }));
 
-    return NextResponse.json(itemsList, {
-      headers: {
-        "Cache-Control": "no-store, must-revalidate",
-      },
-    });
+    const res = posSuccess(itemsList);
+    res.headers.set("Cache-Control", "no-store, must-revalidate");
+    return res;
   } catch (error) {
     console.error("[GET /api/items] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to fetch items",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to fetch items"),
       { status: 500 }
     );
   }
@@ -198,10 +181,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (!location) {
-      return NextResponse.json(
-        { error: "Location not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Location not found", { status: 404 });
     }
 
     // Check user has access to this merchant

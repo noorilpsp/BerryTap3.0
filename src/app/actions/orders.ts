@@ -1,6 +1,6 @@
 "use server";
 
-import { eq, and, ilike, inArray, isNull, sql } from "drizzle-orm";
+import { eq, and, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   tables as tablesTable,
@@ -13,6 +13,7 @@ import {
   payments as paymentsTable,
   servicePeriods as servicePeriodsTable,
 } from "@/lib/db/schema/orders";
+import { staff as staffTable } from "@/lib/db/schema/staff";
 import { verifyLocationAccess } from "@/lib/location-access";
 import { canCloseSession } from "@/app/actions/session-close-validation";
 import {
@@ -126,40 +127,92 @@ async function getOrCreateSessionForTable(
   return inserted.id;
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidUuid(s: string): boolean {
+  return UUID_REGEX.test(s);
+}
+
+/** Resolve staff.id for (userId, locationId). Returns null if user is not staff for the location. */
+async function getStaffIdForUser(
+  locationId: string,
+  userId: string
+): Promise<string | null> {
+  const row = await db.query.staff.findFirst({
+    where: and(
+      eq(staffTable.userId, userId),
+      eq(staffTable.locationId, locationId),
+      eq(staffTable.isActive, true)
+    ),
+    columns: { id: true },
+  });
+  return row?.id ?? null;
+}
+
+export type EnsureSessionResult =
+  | { ok: true; sessionId: string }
+  | { ok: false; reason: "user_not_staff" }
+  | { ok: false; reason: "no_location" }
+  | { ok: false; reason: "no_table" };
+
 /**
- * Get or create an open session for a table by table UUID (tables.id).
- * Used when caller has table UUID (e.g. from API). Returns sessionId or null.
+ * Get or create an open session for a table by table UUID (tables.id) or by table_number/display_id.
+ * Accepts either UUID or human-readable id (e.g. "t6") for lookup within the location.
+ * Requires userId to resolve staff.id for session creation.
  */
 export async function ensureSessionForTableByTableUuid(
   locationId: string,
   tableUuid: string,
-  guestCount = 1,
-  serverId?: string | null
-): Promise<string | null> {
+  guestCount: number,
+  userId: string
+): Promise<EnsureSessionResult> {
   const location = await verifyLocationAccess(locationId);
-  if (!location) return null;
+  if (!location) return { ok: false, reason: "no_location" };
 
-  const tableRow = await db.query.tables.findFirst({
-    where: and(
-      eq(tablesTable.locationId, locationId),
-      eq(tablesTable.id, tableUuid)
-    ),
-    columns: { id: true },
-  });
-  if (!tableRow) return null;
+  const staffId = await getStaffIdForUser(locationId, userId);
+  if (!staffId) return { ok: false, reason: "user_not_staff" };
 
-  return getOrCreateSessionForTable(locationId, tableRow.id, guestCount, serverId);
+  let tableRow: { id: string } | null;
+  if (isValidUuid(tableUuid)) {
+    tableRow =
+      (await db.query.tables.findFirst({
+        where: and(
+          eq(tablesTable.locationId, locationId),
+          eq(tablesTable.id, tableUuid)
+        ),
+        columns: { id: true },
+      })) ?? null;
+  } else {
+    tableRow =
+      (await db.query.tables.findFirst({
+        where: and(
+          eq(tablesTable.locationId, locationId),
+          or(
+            ilike(tablesTable.tableNumber, tableUuid),
+            eq(tablesTable.displayId, tableUuid)
+          )
+        ),
+        columns: { id: true },
+      })) ?? null;
+  }
+  if (!tableRow) return { ok: false, reason: "no_table" };
+
+  const sessionId = await getOrCreateSessionForTable(locationId, tableRow.id, guestCount, staffId);
+  return sessionId ? { ok: true, sessionId } : { ok: false, reason: "no_table" };
 }
 
-/** Get or create an open session for a table (by table id string e.g. "t1"). Returns sessionId for recording events. */
+/** Get or create an open session for a table (by table id string e.g. "t1"). Returns sessionId for recording events. Requires userId to resolve staff.id. */
 export async function ensureSessionForTable(
   locationId: string,
   tableId: string,
   guestCount: number,
-  serverId?: string | null
-): Promise<string | null> {
+  userId: string
+): Promise<EnsureSessionResult> {
   const location = await verifyLocationAccess(locationId);
-  if (!location) return null;
+  if (!location) return { ok: false, reason: "no_location" };
+
+  const staffId = await getStaffIdForUser(locationId, userId);
+  if (!staffId) return { ok: false, reason: "user_not_staff" };
 
   const tableRows = await db.query.tables.findMany({
     where: and(
@@ -170,12 +223,19 @@ export async function ensureSessionForTable(
     limit: 1,
   });
   const tableRow = tableRows[0];
-  if (!tableRow) return null;
+  if (!tableRow) return { ok: false, reason: "no_table" };
 
-  return getOrCreateSessionForTable(locationId, tableRow.id, guestCount, serverId);
+  const sessionId = await getOrCreateSessionForTable(locationId, tableRow.id, guestCount, staffId);
+  return sessionId ? { ok: true, sessionId } : { ok: false, reason: "no_table" };
 }
 
-/** Get open session id for a table (by table id string). Returns null if no open session. */
+/**
+ * Get open session id for a table (by table id string).
+ * Supports: UUID (tables.id), display_id, table_number (case-insensitive).
+ * Returns null if no open session.
+ *
+ * Examples: getOpenSessionIdForTable("t6"), getOpenSessionIdForTable("<uuid>"), getOpenSessionIdForTable("T6")
+ */
 export async function getOpenSessionIdForTable(
   locationId: string,
   tableId: string
@@ -183,15 +243,29 @@ export async function getOpenSessionIdForTable(
   const location = await verifyLocationAccess(locationId);
   if (!location) return null;
 
-  const tableRows = await db.query.tables.findMany({
-    where: and(
-      eq(tablesTable.locationId, locationId),
-      ilike(tablesTable.tableNumber, tableId)
-    ),
-    columns: { id: true },
-    limit: 1,
-  });
-  const tableRow = tableRows[0];
+  let tableRow: { id: string } | null;
+  if (isValidUuid(tableId)) {
+    tableRow =
+      (await db.query.tables.findFirst({
+        where: and(
+          eq(tablesTable.locationId, locationId),
+          eq(tablesTable.id, tableId)
+        ),
+        columns: { id: true },
+      })) ?? null;
+  } else {
+    tableRow =
+      (await db.query.tables.findFirst({
+        where: and(
+          eq(tablesTable.locationId, locationId),
+          or(
+            ilike(tablesTable.tableNumber, tableId),
+            ilike(tablesTable.displayId, tableId)
+          )
+        ),
+        columns: { id: true },
+      })) ?? null;
+  }
   if (!tableRow) return null;
 
   const session = await db.query.sessions.findFirst({

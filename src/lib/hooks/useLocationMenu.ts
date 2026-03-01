@@ -157,11 +157,14 @@ export function useLocationMenu(locationId: string | null) {
         throw new Error(msg || "Failed to load menu");
       }
 
-      const [itemsList, categoriesList, customizationsList] = await Promise.all([
-        itemsRes.json() as Promise<ApiItem[]>,
-        categoriesRes.json() as Promise<ApiCategory[]>,
-        customizationsRes.json() as Promise<ApiCustomizationGroup[]>,
+      const [itemsPayload, categoriesPayload, customizationsPayload] = await Promise.all([
+        itemsRes.json() as Promise<{ ok?: boolean; data?: ApiItem[] }>,
+        categoriesRes.json() as Promise<{ ok?: boolean; data?: ApiCategory[] }>,
+        customizationsRes.json() as Promise<{ ok?: boolean; data?: ApiCustomizationGroup[] }>,
       ]);
+      const itemsList = itemsPayload?.ok && Array.isArray(itemsPayload.data) ? itemsPayload.data : [];
+      const categoriesList = categoriesPayload?.ok && Array.isArray(categoriesPayload.data) ? categoriesPayload.data : [];
+      const customizationsList = customizationsPayload?.ok && Array.isArray(customizationsPayload.data) ? customizationsPayload.data : [];
 
       const groupMap = new Map<string, ApiCustomizationGroup>();
       for (const g of customizationsList ?? []) {

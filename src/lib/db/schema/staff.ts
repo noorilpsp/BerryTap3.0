@@ -54,6 +54,7 @@ export const staff = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     // Foreign Keys
+    userId: text("user_id"), // auth.users.id — links staff to Supabase user for session server assignment
     locationId: uuid("location_id")
       .notNull()
       .references(() => merchantLocations.id, { onDelete: "cascade" }),

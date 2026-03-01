@@ -59,13 +59,7 @@ import {
   type OrderForTableItem,
   type OrderForTableResult,
 } from "@/app/actions/orders"
-import {
-  checkKitchenDelays,
-  recordEventWithSource,
-  removeSeatByNumber,
-  renameSeat,
-  updateTableLayout,
-} from "@/domain"
+import { checkKitchenDelays } from "@/domain"
 import { getSessionOutstandingItems } from "@/app/actions/session-close-validation"
 import type {
   StoreAlertType,
@@ -76,6 +70,7 @@ import type {
 } from "@/store/types"
 import { storeTablesToFloorTables } from "@/lib/floor-map-data"
 import { fetchPos, makeIdempotencyKey } from "@/lib/pos/fetchPos"
+import { fireAndForget } from "@/lib/pos/fireAndForget"
 
 function getAutoSelectedOptions(item: MenuItem): Record<string, string> {
   const options: Record<string, string> = {}
@@ -488,6 +483,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   const [table, setTable] = useState<TableDetail>(tableFromStore)
   const prevTableIdRef = useRef<string | null>(null)
   const itemOrderIdsRef = useRef<Map<string, string>>(new Map())
+  const addItemsInFlightRef = useRef(false)
   useEffect(() => {
     if (prevTableIdRef.current !== id) {
       prevTableIdRef.current = id
@@ -756,13 +752,23 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     })
 
     if (currentLocationId) {
-      updateTableLayout(currentLocationId, activeStoreTable.id, {
-        status: nextStoreStatus,
-        guests: table.guestCount,
-        seatedAt: nextSeatedAt,
-        stage: nextStoreStage,
-        alerts: nextStoreAlerts,
-      }).catch((err) => console.error("[TableDetail] Failed to persist table:", err))
+      fireAndForget(
+        fetchPos(`/api/tables/${encodeURIComponent(activeStoreTable.id)}/layout`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            locationId: currentLocationId,
+            layout: {
+              status: nextStoreStatus,
+              guests: table.guestCount,
+              seatedAt: nextSeatedAt,
+              stage: nextStoreStage,
+              alerts: nextStoreAlerts,
+            },
+          }),
+        }),
+        "persist table layout"
+      )
     }
   }, [
     activeStoreTable,
@@ -1024,12 +1030,17 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
           activeStoreTable.id
         ))
         if (sid) {
-          const result = await removeSeatByNumber(sid, seatNumber)
-          if (!result.ok) {
+          const res = await fetchPos(`/api/sessions/${encodeURIComponent(sid)}/seats/${seatNumber}`, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ eventSource: "table_page" }),
+          })
+          const payload = await res.json().catch(() => null)
+          if (!res.ok || payload?.ok === false) {
             setWarningDialog({
               open: true,
               title: "Cannot delete seat",
-              description: result.error ?? "Seat has order items referencing it.",
+              description: payload?.error?.message ?? "Seat has order items referencing it.",
             })
             return
           }
@@ -1044,7 +1055,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       setArmedSeatDelete(null)
       setSelectedSeat((prev) => (prev === seatNumber ? null : prev))
     },
-    [orderItems, table.seats.length, currentLocationId, activeStoreTable?.id, effectiveSessionId, removeSeatByNumber]
+    [orderItems, table.seats.length, currentLocationId, activeStoreTable?.id, effectiveSessionId]
   )
 
   const handleRenameSeat = useCallback(
@@ -1055,12 +1066,17 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         activeStoreTable.id
       ))
       if (!sid) return
-      const result = await renameSeat(sid, seatNumber, newSeatNumber)
-      if (!result.ok) {
+      const res = await fetchPos(`/api/sessions/${encodeURIComponent(sid)}/seats/${seatNumber}/rename`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ newSeatNumber, eventSource: "table_page" }),
+      })
+      const payload = await res.json().catch(() => null)
+      if (!res.ok || payload?.ok === false) {
         setWarningDialog({
           open: true,
           title: "Cannot rename seat",
-          description: result.error ?? "Seat number already exists.",
+          description: payload?.error?.message ?? "Seat number already exists.",
         })
         return
       }
@@ -1073,7 +1089,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       setSeatRenameState(null)
       setArmedSeatDelete(null)
     },
-    [currentLocationId, activeStoreTable?.id, effectiveSessionId, renameSeat]
+    [currentLocationId, activeStoreTable?.id, effectiveSessionId]
   )
 
   useEffect(() => {
@@ -1101,13 +1117,43 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       const run = async () => {
         const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, activeStoreTable!.id))
         if (!sid) return
-        await fetchPos(`/api/sessions/${sid}/waves/${waveNumber}/fire`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ eventSource: "table_page" }),
-        }).catch(() => {})
+        const unfireItem = (item: TableOrderItem): TableOrderItem =>
+          item.status === "sent" && getItemWaveNumber(item) === waveNumber
+            ? { ...item, status: "held" as ItemStatus }
+            : item
+        const revert = () => {
+          setTable((prev) => ({
+            ...prev,
+            seats: prev.seats.map((seat) => ({ ...seat, items: seat.items.map(unfireItem) })),
+          }))
+          setTableItems((prev) => prev.map(unfireItem))
+        }
+        try {
+          const res = await fetchPos(`/api/sessions/${sid}/waves/${waveNumber}/fire`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ eventSource: "table_page" }),
+          })
+          const payload = await res.json().catch(() => null)
+          if (!res.ok || !payload?.ok) {
+            revert()
+            setWarningDialog({
+              open: true,
+              title: "Failed to fire wave",
+              description: payload?.error?.message ?? "Server rejected the request. Please try again.",
+            })
+            return
+          }
+        } catch {
+          revert()
+          setWarningDialog({
+            open: true,
+            title: "Failed to fire wave",
+            description: "Network error. Please try again.",
+          })
+        }
       }
-      run().catch(() => {})
+      run()
     }
 
     const fireItem = (item: TableOrderItem): TableOrderItem => {
@@ -1171,13 +1217,47 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       const run = async () => {
         const orderId = await resolveOrderIdForItem(itemId)
         if (!orderId) return
-        await fetchPos(`/api/orders/${orderId}/items/${itemId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "served", eventSource: "table_page" }),
-        }).catch(() => {})
+        const revert = (prevStatus: ItemStatus) => {
+          setTable((prev) => ({
+            ...prev,
+            seats: prev.seats.map((s) => ({
+              ...s,
+              items: s.items.map((i) => (i.id === itemId ? { ...i, status: prevStatus } : i)),
+            })),
+          }))
+          setTableItems((prev) =>
+            prev.map((i) => (i.id === itemId ? { ...i, status: prevStatus } : i))
+          )
+        }
+        const prevStatus = [
+          ...table.seats.flatMap((s) => s.items),
+          ...tableItems,
+        ].find((i) => i.id === itemId)?.status ?? "ready"
+        try {
+          const res = await fetchPos(`/api/orders/${orderId}/items/${itemId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "served", eventSource: "table_page" }),
+          })
+          const payload = await res.json().catch(() => null)
+          if (!res.ok || !payload?.ok) {
+            revert(prevStatus)
+            setWarningDialog({
+              open: true,
+              title: "Failed to mark served",
+              description: payload?.error?.message ?? "Server rejected the request. Please try again.",
+            })
+          }
+        } catch {
+          revert(prevStatus)
+          setWarningDialog({
+            open: true,
+            title: "Failed to mark served",
+            description: "Network error. Please try again.",
+          })
+        }
       }
-      run().catch(() => {})
+      run()
     }
     setTable((prev) => ({
       ...prev,
@@ -1191,7 +1271,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     setTableItems((prev) =>
       prev.map((i) => (i.id === itemId ? { ...i, status: "served" as ItemStatus } : i))
     )
-  }, [resolveOrderIdForItem])
+  }, [resolveOrderIdForItem, table.seats, tableItems])
 
   const handleAdvanceWaveStatus = useCallback(
     (waveNumber: number, nextStatus: "cooking" | "ready" | "served") => {
@@ -1268,8 +1348,8 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
             }).catch(() => null)
             const payload = response ? await response.json().catch(() => null) : null
 
-            const failedIds = Array.isArray(payload?.failed)
-              ? payload.failed
+            const failedIds = Array.isArray(payload?.data?.failed)
+              ? payload.data.failed
                   .map((entry: { itemId?: unknown }) =>
                     typeof entry?.itemId === "string" ? entry.itemId : null
                   )
@@ -1288,13 +1368,18 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
               restoreStatuses(new Set(failedIds))
             }
             if (nextStatus === "ready" || nextStatus === "served") {
-              recordEventWithSource(
-                currentLocationId!,
-                sid,
-                nextStatus === "ready" ? "item_ready" : "served",
-                "table_page",
-                { waveNumber }
-              ).catch(() => {})
+              fireAndForget(
+                fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    type: nextStatus === "ready" ? "item_ready" : "served",
+                    payload: { waveNumber },
+                    eventSource: "table_page",
+                  }),
+                }),
+                "record item_ready/served event"
+              )
             }
           }
         }
@@ -1317,16 +1402,50 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       const run = async () => {
         const orderId = await resolveOrderIdForItem(itemId)
         if (!orderId) return
-        await fetchPos(`/api/orders/${orderId}/items/${itemId}`, {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            reason: "Voided from table view",
-            eventSource: "table_page",
-          }),
-        }).catch(() => {})
+        const prevStatus = [
+          ...table.seats.flatMap((s) => s.items),
+          ...tableItems,
+        ].find((i) => i.id === itemId)?.status ?? "held"
+        const revert = () => {
+          setTable((prev) => ({
+            ...prev,
+            seats: prev.seats.map((s) => ({
+              ...s,
+              items: s.items.map((i) => (i.id === itemId ? { ...i, status: prevStatus } : i)),
+            })),
+          }))
+          setTableItems((prev) =>
+            prev.map((i) => (i.id === itemId ? { ...i, status: prevStatus } : i))
+          )
+        }
+        try {
+          const res = await fetchPos(`/api/orders/${orderId}/items/${itemId}`, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              reason: "Voided from table view",
+              eventSource: "table_page",
+            }),
+          })
+          const payload = await res.json().catch(() => null)
+          if (!res.ok || !payload?.ok) {
+            revert()
+            setWarningDialog({
+              open: true,
+              title: "Failed to void item",
+              description: payload?.error?.message ?? "Server rejected the request. Please try again.",
+            })
+          }
+        } catch {
+          revert()
+          setWarningDialog({
+            open: true,
+            title: "Failed to void item",
+            description: "Network error. Please try again.",
+          })
+        }
       }
-      run().catch(() => {})
+      run()
     }
     setTable((prev) => ({
       ...prev,
@@ -1340,7 +1459,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     setTableItems((prev) =>
       prev.map((i) => (i.id === itemId ? { ...i, status: "void" as ItemStatus } : i))
     )
-  }, [resolveOrderIdForItem])
+  }, [resolveOrderIdForItem, table.seats, tableItems])
 
   const handleEnterOrdering = useCallback((seatNumber: number | null = null) => {
     if (table.seats.length === 0) return
@@ -1374,6 +1493,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
 
   const handleSendCurrentOrder = useCallback(async () => {
     if (orderItems.length === 0 && !nextSendableWaveNumber) return
+    if (addItemsInFlightRef.current) return
 
     const idempotencyKey = makeIdempotencyKey()
     const existingHeldWaveNumbers = [
@@ -1407,6 +1527,8 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         return
       }
 
+      addItemsInFlightRef.current = true
+      try {
       let sid = effectiveSessionId
       if (!sid) {
         try {
@@ -1417,6 +1539,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
               tableUuid: activeStoreTable.id,
               locationId: currentLocationId,
               guestCount: Math.max(1, table.guestCount ?? 0),
+              eventSource: "table_page",
             }),
           }, { idempotencyKey })
           const payload = await res.json()
@@ -1424,7 +1547,11 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
           const data = payload.data
           sid = data.sessionId ?? null
         } catch (e) {
-          console.error("[TableDetail] No session for add items", e)
+          setWarningDialog({
+            open: true,
+            title: "Failed to create session",
+            description: e instanceof Error ? e.message : "Could not create session. Please try again.",
+          })
           return
         }
       }
@@ -1497,17 +1624,23 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         }),
       }, { idempotencyKey }).catch(() => null)
       const payload = response ? await response.json().catch(() => null) : null
-      if (!response?.ok) {
-        const errMsg =
-          (payload?.error && typeof payload.error === "object" && payload.error.message) ||
-          (typeof payload?.error === "string" ? payload.error : null) ||
-          response?.statusText ||
-          "unknown_error"
-        console.error("[TableDetail] add items API failed:", errMsg)
+      const data = payload?.ok === true && payload?.data ? payload.data : null
+      if (!response?.ok || payload?.ok === false || !data) {
+        let errMsg = "Unable to add items. Please try again."
+        if (payload?.error && typeof payload.error === "object" && payload.error !== null && "message" in payload.error) {
+          const m = (payload.error as { message?: unknown }).message
+          if (typeof m === "string" && m) errMsg = m
+        } else if (typeof payload?.error === "string" && payload.error) {
+          errMsg = payload.error
+        }
+        setWarningDialog({
+          open: true,
+          title: "Failed to add items",
+          description: errMsg,
+        })
         return
       }
 
-      const data = payload?.ok === true && payload?.data ? payload.data : payload
       const resultSessionId =
         typeof data?.sessionId === "string" ? data.sessionId : sid
       if (resultSessionId && !effectiveSessionId) {
@@ -1538,6 +1671,9 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         }
         if (seat === 0) draftSharedItems.push(item)
         else draftSeatItems.push({ seat, item })
+      }
+      } finally {
+        addItemsInFlightRef.current = false
       }
     }
 
@@ -1653,15 +1789,17 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         return
       }
       if (sid && result.ok) {
-        recordEventWithSource(
-          currentLocationId!,
-          sid,
-          "payment_completed",
-          "table_page",
-          undefined,
-          undefined,
-          result.correlationId
-        ).catch(() => {})
+        fireAndForget(
+          fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              type: "payment_completed",
+              eventSource: "table_page",
+            }),
+          }),
+          "record payment_completed event"
+        )
       }
       setSessionId(null)
     }
@@ -1678,12 +1816,22 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         sessionId: null,
       })
       if (currentLocationId) {
-        updateTableLayout(currentLocationId, activeStoreTable.id, {
-          status: "free",
-          guests: 0,
-          seatedAt: null,
-          stage: null,
-        }).catch((err) => console.error("[TableDetail] Failed to persist close table:", err))
+        fireAndForget(
+          fetchPos(`/api/tables/${encodeURIComponent(activeStoreTable.id)}/layout`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              locationId: currentLocationId,
+              layout: {
+                status: "free",
+                guests: 0,
+                seatedAt: null,
+                stage: null,
+              },
+            }),
+          }),
+          "persist close table layout"
+        )
       }
       // Sync local state from store so meal progress / waves / orders clear immediately
       const closedTable = useRestaurantStore.getState().tables.find(
@@ -1829,13 +1977,14 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     setIsOrderingInline(false)
     setSeatPartyOpen(false)
     openOrderForTable(activeStoreTable?.id ?? id, formData.partySize)
-    fetch("/api/sessions/ensure", {
+    fetchPos("/api/sessions/ensure", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         tableUuid: id,
         locationId: currentLocationId ?? "",
         guestCount: formData.partySize,
+        eventSource: "table_page",
       }),
     })
       .then(async (res) => {
@@ -1848,12 +1997,27 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
           const sid = data.sessionId
           setSessionId(sid)
           updateStoreTable(activeStoreTable.id, { sessionId: sid })
-          recordEventWithSource(currentLocationId!, sid, "guest_seated", "table_page", {
-            guestCount: formData.partySize,
-          }).catch(() => {})
+          fireAndForget(
+            fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                type: "guest_seated",
+                payload: { guestCount: formData.partySize },
+                eventSource: "table_page",
+              }),
+            }),
+            "record guest_seated event"
+          )
         }
       })
-      .catch(() => {})
+      .catch((err: unknown) => {
+        setWarningDialog({
+          open: true,
+          title: "Failed to seat party",
+          description: err instanceof Error ? err.message : "Could not create session. Please try again.",
+        })
+      })
   }, [currentLocationId, activeStoreTable?.id, activeStoreTable, id, openOrderForTable, updateStoreTable])
 
   return (
@@ -2010,7 +2174,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                                 const run = async () => {
                                   const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, activeStoreTable.id))
                                   if (sid) {
-                                    fetch(`/api/sessions/${sid}/waves/next`, {
+                                    fetchPos(`/api/sessions/${sid}/waves/next`, {
                                       method: "POST",
                                       headers: { "Content-Type": "application/json" },
                                       body: JSON.stringify({ eventSource: "table_page" }),
@@ -2020,7 +2184,15 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                                         if (!payload.ok) throw new Error(payload.error?.message ?? "Failed to create next wave")
                                         return payload.data
                                       })
-                                      .catch(() => {})
+                                      .catch((err: unknown) => {
+                                        setWaveCount(waveCount)
+                                        setSelectedWaveNumber(waveCount)
+                                        setWarningDialog({
+                                          open: true,
+                                          title: "Failed to add wave",
+                                          description: err instanceof Error ? err.message : "Could not create wave. Please try again.",
+                                        })
+                                      })
                                   }
                                 }
                                 run()
@@ -2366,7 +2538,14 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         onBill={() => {
           if (currentLocationId && id) {
             const record = (sid: string) =>
-              recordEventWithSource(currentLocationId!, sid, "bill_requested", "table_page").catch(() => {})
+              fireAndForget(
+                fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ type: "bill_requested", eventSource: "table_page" }),
+                }),
+                "record bill_requested event"
+              )
             if (effectiveSessionId) record(effectiveSessionId)
             else getOpenSessionIdForTable(currentLocationId, id).then((sid) => { if (sid) record(sid) })
           }

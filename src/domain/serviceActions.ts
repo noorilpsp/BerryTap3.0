@@ -73,6 +73,7 @@ import {
 } from "@/app/actions/seat-management";
 import { updateTable as updateTableAction } from "@/app/actions/tables";
 import { verifyLocationAccess } from "@/lib/location-access";
+import { supabaseServer } from "@/lib/supabaseServer";
 import { recalculateOrderTotals, recalculateSessionTotals } from "@/domain/orderTotals";
 import { getOpenWave } from "@/domain/orderHelpers";
 import type { StoreTableSessionState, StoreTable } from "@/store/types";
@@ -159,34 +160,52 @@ export type BatchWaveAdvanceResult =
       data?: unknown;
     };
 
+async function getCurrentUserId(): Promise<string | null> {
+  const supabase = await supabaseServer();
+  const { data: { user } } = await supabase.auth.getUser();
+  return user?.id ?? null;
+}
+
 /**
  * Canonical session creation: get or create an open session for a table (by table number string e.g. "t1").
  * Returns ServiceResult with sessionId on success.
+ * userId optional: when not provided, uses current auth user.
  */
 export async function ensureSession(
   locationId: string,
   tableId: string,
   guestCount: number,
-  serverId?: string | null
+  userId?: string | null
 ): Promise<ServiceResult> {
-  const sessionId = await ensureSessionForTable(locationId, tableId, guestCount, serverId);
-  if (!sessionId) return { ok: false, reason: "Failed to ensure session" };
-  return { ok: true, sessionId };
+  const effectiveUserId = userId ?? (await getCurrentUserId());
+  if (!effectiveUserId) return { ok: false, reason: "Unauthorized" };
+  const result = await ensureSessionForTable(locationId, tableId, guestCount, effectiveUserId);
+  if (!result.ok) {
+    const msg = result.reason === "user_not_staff" ? "You are not staff at this location" : result.reason;
+    return { ok: false, reason: msg };
+  }
+  return { ok: true, sessionId: result.sessionId };
 }
 
 /**
  * Canonical session creation by table UUID (tables.id).
  * Used when caller has table UUID (e.g. from API).
+ * userId optional: when not provided, uses current auth user.
  */
 export async function ensureSessionByTableUuid(
   locationId: string,
   tableUuid: string,
   guestCount = 1,
-  serverId?: string | null
+  userId?: string | null
 ): Promise<ServiceResult> {
-  const sessionId = await ensureSessionForTableByTableUuid(locationId, tableUuid, guestCount, serverId);
-  if (!sessionId) return { ok: false, reason: "Failed to ensure session" };
-  return { ok: true, sessionId };
+  const effectiveUserId = userId ?? (await getCurrentUserId());
+  if (!effectiveUserId) return { ok: false, reason: "Unauthorized" };
+  const result = await ensureSessionForTableByTableUuid(locationId, tableUuid, guestCount, effectiveUserId);
+  if (!result.ok) {
+    const msg = result.reason === "user_not_staff" ? "You are not staff at this location" : result.reason;
+    return { ok: false, reason: msg };
+  }
+  return { ok: true, sessionId: result.sessionId };
 }
 
 /** API order creation input. Matches POST /api/orders body. */
@@ -260,10 +279,15 @@ export async function createOrderFromApi(
       if (sessionRow) sessionId = sessionRow.id;
     }
     if (!sessionId && input.tableId) {
+      const ensureUserId = input.changedByUserId ?? (await getCurrentUserId());
+      if (!ensureUserId) {
+        return { ok: false, reason: "Dine-in orders require authenticated user to create session" };
+      }
       const ensureResult = await ensureSessionByTableUuid(
         input.locationId,
         input.tableId,
-        Math.max(1, Math.floor(input.guestCount ?? 1))
+        Math.max(1, Math.floor(input.guestCount ?? 1)),
+        ensureUserId
       );
       sessionId = ensureResult.ok ? ensureResult.sessionId ?? null : null;
     }

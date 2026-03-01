@@ -21,9 +21,35 @@ Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
 { "locationId": "...", "items": [...], ... }
 ```
 
-**Endpoints that enforce Idempotency-Key (as of this doc):**
-- POST /api/orders
-- POST /api/sessions/[sessionId]/close
+**All POS mutation routes enforce Idempotency-Key.** No exceptions. This table is the single source of truth:
+
+| Method | Endpoint |
+|--------|----------|
+| POST | /api/sessions/ensure |
+| PUT | /api/sessions/[sessionId]/seats/[seatNumber]/rename |
+| DELETE | /api/sessions/[sessionId]/seats/[seatNumber] |
+| POST | /api/sessions/[sessionId]/events |
+| POST | /api/sessions/[sessionId]/waves/next |
+| POST | /api/sessions/[sessionId]/waves/[waveNumber]/fire |
+| POST | /api/sessions/[sessionId]/waves/[waveNumber]/advance |
+| POST | /api/sessions/[sessionId]/close |
+| POST | /api/orders |
+| PUT | /api/orders/[id] |
+| DELETE | /api/orders/[id] |
+| PUT | /api/orders/[id]/status |
+| POST | /api/orders/[id]/items |
+| PUT | /api/orders/[id]/items/[itemId] |
+| DELETE | /api/orders/[id]/items/[itemId] |
+| POST | /api/orders/[id]/items/[itemId]/refire |
+| POST | /api/orders/[id]/payments |
+| PUT | /api/payments/[id] |
+| POST | /api/tables |
+| PUT | /api/tables/[id] |
+| PUT | /api/tables/[id]/layout |
+| DELETE | /api/tables/[id] |
+| POST | /api/reservations |
+| PUT | /api/reservations/[id] |
+| DELETE | /api/reservations/[id] |
 
 ---
 
@@ -40,6 +66,31 @@ Error codes: `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `BAD_REQUEST`, `CONFLICT`
 ---
 
 ## Sessions
+
+### PUT /api/sessions/[sessionId]/seats/[seatNumber]/rename
+- Method: `PUT`
+- Headers: `Idempotency-Key` (required)
+- Purpose: Rename a seat (change seat number)
+- Body: `{ "newSeatNumber": number, "eventSource"?: "table_page"|"kds"|"system"|"api" }`
+- Response: `{ "ok": true, "data": { "ok": true } }` or `{ "ok": false, "error": { "code", "message" } }`
+- Domain: `renameSeat(sessionId, seatNumber, newSeatNumber)`
+
+### DELETE /api/sessions/[sessionId]/seats/[seatNumber]
+- Method: `DELETE`
+- Headers: `Idempotency-Key` (required)
+- Purpose: Remove a seat from a session
+- Body: `{ "reason"?: string, "eventSource"?: "table_page"|"kds"|"system"|"api" }` (optional)
+- Response: `{ "ok": true, "data": { "ok": true } }` or `{ "ok": false, "error": { "code", "message" } }`
+- Domain: `removeSeatByNumber(sessionId, seatNumber)`
+
+### POST /api/sessions/[sessionId]/events
+- Method: `POST`
+- Headers: `Idempotency-Key` (required)
+- Purpose: Record a session event (telemetry/audit)
+- Body: `{ "type": string, "payload"?: unknown, "eventSource": "table_page"|"kds"|"system"|"api" }`
+- Response: `{ "ok": true, "data": { "ok": true } }` or `{ "ok": false, "error": { "code", "message" } }`
+- Domain: `recordEventWithSource(locationId, sessionId, type, eventSource, payload)`
+- **locationId:** Derived server-side from the session (session → locationId). Not accepted in the request body.
 
 ### POST /api/sessions/[sessionId]/close
 - Method: `POST`
@@ -448,6 +499,14 @@ or
 createTableMutation({ locationId, tableNumber, seats, status })
 ```
 
+### PUT /api/tables/[id]/layout
+- Method: `PUT`
+- Headers: `Idempotency-Key` (required)
+- Purpose: Persist table layout (status, guests, seatedAt, stage, alerts)
+- Body: `{ "locationId": string, "layout": { "status"?, "guests"?, "seatedAt"?, "stage"?, "alerts"? }, "eventSource"?: string }`
+- Response: `{ "ok": true, "data": { "ok": true } }` or `{ "ok": false, "error": { "code", "message" } }`
+- Domain: `updateTableLayout(locationId, tableId, layout)`
+
 ### PUT /api/tables/[id]
 - Method: `PUT`
 - Purpose: Update table
@@ -662,3 +721,50 @@ or
 ```json
 { "ok": false, "error": { "code": "string", "message": "string" } }
 ```
+
+### GET /api/kds/orders
+- Query: `locationId` (required)
+- Response:
+```json
+{ "ok": true, "data": { "orders": [...] } }
+```
+or
+```json
+{ "ok": false, "error": { "code": "string", "message": "string" } }
+```
+
+### GET /api/items
+- Query: `locationId` (required), `status?` (optional filter)
+- Response:
+```json
+{ "ok": true, "data": [...] }
+```
+or
+```json
+{ "ok": false, "error": { "code": "string", "message": "string" } }
+```
+Note: `data` is the items array.
+
+### GET /api/categories
+- Query: `locationId` (required)
+- Response:
+```json
+{ "ok": true, "data": [...] }
+```
+or
+```json
+{ "ok": false, "error": { "code": "string", "message": "string" } }
+```
+Note: `data` is the categories array.
+
+### GET /api/customizations
+- Query: `locationId` (required)
+- Response:
+```json
+{ "ok": true, "data": [...] }
+```
+or
+```json
+{ "ok": false, "error": { "code": "string", "message": "string" } }
+```
+Note: `data` is the customization groups array.

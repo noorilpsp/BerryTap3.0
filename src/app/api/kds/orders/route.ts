@@ -1,9 +1,10 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { eq, and, desc, inArray } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
-import { orders, orderItems } from "@/lib/db/schema/orders";
+import { orders } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -23,20 +24,14 @@ export async function GET(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
     const locationId = searchParams.get("locationId");
 
     if (!locationId) {
-      return NextResponse.json(
-        { error: "Location ID is required" },
-        { status: 400 }
-      );
+      return posFailure("BAD_REQUEST", "Location ID is required", { status: 400 });
     }
 
     const location = await db.query.merchantLocations.findFirst({
@@ -45,10 +40,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!location) {
-      return NextResponse.json(
-        { error: "Location not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Location not found", { status: 404 });
     }
 
     const membership = await db.query.merchantUsers.findFirst({
@@ -61,10 +53,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "You don't have access to this location", { status: 403 });
     }
 
     const ordersList = await db.query.orders.findMany({
@@ -149,23 +138,14 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    return NextResponse.json(
-      { orders: kdsOrders },
-      {
-        headers: {
-          "Cache-Control": "no-store, must-revalidate",
-        },
-      }
-    );
+    const res = posSuccess({ orders: kdsOrders });
+    res.headers.set("Cache-Control", "no-store, must-revalidate");
+    return res;
   } catch (error) {
     console.error("[GET /api/kds/orders] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to fetch KDS orders",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to fetch KDS orders"),
       { status: 500 }
     );
   }

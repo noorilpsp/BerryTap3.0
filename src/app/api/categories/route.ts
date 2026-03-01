@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { categories, menuCategories, categoryItems, menus } from "@/db/schema";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
 import { unstable_cache } from "@/lib/unstable-cache";
+import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -22,20 +23,14 @@ export async function GET(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
     const locationId = searchParams.get("locationId");
 
     if (!locationId) {
-      return NextResponse.json(
-        { error: "Location ID is required" },
-        { status: 400 }
-      );
+      return posFailure("BAD_REQUEST", "Location ID is required", { status: 400 });
     }
 
     // Verify location exists and user has access
@@ -48,10 +43,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!location) {
-      return NextResponse.json(
-        { error: "Location not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Location not found", { status: 404 });
     }
 
     // Check user has access to this merchant
@@ -67,10 +59,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "You don't have access to this location", { status: 403 });
     }
 
     // Fetch categories with item counts
@@ -108,20 +97,14 @@ export async function GET(request: NextRequest) {
 
     const categoriesList = await getCachedCategories();
 
-    return NextResponse.json(categoriesList, {
-      headers: {
-        "Cache-Control": "no-store, must-revalidate",
-      },
-    });
+    const res = posSuccess(categoriesList);
+    res.headers.set("Cache-Control", "no-store, must-revalidate");
+    return res;
   } catch (error) {
     console.error("[GET /api/categories] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to fetch categories",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to fetch categories"),
       { status: 500 }
     );
   }

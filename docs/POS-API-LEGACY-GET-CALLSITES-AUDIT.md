@@ -45,7 +45,7 @@ Data is loaded via:
 |------|------|----------|--------|------------------|
 | `src/app/table/[id]/page.tsx` | 1469 | `/api/orders` | **POST** | Expects `payload.sessionId`, `payload.orderId`, `payload.addedItemIds` at root. Standard envelope would put these under `payload.data`. |
 | `src/app/table/[id]/page.tsx` | 1175, 1321 | `/api/orders/${id}/items/${itemId}` | PUT, DELETE | No response body parsing (fire-and-forget) |
-| `src/app/kds/page.tsx` | 627 | `/api/kds/orders?locationId=...` | GET | Expects `data.orders` (KDS endpoint, different from GET /api/orders) |
+| `src/app/kds/page.tsx` | 627 | `/api/kds/orders?locationId=...` | GET | Expects `payload.data.orders` (standard `{ ok, data: { orders } }` envelope) |
 | `src/app/kds/page.tsx` | 775, 922 | `/api/orders/.../items/...` | PUT, POST | No response body parsing |
 
 ---

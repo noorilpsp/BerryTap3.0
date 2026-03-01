@@ -29,7 +29,9 @@ import {
 } from "@/lib/floorplan-storage-db"
 import { useLocation } from "@/lib/contexts/LocationContext"
 import { FloorplanSelector } from "@/components/floor-map/floorplan-selector"
-import { ensureSession, recordEventWithSource } from "@/domain"
+import { fetchPos } from "@/lib/pos/fetchPos"
+import { fireAndForget } from "@/lib/pos/fireAndForget"
+import { toast } from "sonner"
 import type { FilterMode, ViewMode, FloorTableStatus, SectionId, SeatPartyForm } from "@/lib/floor-map-data"
 import { Plus, Hammer } from "lucide-react"
 import Link from "next/link"
@@ -363,19 +365,41 @@ export default function FloorMapPage() {
       store.openOrderForTable(formData.tableId, formData.partySize)
 
       if (currentLocationId) {
-        ensureSession(
-          currentLocationId,
-          formData.tableId,
-          formData.partySize,
-          currentServer.id
-        ).then((result) => {
-          if (result.ok && result.sessionId) {
-            store.updateTable(formData.tableId, { sessionId: result.sessionId })
-            recordEventWithSource(currentLocationId, result.sessionId, "guest_seated", "table_page", {
-              guestCount: formData.partySize,
-            }).catch(() => {})
-          }
+        fetchPos("/api/sessions/ensure", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tableUuid: formData.tableId,
+            locationId: currentLocationId,
+            guestCount: formData.partySize,
+            eventSource: "table_page",
+          }),
         })
+          .then(async (res) => {
+            const payload = await res.json()
+            if (!payload.ok) throw new Error(payload.error?.message ?? "Failed to ensure session")
+            return payload.data
+          })
+          .then((data) => {
+            if (data?.sessionId) {
+              store.updateTable(formData.tableId, { sessionId: data.sessionId })
+              fireAndForget(
+                fetchPos(`/api/sessions/${encodeURIComponent(data.sessionId)}/events`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    type: "guest_seated",
+                    payload: { guestCount: formData.partySize },
+                    eventSource: "table_page",
+                  }),
+                }),
+                "record guest_seated event (floor-map)"
+              )
+            }
+          })
+          .catch((err) => {
+            toast.error(err instanceof Error ? err.message : "Failed to create session")
+          })
       }
 
       setSeatPartyOpen(false)

@@ -260,12 +260,13 @@ export async function POST(request: NextRequest) {
     });
 
     if (!result.ok) {
-      const status =
-        result.reason === "Unauthorized or location not found" ? 403 : 400;
+      const isForbidden =
+        result.reason === "Unauthorized or location not found" ||
+        result.reason === "You are not staff at this location";
       return posFailure(
-        status === 403 ? "FORBIDDEN" : "BAD_REQUEST",
+        isForbidden ? "FORBIDDEN" : "BAD_REQUEST",
         result.reason,
-        { status, correlationId: idempotencyKey }
+        { status: isForbidden ? 403 : 400, correlationId: idempotencyKey }
       );
     }
 

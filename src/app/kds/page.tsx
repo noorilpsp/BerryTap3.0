@@ -28,6 +28,8 @@ import {
 } from "@/components/kds/KDSStationMessage";
 import { Button } from "@/components/kds/ui/button";
 import { cn } from "@/lib/utils";
+import { fetchPos } from "@/lib/pos/fetchPos";
+import { toast } from "sonner";
 import type { ReactNode } from "react";
 
 function KDSPageLayout({ children }: { children: ReactNode }) {
@@ -625,10 +627,12 @@ export default function KDSPage() {
           return;
         }
         return fetch(`/api/kds/orders?locationId=${encodeURIComponent(locationId)}`)
-          .then((res) => (res.ok ? res.json() : { orders: [] }))
-          .then((data: { orders?: KdsOrderResponse[] }) => {
+          .then((res) => res.json())
+          .then((payload: { ok?: boolean; data?: { orders?: KdsOrderResponse[] }; error?: { message?: string } }) => {
             if (cancelled) return;
-            const list = Array.isArray(data.orders) ? data.orders : [];
+            const list = payload.ok && payload.data?.orders
+              ? payload.data.orders
+              : [];
             setOrders(list.map(mapKdsOrderToOrder));
             setKdsLiveOrderIds(new Set(list.map((o) => o.id)));
           })
@@ -769,16 +773,7 @@ export default function KDSPage() {
     const currentOrder = orders.find(o => o.id === orderId);
     const previousStatus = currentOrder?.status;
 
-    // Persist order_items status (and timestamps) to DB when this order is from the API
-    if (kdsLiveOrderIds.has(orderId) && currentOrder?.items?.length) {
-      currentOrder.items.forEach((item) => {
-        fetch(`/api/orders/${orderId}/items/${item.id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: newStatus }),
-        }).catch(() => {});
-      });
-    }
+    const previousOrder = currentOrder ? { ...currentOrder } : null;
 
     // If bumping (remove), add to completedOrders for Recall
     if (newStatus === "ready" && currentOrder?.status === "ready") {
@@ -857,6 +852,32 @@ export default function KDSPage() {
         });
       }, 1200);
     }
+
+    // Persist order_items status to DB when this order is from the API
+    if (kdsLiveOrderIds.has(orderId) && currentOrder?.items?.length && previousOrder) {
+      Promise.all(
+        currentOrder.items.map((item) =>
+          fetchPos(`/api/orders/${orderId}/items/${item.id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: newStatus, eventSource: "kds" }),
+          }).then(async (res) => {
+            const p = await res.json().catch(() => ({}));
+            return res.ok && p?.ok;
+          })
+        )
+      ).then((oks) => {
+        if (oks.some((ok) => !ok)) {
+          setOrders((prev) => {
+            const exists = prev.some((o) => o.id === orderId);
+            if (exists) return prev.map((o) => (o.id === orderId ? previousOrder : o));
+            return [...prev, previousOrder];
+          });
+          setCompletedOrders((prev) => prev.filter((o) => o.id !== orderId));
+          toast.error("Failed to update item status");
+        }
+      });
+    }
   };
 
   const handleSnooze = useCallback((orderId: string, durationSeconds: number) => {
@@ -918,13 +939,6 @@ export default function KDSPage() {
   const handleRefire = useCallback((orderId: string, item: OrderItem, reason: string) => {
     const original = orders.find(o => o.id === orderId);
     if (!original) return;
-    if (kdsLiveOrderIds.has(orderId)) {
-      fetch(`/api/orders/${orderId}/items/${item.id}/refire`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason }),
-      }).catch(() => {});
-    }
     const remakeId = `${orderId}-R`;
     const remakeOrderNumber = `${original.orderNumber}-R`;
     const stationId = item.stationId ?? activeStationId;
@@ -944,6 +958,22 @@ export default function KDSPage() {
       originalOrderId: orderId,
     };
     setOrders(prev => [remakeOrder, ...prev]);
+
+    if (kdsLiveOrderIds.has(orderId)) {
+      fetchPos(`/api/orders/${orderId}/items/${item.id}/refire`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason, eventSource: "kds" }),
+      })
+        .then(async (res) => {
+          const p = await res.json().catch(() => ({}));
+          if (!res.ok || !p?.ok) throw new Error("Refire failed");
+        })
+        .catch(() => {
+          setOrders((prev) => prev.filter((o) => o.id !== remakeId));
+          toast.error("Failed to refire item");
+        });
+    }
   }, [orders, activeStationId, kdsLiveOrderIds]);
 
   const handleRecall = useCallback((completed: CompletedOrder) => {

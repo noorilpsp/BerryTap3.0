@@ -4,6 +4,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { customizationGroups, customizationOptions, conditionalPrices, conditionalQuantities, secondaryGroupRules, itemCustomizations } from "@/db/schema";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -21,20 +22,14 @@ export async function GET(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
     const locationId = searchParams.get("locationId");
 
     if (!locationId) {
-      return NextResponse.json(
-        { error: "Location ID is required" },
-        { status: 400 }
-      );
+      return posFailure("BAD_REQUEST", "Location ID is required", { status: 400 });
     }
 
     // Verify location exists and user has access
@@ -47,10 +42,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!location) {
-      return NextResponse.json(
-        { error: "Location not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Location not found", { status: 404 });
     }
 
     // Check user has access to this merchant
@@ -66,10 +58,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "You don't have access to this location", { status: 403 });
     }
 
     // Fetch customization groups with options and advanced rules (no cache to ensure fresh data)
@@ -142,20 +131,14 @@ export async function GET(request: NextRequest) {
           })
         );
 
-    return NextResponse.json(groupsWithConditionalPrices, {
-      headers: {
-        "Cache-Control": "no-store, must-revalidate",
-      },
-    });
+    const res = posSuccess(groupsWithConditionalPrices);
+    res.headers.set("Cache-Control", "no-store, must-revalidate");
+    return res;
   } catch (error) {
     console.error("[GET /api/customizations] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to fetch customizations",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to fetch customizations"),
       { status: 500 }
     );
   }
