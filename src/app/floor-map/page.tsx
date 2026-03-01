@@ -29,8 +29,7 @@ import {
 } from "@/lib/floorplan-storage-db"
 import { useLocation } from "@/lib/contexts/LocationContext"
 import { FloorplanSelector } from "@/components/floor-map/floorplan-selector"
-import { ensureSession } from "@/domain/serviceActions"
-import { recordSessionEventWithSource } from "@/app/actions/session-events"
+import { ensureSession, recordEventWithSource } from "@/domain"
 import type { FilterMode, ViewMode, FloorTableStatus, SectionId, SeatPartyForm } from "@/lib/floor-map-data"
 import { Plus, Hammer } from "lucide-react"
 import Link from "next/link"
@@ -372,7 +371,7 @@ export default function FloorMapPage() {
         ).then((result) => {
           if (result.ok && result.sessionId) {
             store.updateTable(formData.tableId, { sessionId: result.sessionId })
-            recordSessionEventWithSource(currentLocationId, result.sessionId, "guest_seated", "table_page", {
+            recordEventWithSource(currentLocationId, result.sessionId, "guest_seated", "table_page", {
               guestCount: formData.partySize,
             }).catch(() => {})
           }

@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal"
-import { useSidebar } from "./ui/sidebar"
+import { useSidebar } from "@/components/ui/sidebar"
 import { useToast } from "@/hooks/use-toast"
 
 export function KeyboardShortcutsProvider({ children }: { children: React.ReactNode }) {

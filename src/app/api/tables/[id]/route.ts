@@ -8,7 +8,8 @@ import { computeTableStatus } from "@/app/actions/tables";
 import {
   deleteTableMutation,
   updateTableMutation,
-} from "@/domain/table-mutations";
+} from "@/domain";
+import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -29,10 +30,7 @@ export async function GET(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const table = await db.query.tables.findFirst({
@@ -48,10 +46,7 @@ export async function GET(
     });
 
     if (!table) {
-      return NextResponse.json(
-        { error: "Table not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Table not found", { status: 404 });
     }
 
     // Check user has access to this merchant
@@ -67,23 +62,16 @@ export async function GET(
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "You don't have access to this location", { status: 403 });
     }
 
     const derivedStatus = await computeTableStatus(table.id);
-    return NextResponse.json({ ...table, status: derivedStatus });
+    return posSuccess({ ...table, status: derivedStatus });
   } catch (error) {
     console.error("[GET /api/tables/[id]] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to fetch table",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to fetch table"),
       { status: 500 }
     );
   }
@@ -107,10 +95,7 @@ export async function PUT(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const body = await request.json().catch(() => ({}));
@@ -130,10 +115,7 @@ export async function PUT(
     });
 
     if (!existingTable) {
-      return NextResponse.json(
-        { error: "Table not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Table not found", { status: 404 });
     }
 
     // Check user has access to this merchant
@@ -149,10 +131,9 @@ export async function PUT(
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
+        status: 403,
+      });
     }
 
     const result = await updateTableMutation(existingTable.locationId, id, {
@@ -162,27 +143,22 @@ export async function PUT(
     });
     if (!result.ok) {
       if (result.reason === "table_not_found") {
-        return NextResponse.json({ error: "Table not found" }, { status: 404 });
+        return posFailure("NOT_FOUND", "Table not found", { status: 404 });
       }
       if (result.reason === "table_number_exists") {
-        return NextResponse.json(
-          { error: "Table number already exists for this location" },
-          { status: 409 }
-        );
+        return posFailure("CONFLICT", "Table number already exists for this location", {
+          status: 409,
+        });
       }
-      return NextResponse.json({ error: "Invalid table status" }, { status: 400 });
+      return posFailure("BAD_REQUEST", "Invalid table status", { status: 400 });
     }
 
-    return NextResponse.json(result.table);
+    return posSuccess({ ...result.table });
   } catch (error) {
     console.error("[PUT /api/tables/[id]] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to update table",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to update table"),
       { status: 500 }
     );
   }
@@ -205,10 +181,7 @@ export async function DELETE(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     // Get existing table
@@ -225,10 +198,7 @@ export async function DELETE(
     });
 
     if (!existingTable) {
-      return NextResponse.json(
-        { error: "Table not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Table not found", { status: 404 });
     }
 
     // Check user has access to this merchant
@@ -244,27 +214,22 @@ export async function DELETE(
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
+        status: 403,
+      });
     }
 
     const result = await deleteTableMutation(existingTable.locationId, id);
     if (!result.ok) {
-      return NextResponse.json({ error: "Table not found" }, { status: 404 });
+      return posFailure("NOT_FOUND", "Table not found", { status: 404 });
     }
 
-    return NextResponse.json({ success: true });
+    return posSuccess({ success: true });
   } catch (error) {
     console.error("[DELETE /api/tables/[id]] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to delete table",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to delete table"),
       { status: 500 }
     );
   }

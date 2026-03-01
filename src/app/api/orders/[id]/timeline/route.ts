@@ -1,9 +1,10 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { eq, and, desc } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { orders, orderTimeline } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -24,10 +25,7 @@ export async function GET(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     // Get existing order
@@ -44,10 +42,7 @@ export async function GET(
     });
 
     if (!existingOrder) {
-      return NextResponse.json(
-        { error: "Order not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Order not found", { status: 404 });
     }
 
     // Check user has access
@@ -63,10 +58,7 @@ export async function GET(
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "You don't have access to this location", { status: 403 });
     }
 
     // Fetch timeline
@@ -101,16 +93,12 @@ export async function GET(
       note: entry.note,
     }));
 
-    return NextResponse.json({ timeline: transformedTimeline });
+    return posSuccess({ timeline: transformedTimeline });
   } catch (error) {
     console.error("[GET /api/orders/[id]/timeline] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to fetch timeline",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to fetch timeline"),
       { status: 500 }
     );
   }

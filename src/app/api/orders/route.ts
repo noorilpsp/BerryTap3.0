@@ -4,7 +4,8 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { orders, orderTimeline } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
-import { createOrderFromApi } from "@/domain/serviceActions";
+import { createOrderFromApi } from "@/domain";
+import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -22,10 +23,7 @@ export async function GET(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
@@ -37,10 +35,7 @@ export async function GET(request: NextRequest) {
     const endDate = searchParams.get("endDate");
 
     if (!locationId) {
-      return NextResponse.json(
-        { error: "Location ID is required" },
-        { status: 400 }
-      );
+      return posFailure("BAD_REQUEST", "Location ID is required", { status: 400 });
     }
 
     // Verify location exists and user has access
@@ -53,10 +48,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!location) {
-      return NextResponse.json(
-        { error: "Location not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Location not found", { status: 404 });
     }
 
     // Check user has access to this merchant
@@ -72,10 +64,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "You don't have access to this location", { status: 403 });
     }
 
     // Build where conditions
@@ -163,23 +152,14 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    return NextResponse.json(
-      { orders: transformedOrders },
-      {
-        headers: {
-          "Cache-Control": "no-store, must-revalidate",
-        },
-      }
-    );
+    const res = posSuccess({ orders: transformedOrders });
+    res.headers.set("Cache-Control", "no-store, must-revalidate");
+    return res;
   } catch (error) {
     console.error("[GET /api/orders] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to fetch orders",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to fetch orders"),
       { status: 500 }
     );
   }
@@ -202,10 +182,7 @@ export async function POST(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const body = await request.json().catch(() => ({}));
@@ -221,11 +198,13 @@ export async function POST(request: NextRequest) {
       items,
       notes,
       guestCount,
+      eventSource,
     } = body;
 
     if (!locationId || !orderType || !paymentTiming || !items || !Array.isArray(items) || items.length === 0) {
-      return NextResponse.json(
-        { error: "Location ID, order type, payment timing, and at least one item are required" },
+      return posFailure(
+        "BAD_REQUEST",
+        "Location ID, order type, payment timing, and at least one item are required",
         { status: 400 }
       );
     }
@@ -242,13 +221,18 @@ export async function POST(request: NextRequest) {
       guestCount,
       notes: notes ?? null,
       items,
+      eventSource,
       changedByUserId: user.id,
     });
 
     if (!result.ok) {
       const status =
         result.reason === "Unauthorized or location not found" ? 403 : 400;
-      return NextResponse.json({ error: result.reason }, { status });
+      return posFailure(
+        status === 403 ? "FORBIDDEN" : "BAD_REQUEST",
+        result.reason,
+        { status }
+      );
     }
 
     const completeOrder = await db.query.orders.findFirst({
@@ -272,16 +256,20 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    return NextResponse.json({ order: completeOrder }, { status: 201 });
+    return posSuccess(
+      {
+        order: completeOrder,
+        orderId: result.orderId,
+        sessionId: result.sessionId ?? null,
+        addedItemIds: result.addedItemIds ?? [],
+      },
+      { status: 201 }
+    );
   } catch (error) {
     console.error("[POST /api/orders] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to create order",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to create order"),
       { status: 500 }
     );
   }

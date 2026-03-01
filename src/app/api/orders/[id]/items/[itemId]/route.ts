@@ -11,9 +11,17 @@ import {
   updateItemQuantity,
   updateItemNotes,
   voidItem,
-} from "@/domain/serviceActions";
+} from "@/domain";
+import type { EventSource } from "@/app/actions/session-events";
+import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
+
+function normalizeEventSource(value: unknown): EventSource {
+  return value === "table_page" || value === "kds" || value === "system"
+    ? value
+    : "api";
+}
 
 /**
  * PUT /api/orders/[id]/items/[itemId]
@@ -32,14 +40,12 @@ export async function PUT(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const body = await request.json().catch(() => ({}));
-    const { quantity, notes, status } = body;
+    const { quantity, notes, status, eventSource } = body;
+    const source = normalizeEventSource(eventSource);
 
     // Get existing order
     const existingOrder = await db.query.orders.findFirst({
@@ -57,10 +63,7 @@ export async function PUT(
     });
 
     if (!existingOrder) {
-      return NextResponse.json(
-        { error: "Order not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Order not found", { status: 404 });
     }
 
     // Check user has access
@@ -76,10 +79,9 @@ export async function PUT(
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
+        status: 403,
+      });
     }
 
     // Verify item belongs to this order
@@ -88,7 +90,7 @@ export async function PUT(
       columns: { id: true },
     });
     if (!itemInOrder) {
-      return NextResponse.json({ error: "Order item not found" }, { status: 404 });
+      return posFailure("NOT_FOUND", "Order item not found", { status: 404 });
     }
 
     // Route status changes through service layer (validate transitions, record events)
@@ -96,21 +98,22 @@ export async function PUT(
       if (status === "preparing") {
         const result = await markItemPreparing(itemId);
         if (!result.ok) {
-          return NextResponse.json({ error: result.reason }, { status: 400 });
+          return posFailure("BAD_REQUEST", result.reason, { status: 400 });
         }
       } else if (status === "ready") {
-        const result = await markItemReady(itemId, { eventSource: "api" });
+        const result = await markItemReady(itemId, { eventSource: source });
         if (!result.ok) {
-          return NextResponse.json({ error: result.reason }, { status: 400 });
+          return posFailure("BAD_REQUEST", result.reason, { status: 400 });
         }
       } else if (status === "served") {
-        const result = await serveItem(itemId, { eventSource: "api" });
+        const result = await serveItem(itemId, { eventSource: source });
         if (!result.ok) {
-          return NextResponse.json({ error: result.reason }, { status: 400 });
+          return posFailure("BAD_REQUEST", result.reason, { status: 400 });
         }
       } else {
-        return NextResponse.json(
-          { error: `Invalid status: ${status}. Use preparing, ready, or served.` },
+        return posFailure(
+          "BAD_REQUEST",
+          `Invalid status: ${status}. Use preparing, ready, or served.`,
           { status: 400 }
         );
       }
@@ -120,8 +123,11 @@ export async function PUT(
     if (quantity !== undefined) {
       const result = await updateItemQuantity(itemId, quantity);
       if (!result.ok) {
-        return NextResponse.json(
-          { error: result.reason === "item_sent_to_kitchen" ? "Cannot modify order items that have been sent to kitchen" : result.reason },
+        return posFailure(
+          "BAD_REQUEST",
+          result.reason === "item_sent_to_kitchen"
+            ? "Cannot modify order items that have been sent to kitchen"
+            : result.reason,
           { status: 400 }
         );
       }
@@ -129,8 +135,11 @@ export async function PUT(
     if (notes !== undefined) {
       const result = await updateItemNotes(itemId, notes);
       if (!result.ok) {
-        return NextResponse.json(
-          { error: result.reason === "item_sent_to_kitchen" ? "Cannot modify order items that have been sent to kitchen" : result.reason },
+        return posFailure(
+          "BAD_REQUEST",
+          result.reason === "item_sent_to_kitchen"
+            ? "Cannot modify order items that have been sent to kitchen"
+            : result.reason,
           { status: 400 }
         );
       }
@@ -140,16 +149,12 @@ export async function PUT(
       where: and(eq(orderItems.orderId, id), eq(orderItems.id, itemId)),
     });
 
-    return NextResponse.json(updatedItem);
+    return posSuccess(updatedItem ?? { id: itemId });
   } catch (error) {
     console.error("[PUT /api/orders/[id]/items/[itemId]] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to update order item",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to update order item"),
       { status: 500 }
     );
   }
@@ -172,11 +177,15 @@ export async function DELETE(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
+
+    const body = await request.json().catch(() => ({}));
+    const reason =
+      typeof body.reason === "string" && body.reason.trim().length > 0
+        ? body.reason
+        : "Removed via API";
+    const source = normalizeEventSource(body.eventSource);
 
     // Get existing order
     const existingOrder = await db.query.orders.findFirst({
@@ -192,10 +201,7 @@ export async function DELETE(
     });
 
     if (!existingOrder) {
-      return NextResponse.json(
-        { error: "Order not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Order not found", { status: 404 });
     }
 
     // Check user has access
@@ -211,10 +217,9 @@ export async function DELETE(
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
+        status: 403,
+      });
     }
 
     // Verify item belongs to this order
@@ -223,27 +228,24 @@ export async function DELETE(
       columns: { id: true },
     });
     if (!itemInOrder) {
-      return NextResponse.json({ error: "Order item not found" }, { status: 404 });
+      return posFailure("NOT_FOUND", "Order item not found", { status: 404 });
     }
 
-    const result = await voidItem(itemId, "Removed via API", { eventSource: "api" });
+    const result = await voidItem(itemId, reason, { eventSource: source });
     if (!result.ok) {
-      return NextResponse.json(
-        { error: result.reason === "item_already_voided" ? "Order item already voided" : result.reason },
+      return posFailure(
+        "BAD_REQUEST",
+        result.reason === "item_already_voided" ? "Order item already voided" : result.reason,
         { status: 400 }
       );
     }
 
-    return NextResponse.json({ success: true });
+    return posSuccess({ success: true });
   } catch (error) {
     console.error("[DELETE /api/orders/[id]/items/[itemId]] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to remove item from order",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to remove item from order"),
       { status: 500 }
     );
   }

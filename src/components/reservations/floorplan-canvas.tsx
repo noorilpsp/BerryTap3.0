@@ -19,6 +19,7 @@ interface CanvasProps {
   zone: ZoneId
   selectedTable: string | null
   whatIfMode: boolean
+  highlightedSeats?: number | null
   onSelectTable: (id: string) => void
 }
 

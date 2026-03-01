@@ -4,7 +4,8 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { payments } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
-import { updatePayment } from "@/domain/serviceActions";
+import { updatePayment } from "@/domain";
+import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -26,20 +27,14 @@ export async function PUT(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const body = await request.json().catch(() => ({}));
     const { status } = body;
 
     if (!status) {
-      return NextResponse.json(
-        { error: "Status is required" },
-        { status: 400 }
-      );
+      return posFailure("BAD_REQUEST", "Status is required", { status: 400 });
     }
 
     const existingPayment = await db.query.payments.findFirst({
@@ -48,10 +43,7 @@ export async function PUT(
     });
 
     if (!existingPayment?.order?.location) {
-      return NextResponse.json(
-        { error: "Payment not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Payment not found", { status: 404 });
     }
 
     const merchantId = existingPayment.order.location.merchantId;
@@ -65,32 +57,29 @@ export async function PUT(
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
+        status: 403,
+      });
     }
 
     const result = await updatePayment(id, status);
 
     if (!result.ok) {
       const statusCode = result.reason === "unauthorized" ? 403 : 400;
-      return NextResponse.json({ error: result.reason }, { status: statusCode });
+      return posFailure(statusCode === 403 ? "FORBIDDEN" : "BAD_REQUEST", result.reason, {
+        status: statusCode,
+      });
     }
 
     const updatedPayment = await db.query.payments.findFirst({
       where: eq(payments.id, id),
     });
-    return NextResponse.json(updatedPayment ?? { id });
+    return posSuccess(updatedPayment ?? { id });
   } catch (error) {
     console.error("[PUT /api/payments/[id]] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to update payment",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to update payment"),
       { status: 500 }
     );
   }

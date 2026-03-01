@@ -315,6 +315,132 @@ export const overviewInsights = [
   "2-tops make up 32% of covers but only 18% of revenue -- upsell opportunity",
 ]
 
+// ── Promotions Analytics (placeholders for analytics-dashboard) ────
+
+export const revenueTimelineData = [
+  { date: "Oct 15", baseline: 8200, actual: 8400, lift: 200 },
+  { date: "Oct 22", baseline: 8500, actual: 8900, lift: 400 },
+  { date: "Nov 1", baseline: 9000, actual: 10200, lift: 1200 },
+  { date: "Nov 8", baseline: 9100, actual: 10400, lift: 1300 },
+  { date: "Nov 15", baseline: 9200, actual: 10300, lift: 1100 },
+  { date: "Nov 22", baseline: 9400, actual: 10600, lift: 1200 },
+  { date: "Nov 30", baseline: 9500, actual: 10800, lift: 1300 },
+  { date: "Dec 7", baseline: 8800, actual: 9200, lift: 400 },
+  { date: "Dec 14", baseline: 8700, actual: 8900, lift: 200 },
+]
+
+export const redemptionRateData = [
+  { week: "W1", actual: 12.2, movingAvg: 11.8, redemptions: 142 },
+  { week: "W2", actual: 13.1, movingAvg: 12.1, redemptions: 158 },
+  { week: "W3", actual: 11.8, movingAvg: 12.4, redemptions: 138 },
+  { week: "W4", actual: 14.2, movingAvg: 12.8, redemptions: 172 },
+  { week: "W5", actual: 13.5, movingAvg: 12.9, redemptions: 165 },
+  { week: "W6", actual: 12.9, movingAvg: 12.9, redemptions: 151 },
+]
+
+export const usageHeatmapData: { day: string; hour: string; value: number }[] = (() => {
+  const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+  const hours = ["11", "12", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]
+  const out: { day: string; hour: string; value: number }[] = []
+  for (const day of days) {
+    for (const hour of hours) {
+      out.push({ day, hour, value: Math.floor(Math.random() * 50) + 1 })
+    }
+  }
+  return out
+})()
+
+export const promotionTypeData = [
+  { type: "Percentage Off", count: 142, revenue: 18420, avgRedemptionRate: 14.2, percentage: 38 },
+  { type: "BOGO", count: 98, revenue: 12400, avgRedemptionRate: 11.8, percentage: 26 },
+  { type: "Free Item", count: 76, revenue: 9200, avgRedemptionRate: 9.4, percentage: 20 },
+  { type: "Fixed Amount", count: 58, revenue: 7200, avgRedemptionRate: 8.2, percentage: 16 },
+]
+
+export const topPerformingItems = [
+  { name: "Lunch Special", revenueLift: 2450, redemptions: 89, category: "Food" },
+  { name: "Happy Hour Drink", revenueLift: 1890, redemptions: 142, category: "Beverages" },
+  { name: "Dessert Combo", revenueLift: 1520, redemptions: 68, category: "Desserts" },
+  { name: "Weekend Brunch", revenueLift: 1280, redemptions: 45, category: "Food" },
+  { name: "Appetizer Bundle", revenueLift: 980, redemptions: 52, category: "Food" },
+  { name: "Coffee Deal", revenueLift: 720, redemptions: 124, category: "Beverages" },
+]
+
+export const performanceScores = [
+  {
+    promotionId: "p1",
+    promotionName: "Lunch Special 20% Off",
+    score: 87,
+    trend: "up" as const,
+    trendPercent: 5,
+    rating: 4,
+    ratingLabel: "High",
+    metrics: {
+      redemptionRate: { value: 14.2, score: 18, max: 20 },
+      roi: { value: 2.4, score: 16, max: 20 },
+    },
+  },
+  {
+    promotionId: "p2",
+    promotionName: "Happy Hour BOGO",
+    score: 82,
+    trend: "stable" as const,
+    trendPercent: 0,
+    rating: 4,
+    ratingLabel: "High",
+    metrics: {
+      redemptionRate: { value: 11.8, score: 16, max: 20 },
+      roi: { value: 2.1, score: 14, max: 20 },
+    },
+  },
+  {
+    promotionId: "p3",
+    promotionName: "Dessert Combo",
+    score: 76,
+    trend: "down" as const,
+    trendPercent: -3,
+    rating: 3,
+    ratingLabel: "Medium",
+    metrics: {
+      redemptionRate: { value: 9.4, score: 14, max: 20 },
+      roi: { value: 1.8, score: 12, max: 20 },
+    },
+  },
+]
+
+export const aiInsights = [
+  {
+    id: "insight-1",
+    icon: "Sparkles" as const,
+    variant: "default" as const,
+    title: "Revenue lift opportunity",
+    message: "Extending Lunch Special to weekends could increase redemptions by ~15% based on historical patterns.",
+    confidence: 78,
+    dismissable: true,
+    actions: [{ variant: "default" as const, label: "View details" }],
+  },
+  {
+    id: "insight-2",
+    icon: "TrendingUp" as const,
+    variant: "default" as const,
+    title: "Best performing channel",
+    message: "Direct app promotions outperform email by 22% redemption rate. Consider reallocating budget.",
+    confidence: 85,
+    dismissable: true,
+    actions: [{ variant: "outline" as const, label: "Compare channels" }],
+  },
+  {
+    id: "insight-3",
+    icon: "Lightbulb" as const,
+    variant: "default" as const,
+    title: "Timing recommendation",
+    message: "Peak redemption hour is 7–8 PM. Schedule new promotions to start at 6:30 PM for maximum visibility.",
+    confidence: 72,
+    dismissable: true,
+    actions: [{ variant: "outline" as const, label: "Set schedule" }],
+  },
+]
+
 // helpers
 export function formatCurrency(n: number) {
   if (n >= 1000) return `$${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}K`

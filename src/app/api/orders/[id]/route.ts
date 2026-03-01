@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq, and } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
-import { orders, payments, orderDelivery } from "@/lib/db/schema/orders";
+import { orders, orderTimeline, payments, orderDelivery } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
 import { desc } from "drizzle-orm";
-import { updateOrder, cancelOrder } from "@/domain/serviceActions";
+import { updateOrder, cancelOrder } from "@/domain";
+import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -26,10 +27,7 @@ export async function GET(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const order = await db.query.orders.findFirst({
@@ -75,10 +73,7 @@ export async function GET(
     });
 
     if (!order) {
-      return NextResponse.json(
-        { error: "Order not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Order not found", { status: 404 });
     }
 
     // Check user has access to this merchant
@@ -94,10 +89,7 @@ export async function GET(
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "You don't have access to this location", { status: 403 });
     }
 
     // Transform to match expected format
@@ -184,16 +176,12 @@ export async function GET(
       updatedAt: order.updatedAt.toISOString(),
     };
 
-    return NextResponse.json({ order: transformedOrder });
+    return posSuccess({ order: transformedOrder });
   } catch (error) {
     console.error("[GET /api/orders/[id]] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to fetch order",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to fetch order"),
       { status: 500 }
     );
   }
@@ -217,10 +205,7 @@ export async function PUT(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const body = await request.json().catch(() => ({}));
@@ -240,10 +225,7 @@ export async function PUT(
     });
 
     if (!existingOrder) {
-      return NextResponse.json(
-        { error: "Order not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Order not found", { status: 404 });
     }
 
     // Check user has access to this merchant
@@ -259,10 +241,9 @@ export async function PUT(
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
+        status: 403,
+      });
     }
 
     const patch = {
@@ -276,21 +257,17 @@ export async function PUT(
     const result = await updateOrder(id, patch);
     if (!result.ok) {
       const status = result.reason === "unauthorized" ? 403 : 400;
-      return NextResponse.json({ error: result.reason }, { status });
+      return posFailure(status === 403 ? "FORBIDDEN" : "BAD_REQUEST", result.reason, { status });
     }
     const updatedOrder = await db.query.orders.findFirst({
       where: eq(orders.id, id),
     });
-    return NextResponse.json({ order: updatedOrder });
+    return posSuccess({ order: updatedOrder });
   } catch (error) {
     console.error("[PUT /api/orders/[id]] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to update order",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to update order"),
       { status: 500 }
     );
   }
@@ -313,10 +290,7 @@ export async function DELETE(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     // Get existing order
@@ -334,10 +308,7 @@ export async function DELETE(
     });
 
     if (!existingOrder) {
-      return NextResponse.json(
-        { error: "Order not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Order not found", { status: 404 });
     }
 
     // Check user has access to this merchant
@@ -353,30 +324,25 @@ export async function DELETE(
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
+        status: 403,
+      });
     }
 
     const result = await cancelOrder(id, user.id);
     if (!result.ok) {
       const status = result.reason === "unauthorized" ? 403 : 400;
-      return NextResponse.json({ error: result.reason }, { status });
+      return posFailure(status === 403 ? "FORBIDDEN" : "BAD_REQUEST", result.reason, { status });
     }
     const cancelledOrder = await db.query.orders.findFirst({
       where: eq(orders.id, id),
     });
-    return NextResponse.json({ success: true, order: cancelledOrder });
+    return posSuccess({ success: true, order: cancelledOrder });
   } catch (error) {
     console.error("[DELETE /api/orders/[id]] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to cancel order",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to cancel order"),
       { status: 500 }
     );
   }

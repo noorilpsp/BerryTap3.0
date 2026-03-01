@@ -75,9 +75,9 @@ export default async function Page(props: {
         <DetailCard label="Status" value={merchant.status} />
         <DetailCard label="Business Type" value={merchant.businessType} />
         <DetailCard label="Contact Email" value={merchant.contactEmail} />
-        <DetailCard label="Phone" value={merchant.phone} />
-        <DetailCard label="Address" value={merchant.address ?? "—"} />
-        <DetailCard label="Timezone" value={merchant.timezone} />
+        <DetailCard label="Phone" value={merchant.contactPhone} />
+        <DetailCard label="Address" value={merchant.registeredAddressLine1 ?? "—"} />
+        <DetailCard label="Timezone" value={merchant.defaultTimezone} />
         <DetailCard label="Subscription Tier" value={merchant.subscriptionTier} />
         <DetailCard
           label="Subscription Expires"
@@ -87,7 +87,7 @@ export default async function Page(props: {
               : "—"
           }
         />
-        <DetailCard label="Currency" value={merchant.currency} />
+        <DetailCard label="Currency" value={merchant.defaultCurrency} />
         <DetailCard
           label="Created At"
           value={

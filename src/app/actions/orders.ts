@@ -354,7 +354,10 @@ export async function getOrderIdForSessionAndWave(
   return order?.id ?? null;
 }
 
-/** Advance all items in a wave to a kitchen status. Mutations keyed by sessionId. */
+/**
+ * Advance all items in a wave to a kitchen status. Mutations keyed by sessionId.
+ * @deprecated Unused call path. Kept for compatibility until legacy removal.
+ */
 export async function advanceOrderWaveStatusBySession(
   sessionId: string,
   waveNumber: number,
@@ -404,6 +407,8 @@ const ORDER_ITEM_STATUS = ["pending", "preparing", "ready", "served"] as const;
 export type OrderForTableItem = {
   /** DB order_items.id when loaded from database; omit for draft items. */
   id?: string;
+  /** DB orders.id for mutation routes keyed by orderId + itemId. */
+  orderId?: string;
   /** Menu item id (items.id); needed for addItemsToOrder sync. */
   itemId?: string | null;
   name: string;
@@ -477,6 +482,7 @@ export async function getOrderForTable(
       where: inArray(orderItemsTable.orderId, orderIds),
       columns: {
         id: true,
+        orderId: true,
         itemId: true,
         itemName: true,
         itemPrice: true,
@@ -503,6 +509,7 @@ export async function getOrderForTable(
           : r.seat ?? 0;
       return {
         id: r.id,
+        orderId: r.orderId,
         itemId: r.itemId ?? null,
         name: r.itemName,
         price: Number(r.itemPrice),

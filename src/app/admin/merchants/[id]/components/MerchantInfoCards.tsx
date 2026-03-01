@@ -4,15 +4,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Separator } from '@/components/ui/separator'
 
 type Merchant = {
-  legalName: string | null
+  legalName: string
   kboNumber: string | null
   contactEmail: string
-  phone: string
-  address: string | null
+  contactPhone: string
+  registeredAddressLine1: string | null
   subscriptionTier: string
   subscriptionExpiresAt: Date | string | null
-  timezone: string
-  currency: string
+  defaultTimezone: string
+  defaultCurrency: string
   createdAt: Date | string
   updatedAt: Date | string
 }
@@ -71,17 +71,17 @@ export function MerchantInfoCards({ merchant }: MerchantInfoCardsProps) {
             <div className="text-sm font-medium text-muted-foreground">Phone</div>
             <div className="text-sm flex items-center gap-2">
               <Phone className="size-4" />
-              <a href={`tel:${merchant.phone}`} className="hover:underline">
-                {merchant.phone}
+              <a href={`tel:${merchant.contactPhone}`} className="hover:underline">
+                {merchant.contactPhone}
               </a>
             </div>
           </div>
-          {merchant.address && (
+          {merchant.registeredAddressLine1 && (
             <div className="space-y-2">
               <div className="text-sm font-medium text-muted-foreground">Address</div>
               <div className="text-sm flex items-center gap-2">
                 <MapPin className="size-4" />
-                {merchant.address}
+                {merchant.registeredAddressLine1}
               </div>
             </div>
           )}
@@ -116,11 +116,11 @@ export function MerchantInfoCards({ merchant }: MerchantInfoCardsProps) {
           <Separator />
           <div className="space-y-2">
             <div className="text-sm font-medium text-muted-foreground">Timezone</div>
-            <div className="text-sm">{merchant.timezone}</div>
+            <div className="text-sm">{merchant.defaultTimezone}</div>
           </div>
           <div className="space-y-2">
             <div className="text-sm font-medium text-muted-foreground">Currency</div>
-            <div className="text-sm">{merchant.currency}</div>
+            <div className="text-sm">{merchant.defaultCurrency}</div>
           </div>
           <Separator />
           <div className="space-y-2">

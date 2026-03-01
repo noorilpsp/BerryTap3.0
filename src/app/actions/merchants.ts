@@ -1,7 +1,6 @@
 "use server";
 
 import { z } from "zod";
-import { randomUUID } from "crypto";
 import { Pool, neonConfig } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-serverless";
 import { eq } from "drizzle-orm";
@@ -26,7 +25,9 @@ function getTransactionDb() {
     throw new Error("DATABASE_URL is not set");
   }
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  return drizzle(pool);
+  return drizzle(pool, {
+    schema: { merchants, merchantLocations },
+  });
 }
 
 // Helper to check if user is platform admin
@@ -53,8 +54,17 @@ const merchantSchema = z.object({
   name: z.string().min(1, "Name is required"),
   legalName: z.string().min(1, "Legal name is required"),
   contactEmail: z.string().email("Valid email is required"),
-  businessType: z.string().min(1, "Business type is required"),
-  status: z.string().min(1, "Status is required"),
+  businessType: z.enum([
+    "restaurant",
+    "cafe",
+    "bar",
+    "bakery",
+    "food_truck",
+    "fine_dining",
+    "fast_food",
+    "other",
+  ]),
+  status: z.enum(["onboarding", "active", "suspended", "inactive"]),
   locationName: z.string().min(1, "Location name is required"),
   phone: z.string().min(1, "Phone is required"),
   address: z.string().min(1, "Address is required"),
@@ -63,13 +73,13 @@ const merchantSchema = z.object({
   timezone: z.string().min(1, "Timezone is required"),
   ownerName: z.string().min(1, "Owner name is required"),
   ownerEmail: z.string().email("Valid owner email is required"),
-  subscriptionTier: z.string().min(1, "Subscription tier is required"),
+  subscriptionTier: z.enum(["trial", "basic", "pro", "enterprise"]),
   subscriptionExpiresAt: z.string().optional().nullable(),
   logoUrl: z.string().optional().nullable(),
   bannerUrl: z.string().optional().nullable(),
 });
 
-export async function createMerchant(data: z.infer<typeof merchantSchema>) {
+export async function createMerchant(data: unknown) {
   // Check admin access
   const { error: authError } = await checkAdminAccess();
   if (authError) {
@@ -80,73 +90,63 @@ export async function createMerchant(data: z.infer<typeof merchantSchema>) {
   const validation = merchantSchema.safeParse(data);
   if (!validation.success) {
     return {
-      error: validation.error.errors[0]?.message || "Invalid input",
+      error: validation.error.issues[0]?.message || "Invalid input",
     };
   }
 
   const validated = validation.data;
 
   try {
-    const merchantId = randomUUID();
-    const locationId = randomUUID();
-
     // Use transaction-capable database connection
     const transactionDb = getTransactionDb();
 
     // Use transaction to ensure both merchant and location are created atomically
     const result = await transactionDb.transaction(async (tx) => {
       // Create merchant
-      await tx.insert(merchants).values({
-        id: merchantId,
-        name: validated.name,
-        legalName: validated.legalName,
-        contactEmail: validated.contactEmail,
-        phone: validated.phone,
-        address: validated.address,
-        businessType: validated.businessType,
-        status: validated.status,
-        subscriptionTier: validated.subscriptionTier,
-        subscriptionExpiresAt: validated.subscriptionExpiresAt
-          ? new Date(validated.subscriptionExpiresAt)
-          : null,
-        timezone: validated.timezone,
-        currency: "EUR",
-      });
+      const [createdMerchant] = await tx
+        .insert(merchants)
+        .values({
+          name: validated.name,
+          legalName: validated.legalName,
+          contactEmail: validated.contactEmail,
+          contactPhone: validated.phone,
+          registeredAddressLine1: validated.address,
+          registeredCity: validated.city,
+          registeredCountry: validated.country,
+          businessType: validated.businessType,
+          status: validated.status,
+          subscriptionTier: validated.subscriptionTier,
+          subscriptionExpiresAt: validated.subscriptionExpiresAt
+            ? new Date(validated.subscriptionExpiresAt)
+            : null,
+          defaultTimezone: validated.timezone,
+          defaultCurrency: "EUR",
+        })
+        .returning();
+
+      if (!createdMerchant) throw new Error("Failed to create merchant");
+
+      const merchantId = createdMerchant.id;
 
       // Create first location
-      await tx.insert(merchantLocations).values({
-        id: locationId,
-        merchantId,
-        name: validated.locationName,
-        address: validated.address,
-        postalCode: "", // Not collected in form, can be added later
-        city: validated.city,
-        phone: validated.phone,
-        email: validated.contactEmail,
-        logoUrl: validated.logoUrl?.trimEnd() || null,
-        bannerUrl: validated.bannerUrl?.trimEnd() || null,
-        status: "active",
-        openingHours: {}, // Empty for now, can be configured later
-        settings: {
-          accepts_cash: true,
-          accepts_cards: true,
-        },
-      });
-
-      // Fetch created merchant with location within transaction
-      const createdMerchant = await tx
-        .select()
-        .from(merchants)
-        .where(eq(merchants.id, merchantId))
-        .limit(1)
-        .then((rows) => rows[0]);
-
-      const createdLocation = await tx
-        .select()
-        .from(merchantLocations)
-        .where(eq(merchantLocations.id, locationId))
-        .limit(1)
-        .then((rows) => rows[0]);
+      const [createdLocation] = await tx
+        .insert(merchantLocations)
+        .values({
+          merchantId,
+          name: validated.locationName,
+          address: validated.address,
+          postalCode: "",
+          city: validated.city,
+          country: validated.country,
+          phone: validated.phone,
+          email: validated.contactEmail,
+          logoUrl: validated.logoUrl?.trimEnd() || null,
+          bannerUrl: validated.bannerUrl?.trimEnd() || null,
+          status: "active",
+          openingHours: {},
+          timezone: validated.timezone,
+        })
+        .returning();
 
       return { createdMerchant, createdLocation };
     });
@@ -191,7 +191,7 @@ const updateMerchantSchema = merchantSchema.extend({
   locationId: z.string().optional().nullable(),
 });
 
-export async function updateMerchant(data: z.infer<typeof updateMerchantSchema>) {
+export async function updateMerchant(data: unknown) {
   // Check admin access
   const { error: authError } = await checkAdminAccess();
   if (authError) {
@@ -202,7 +202,7 @@ export async function updateMerchant(data: z.infer<typeof updateMerchantSchema>)
   const validation = updateMerchantSchema.safeParse(data);
   if (!validation.success) {
     return {
-      error: validation.error.errors[0]?.message || "Invalid input",
+      error: validation.error.issues[0]?.message || "Invalid input",
     };
   }
 
@@ -228,15 +228,17 @@ export async function updateMerchant(data: z.infer<typeof updateMerchantSchema>)
         name: validated.name,
         legalName: validated.legalName,
         contactEmail: validated.contactEmail,
-        phone: validated.phone,
-        address: validated.address,
+        contactPhone: validated.phone,
+        registeredAddressLine1: validated.address,
+        registeredCity: validated.city,
+        registeredCountry: validated.country,
         businessType: validated.businessType,
         status: validated.status,
         subscriptionTier: validated.subscriptionTier,
         subscriptionExpiresAt: validated.subscriptionExpiresAt
           ? new Date(validated.subscriptionExpiresAt)
           : null,
-        timezone: validated.timezone,
+        defaultTimezone: validated.timezone,
         updatedAt: new Date(),
       })
       .where(eq(merchants.id, validated.id));
@@ -259,24 +261,20 @@ export async function updateMerchant(data: z.infer<typeof updateMerchantSchema>)
         .where(eq(merchantLocations.id, validated.locationId));
     } else {
       // Create new location if none exists
-      const newLocationId = randomUUID();
       await db.insert(merchantLocations).values({
-        id: newLocationId,
         merchantId: validated.id,
         name: validated.locationName,
         address: validated.address,
         postalCode: "",
         city: validated.city,
+        country: validated.country,
         phone: validated.phone,
         email: validated.contactEmail,
         logoUrl: validated.logoUrl?.trimEnd() || null,
         bannerUrl: validated.bannerUrl?.trimEnd() || null,
         status: "active",
         openingHours: {},
-        settings: {
-          accepts_cash: true,
-          accepts_cards: true,
-        },
+        timezone: validated.timezone,
       });
     }
 
@@ -370,4 +368,3 @@ export async function uploadImage(formData: FormData) {
     };
   }
 }
-

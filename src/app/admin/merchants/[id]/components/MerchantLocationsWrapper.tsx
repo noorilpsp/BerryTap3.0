@@ -10,7 +10,7 @@ type Location = {
   email: string | null
   logoUrl: string | null
   bannerUrl: string | null
-  status: 'coming_soon' | 'active' | 'temporarily_closed' | 'closed'
+  status: 'coming_soon' | 'active' | 'temporarily_closed' | 'inactive'
   createdAt: Date | string
   updatedAt: Date | string
 }

@@ -3,7 +3,6 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { DisplayModeProvider, useDisplayMode } from "@/components/kds/DisplayModeContext";
 import { getCurrentLocationId } from "@/app/actions/location";
-import { refireItem } from "@/domain/serviceActions";
 import { KDSHeader } from "@/components/kds/KDSHeader";
 import { KDSColumns } from "@/components/kds/KDSColumns";
 import { AllDayView } from "@/components/kds/AllDayView";
@@ -920,7 +919,11 @@ export default function KDSPage() {
     const original = orders.find(o => o.id === orderId);
     if (!original) return;
     if (kdsLiveOrderIds.has(orderId)) {
-      refireItem(item.id, reason, { eventSource: "kds" }).catch(() => {});
+      fetch(`/api/orders/${orderId}/items/${item.id}/refire`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      }).catch(() => {});
     }
     const remakeId = `${orderId}-R`;
     const remakeOrderNumber = `${original.orderNumber}-R`;

@@ -45,16 +45,16 @@ export default async function EditMerchantPage({ params }: PageProps) {
         merchant={{
           id: merchant.id,
           name: merchant.name,
-          legalName: merchant.legalName ?? '',
+          legalName: merchant.legalName,
           contactEmail: merchant.contactEmail,
-          phone: merchant.phone,
-          address: merchant.address ?? '',
+          phone: merchant.contactPhone,
+          address: merchant.registeredAddressLine1 ?? '',
           businessType: merchant.businessType,
           status: merchant.status,
           subscriptionTier: merchant.subscriptionTier,
           subscriptionExpiresAt: merchant.subscriptionExpiresAt,
-          timezone: merchant.timezone,
-          currency: merchant.currency,
+          timezone: merchant.defaultTimezone,
+          currency: merchant.defaultCurrency,
         }}
         location={
           firstLocation

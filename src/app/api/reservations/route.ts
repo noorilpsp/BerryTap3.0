@@ -4,7 +4,8 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { reservations } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
-import { createReservationMutation } from "@/domain/reservation-mutations";
+import { createReservationMutation } from "@/domain";
+import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -22,10 +23,7 @@ export async function GET(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
@@ -36,10 +34,7 @@ export async function GET(request: NextRequest) {
     const endDate = searchParams.get("endDate");
 
     if (!locationId) {
-      return NextResponse.json(
-        { error: "Location ID is required" },
-        { status: 400 }
-      );
+      return posFailure("BAD_REQUEST", "Location ID is required", { status: 400 });
     }
 
     // Verify location exists and user has access
@@ -52,10 +47,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!location) {
-      return NextResponse.json(
-        { error: "Location not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Location not found", { status: 404 });
     }
 
     // Check user has access to this merchant
@@ -71,10 +63,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "You don't have access to this location", { status: 403 });
     }
 
     // Build where conditions
@@ -96,20 +85,14 @@ export async function GET(request: NextRequest) {
       limit: 100,
     });
 
-    return NextResponse.json(reservationsList, {
-      headers: {
-        "Cache-Control": "no-store, must-revalidate",
-      },
-    });
+    const res = posSuccess(reservationsList);
+    res.headers.set("Cache-Control", "no-store, must-revalidate");
+    return res;
   } catch (error) {
     console.error("[GET /api/reservations] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to fetch reservations",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to fetch reservations"),
       { status: 500 }
     );
   }
@@ -129,10 +112,7 @@ export async function POST(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const body = await request.json().catch(() => ({}));
@@ -151,8 +131,9 @@ export async function POST(request: NextRequest) {
     } = body;
 
     if (!locationId || !partySize || !reservationDate || !reservationTime || !customerName) {
-      return NextResponse.json(
-        { error: "Location ID, party size, reservation date, time, and customer name are required" },
+      return posFailure(
+        "BAD_REQUEST",
+        "Location ID, party size, reservation date, time, and customer name are required",
         { status: 400 }
       );
     }
@@ -167,10 +148,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (!location) {
-      return NextResponse.json(
-        { error: "Location not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Location not found", { status: 404 });
     }
 
     // Check user has access to this merchant
@@ -186,10 +164,9 @@ export async function POST(request: NextRequest) {
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
+        status: 403,
+      });
     }
 
     let newReservation;
@@ -212,21 +189,17 @@ export async function POST(request: NextRequest) {
         error instanceof Error &&
         error.message.startsWith("Invalid reservation status:")
       ) {
-        return NextResponse.json({ error: error.message }, { status: 400 });
+        return posFailure("BAD_REQUEST", error.message, { status: 400 });
       }
       throw error;
     }
 
-    return NextResponse.json(newReservation, { status: 201 });
+    return posSuccess({ ...newReservation }, { status: 201 });
   } catch (error) {
     console.error("[POST /api/reservations] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to create reservation",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to create reservation"),
       { status: 500 }
     );
   }

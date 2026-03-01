@@ -153,7 +153,16 @@ export async function POST(request: NextRequest) {
     }
 
     // Map form data to location schema
-    const locationData: Partial<typeof merchantLocations.$inferInsert> = {
+    const rawStatus = body.storeStatus || "active"
+    const status: typeof merchantLocations.$inferInsert.status =
+      rawStatus === "active" ||
+      rawStatus === "inactive" ||
+      rawStatus === "coming_soon" ||
+      rawStatus === "temporarily_closed"
+        ? rawStatus
+        : "active"
+
+    const locationData: typeof merchantLocations.$inferInsert = {
       merchantId,
       name: body.storeName || body.name || "New Location",
       storeType: body.storeType || null,
@@ -174,12 +183,17 @@ export async function POST(request: NextRequest) {
       maxPartySize: body.maxPartySize || 8,
       bookingWindowDays: body.bookingWindow || body.bookingWindowDays || 30,
       enableOnlineOrders: body.enableOnlineOrders ?? true,
-      status: body.storeStatus || "active",
+      status,
       visibleInDirectory: body.publicListing ?? true,
       timezone: body.timezone || null,
       // Opening hours and order modes - already in DB format from client
       openingHours: body.openingHours || {},
-      orderModes: body.orderModes || { dine_in: { enabled: true }, pickup: { enabled: true }, delivery: { enabled: false } },
+      orderModes:
+        body.orderModes || {
+          dine_in: { enabled: true },
+          pickup: { enabled: true },
+          delivery: { enabled: false },
+        },
       accentColor: body.accentColor || null,
       logoUrl: body.logoUrl ?? null,
       bannerUrl: body.bannerUrl ?? null,

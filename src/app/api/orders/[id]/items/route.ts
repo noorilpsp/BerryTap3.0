@@ -4,7 +4,8 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { orders, orderItems } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
-import { addItemToExistingOrder } from "@/domain/serviceActions";
+import { addItemToExistingOrder } from "@/domain";
+import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -26,20 +27,14 @@ export async function POST(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const body = await request.json().catch(() => ({}));
     const { itemId, quantity, customizations, notes } = body;
 
     if (!itemId || !quantity) {
-      return NextResponse.json(
-        { error: "Item ID and quantity are required" },
-        { status: 400 }
-      );
+      return posFailure("BAD_REQUEST", "Item ID and quantity are required", { status: 400 });
     }
 
     const existingOrder = await db.query.orders.findFirst({
@@ -48,10 +43,7 @@ export async function POST(
     });
 
     if (!existingOrder) {
-      return NextResponse.json(
-        { error: "Order not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Order not found", { status: 404 });
     }
 
     const membership = await db.query.merchantUsers.findFirst({
@@ -64,10 +56,9 @@ export async function POST(
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
+        status: 403,
+      });
     }
 
     const result = await addItemToExistingOrder(id, {
@@ -85,22 +76,19 @@ export async function POST(
 
     if (!result.ok) {
       const status = result.reason === "unauthorized" ? 403 : result.reason === "item_not_found" ? 404 : 400;
-      return NextResponse.json({ error: result.reason }, { status });
+      const code = status === 403 ? "FORBIDDEN" : status === 404 ? "NOT_FOUND" : "BAD_REQUEST";
+      return posFailure(code, result.reason, { status });
     }
 
     const newOrderItem = await db.query.orderItems.findFirst({
       where: eq(orderItems.id, result.orderItemId),
     });
-    return NextResponse.json(newOrderItem ?? { id: result.orderItemId }, { status: 201 });
+    return posSuccess(newOrderItem ?? { id: result.orderItemId }, { status: 201 });
   } catch (error) {
     console.error("[POST /api/orders/[id]/items] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to add item to order",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to add item to order"),
       { status: 500 }
     );
   }

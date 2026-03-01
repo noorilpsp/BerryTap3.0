@@ -123,6 +123,31 @@ export type ServiceResult =
       data?: unknown;
     };
 
+export type BatchWaveAdvanceFailure = {
+  itemId: string;
+  error: string;
+};
+
+export type BatchWaveAdvanceResult =
+  | {
+      ok: true;
+      sessionId: string;
+      orderId: string;
+      wave: number;
+      updatedItemIds: string[];
+      failed: [];
+    }
+  | {
+      ok: false;
+      reason: string;
+      updatedItemIds: string[];
+      failed: BatchWaveAdvanceFailure[];
+      sessionId?: string;
+      orderId?: string;
+      wave?: number;
+      data?: unknown;
+    };
+
 /**
  * Canonical session creation: get or create an open session for a table (by table number string e.g. "t1").
  * Returns ServiceResult with sessionId on success.
@@ -170,6 +195,7 @@ export type CreateOrderFromApiInput = {
     itemName?: string;
     itemPrice?: string | number;
     quantity?: number;
+    seatId?: string;
     notes?: string | null;
     customizations?: Array<{
       groupId?: string;
@@ -180,12 +206,13 @@ export type CreateOrderFromApiInput = {
       quantity?: number;
     }>;
   }>;
+  eventSource?: EventSource;
   changedByUserId?: string | null;
 };
 
 /** Result of createOrderFromApi. */
 export type CreateOrderFromApiResult =
-  | { ok: true; orderId: string }
+  | { ok: true; orderId: string; sessionId?: string | null; addedItemIds?: string[] }
   | { ok: false; reason: string };
 
 /**
@@ -241,6 +268,7 @@ export async function createOrderFromApi(
     const addInputs: AddItemInput[] = itemsWithIds.map((item) => ({
       itemId: item.itemId!,
       quantity: Math.max(1, Math.floor(item.quantity ?? 1)),
+      seatId: item.seatId ?? undefined,
       notes: item.notes ?? undefined,
       customizations: item.customizations?.map((c) => ({
         groupId: c.groupId ?? "",
@@ -252,9 +280,16 @@ export async function createOrderFromApi(
       })),
     }));
 
-    const result = await addItemsToOrder(sessionId, addInputs);
+    const result = await addItemsToOrder(sessionId, addInputs, {
+      eventSource: input.eventSource,
+    });
     if (!result.ok) return { ok: false, reason: result.reason };
-    return { ok: true, orderId: result.orderId };
+    return {
+      ok: true,
+      orderId: result.orderId,
+      sessionId: result.sessionId,
+      addedItemIds: result.addedItemIds,
+    };
   }
 
   return createPickupDeliveryOrder(input);
@@ -961,25 +996,35 @@ export async function fireWave(
 export async function advanceWaveStatus(
   sessionId: string,
   waveNumber: number,
-  status: "preparing" | "ready" | "served"
-): Promise<ServiceResult> {
+  status: "preparing" | "ready" | "served",
+  options?: { eventSource?: EventSource }
+): Promise<BatchWaveAdvanceResult> {
   const session = await db.query.sessions.findFirst({
     where: eq(sessionsTable.id, sessionId),
     columns: { id: true, status: true, locationId: true },
   });
-  if (!session) return { ok: false, reason: "session_not_found" };
+  if (!session) return { ok: false, reason: "session_not_found", updatedItemIds: [], failed: [] };
 
   const addResult = canAddItems({ status: session.status });
-  if (!addResult.ok) return { ok: false, reason: addResult.reason };
+  if (!addResult.ok) return { ok: false, reason: addResult.reason, updatedItemIds: [], failed: [] };
 
   const location = await verifyLocationAccess(session.locationId);
-  if (!location) return { ok: false, reason: "unauthorized" };
+  if (!location) return { ok: false, reason: "unauthorized", updatedItemIds: [], failed: [] };
 
   const order = await db.query.orders.findFirst({
     where: and(eq(ordersTable.sessionId, sessionId), eq(ordersTable.wave, waveNumber)),
     columns: { id: true },
   });
-  if (!order) return { ok: false, reason: "order_not_found" };
+  if (!order) {
+    return {
+      ok: false,
+      reason: "order_not_found",
+      sessionId,
+      wave: waveNumber,
+      updatedItemIds: [],
+      failed: [],
+    };
+  }
 
   const items = await db.query.orderItems.findMany({
     where: and(
@@ -989,18 +1034,34 @@ export async function advanceWaveStatus(
     columns: { id: true },
   });
 
-  const helper =
-    status === "preparing"
-      ? markItemPreparingAction
-      : status === "ready"
-        ? markItemReadyAction
-        : markItemServedAction;
+  const updatedItemIds: string[] = [];
+  const failed: BatchWaveAdvanceFailure[] = [];
 
   for (const item of items) {
-    const result = await helper(item.id);
-    if (!result.ok) {
-      return { ok: false, reason: "advance_failed", data: { error: result.error } };
+    const result =
+      status === "preparing"
+        ? await markItemPreparingAction(item.id)
+        : status === "ready"
+          ? await markItemReadyAction(item.id, { eventSource: options?.eventSource })
+          : await markItemServedAction(item.id, { eventSource: options?.eventSource });
+    if (result.ok) {
+      updatedItemIds.push(item.id);
+      continue;
     }
+    failed.push({ itemId: item.id, error: result.error ?? "advance_failed" });
+  }
+
+  if (failed.length > 0) {
+    return {
+      ok: false,
+      reason: "advance_partial_failure",
+      sessionId,
+      orderId: order.id,
+      wave: waveNumber,
+      updatedItemIds,
+      failed,
+      data: { status, failedCount: failed.length, totalItems: items.length },
+    };
   }
 
   return {
@@ -1008,7 +1069,8 @@ export async function advanceWaveStatus(
     sessionId,
     orderId: order.id,
     wave: waveNumber,
-    affectedItems: items.map((i) => i.id),
+    updatedItemIds,
+    failed: [],
   };
 }
 
@@ -1532,6 +1594,7 @@ export async function closeSessionService(
 
 /**
  * Add a seat to a session. seat_number = max + 1.
+ * @deprecated Unused call path. Kept for compatibility until legacy removal.
  */
 export async function addSeat(sessionId: string): Promise<ServiceResult> {
   const session = await db.query.sessions.findFirst({
@@ -1595,6 +1658,7 @@ export async function renameSeat(
 
 /**
  * Remove a seat by seat ID. Cannot delete if items exist; marks seat inactive (removed) instead.
+ * @deprecated Unused call path. Kept for compatibility until legacy removal.
  */
 export async function removeSeat(seatId: string): Promise<ServiceResult> {
   const seat = await db.query.seats.findFirst({
@@ -1618,6 +1682,7 @@ export async function removeSeat(seatId: string): Promise<ServiceResult> {
 
 /**
  * Assign an order item to a seat. Seat must belong to the session.
+ * @deprecated Unused call path. Kept for compatibility until legacy removal.
  */
 export async function assignItemToSeat(
   orderItemId: string,
@@ -1628,6 +1693,7 @@ export async function assignItemToSeat(
 
 /**
  * Move an order item to a different seat. Same validations as assignItemToSeat.
+ * @deprecated Unused call path. Kept for compatibility until legacy removal.
  */
 export async function moveItemToSeat(
   orderItemId: string,

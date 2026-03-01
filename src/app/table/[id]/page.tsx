@@ -53,27 +53,22 @@ import { useRestaurantStore } from "@/store/restaurantStore"
 import { useLocation } from "@/lib/contexts/LocationContext"
 import {
   getOrderForTable,
+  getOrderIdForSessionAndWave,
   getOpenSessionIdForTable,
   getSeatsForSession,
   type OrderForTableItem,
   type OrderForTableResult,
 } from "@/app/actions/orders"
 import {
-  addItemsToOrder,
+  checkKitchenDelays,
   ensureSession,
   createNextWaveForSession,
-  fireWave,
-  closeSessionService,
-  voidItem,
-  serveItem,
-  advanceWaveStatus,
+  recordEventWithSource,
   removeSeatByNumber,
   renameSeat,
-} from "@/domain/serviceActions"
+  updateTableLayout,
+} from "@/domain"
 import { getSessionOutstandingItems } from "@/app/actions/session-close-validation"
-import { detectKitchenDelays } from "@/app/actions/kitchen-delay-detection"
-import { updateTableLayout } from "@/domain/serviceActions"
-import { recordSessionEventWithSource } from "@/app/actions/session-events"
 import type {
   StoreAlertType,
   StoreMealStage,
@@ -386,10 +381,12 @@ function orderForTableToSession(
   session: StoreTableSessionState
   tableItems: TableOrderItem[]
   seatsByNumber: Map<number, TableOrderItem[]>
+  itemOrderIds: Map<string, string>
   waveCount: number
   seats: Array<{ number: number; dietary: string[]; notes: string[]; items: TableOrderItem[]; guestName?: string | null }>
 } {
   const seatsByNumber = new Map<number, TableOrderItem[]>()
+  const itemOrderIds = new Map<string, string>()
   const sharedItems: TableOrderItem[] = []
   let maxWave = 1
 
@@ -409,6 +406,9 @@ function orderForTableToSession(
       wave: waveNumberToType(waveNumber),
       waveNumber,
       mods: row.notes ? [`Wave ${waveNumber}`] : undefined,
+    }
+    if (row.id && row.orderId) {
+      itemOrderIds.set(row.id, row.orderId)
     }
     if (seatNumber > 0) {
       const list = seatsByNumber.get(seatNumber) ?? []
@@ -454,6 +454,7 @@ function orderForTableToSession(
     session,
     tableItems: sharedItems,
     seatsByNumber,
+    itemOrderIds,
     waveCount,
     seats,
   }
@@ -487,12 +488,14 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   }, [activeStoreTable, id])
   const [table, setTable] = useState<TableDetail>(tableFromStore)
   const prevTableIdRef = useRef<string | null>(null)
+  const itemOrderIdsRef = useRef<Map<string, string>>(new Map())
   useEffect(() => {
     if (prevTableIdRef.current !== id) {
       prevTableIdRef.current = id
       setTable(tableFromStore)
       setKitchenDelayDismissed(false)
       setSessionId(null)
+      itemOrderIdsRef.current = new Map()
     }
   }, [id, tableFromStore])
   const [selectedSeat, setSelectedSeat] = useState<number | null>(null)
@@ -532,7 +535,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     Awaited<ReturnType<typeof getSessionOutstandingItems>> | null
   >(null)
   const [kitchenDelays, setKitchenDelays] = useState<
-    Awaited<ReturnType<typeof detectKitchenDelays>> | null
+    Awaited<ReturnType<typeof checkKitchenDelays>> | null
   >(null)
   const [kitchenDelayDismissed, setKitchenDelayDismissed] = useState(false)
   const waveHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -592,7 +595,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         seatsFromDb != null
           ? seatsFromDb.map((s) => ({ seatNumber: s.seatNumber, guestName: s.guestName }))
           : undefined
-      const { session, tableItems: sharedItems, waveCount: wc, seats } = orderForTableToSession(
+      const { session, tableItems: sharedItems, waveCount: wc, seats, itemOrderIds } = orderForTableToSession(
         data,
         id,
         capacity,
@@ -619,6 +622,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       setTableItems(sharedItems)
       setWaveCount(wc)
       setSelectedWaveNumber((prev) => Math.min(Math.max(1, prev), wc))
+      itemOrderIdsRef.current = new Map(itemOrderIds)
     })
     return () => {
       cancelled = true
@@ -702,7 +706,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         if (!cancelled) setKitchenDelays(null)
         return
       }
-      const result = await detectKitchenDelays(sid, { recordEvents: false })
+      const result = await checkKitchenDelays(sid, { recordEvents: false })
       if (!cancelled) setKitchenDelays(result)
     }
     poll()
@@ -1097,9 +1101,14 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     if (currentLocationId && activeStoreTable?.id) {
       const run = async () => {
         const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, activeStoreTable!.id))
-        if (sid) fireWave(sid, { waveNumber, eventSource: "table_page" }).catch(() => {})
+        if (!sid) return
+        await fetch(`/api/sessions/${sid}/waves/${waveNumber}/fire`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ eventSource: "table_page" }),
+        }).catch(() => {})
       }
-      run()
+      run().catch(() => {})
     }
 
     const fireItem = (item: TableOrderItem): TableOrderItem => {
@@ -1131,9 +1140,45 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     fireWaveNumber(mealProgress.nextFireableWaveNumber)
   }, [fireWaveNumber, mealProgress.nextFireableWaveNumber])
 
+  const resolveOrderIdForItem = useCallback(
+    async (itemId: string): Promise<string | null> => {
+      const knownOrderId = itemOrderIdsRef.current.get(itemId)
+      if (knownOrderId) return knownOrderId
+      if (!currentLocationId || !activeStoreTable?.id) return null
+
+      const foundItem = [
+        ...table.seats.flatMap((seat) => seat.items),
+        ...tableItems,
+      ].find((item) => item.id === itemId)
+      const waveNumber = foundItem ? getItemWaveNumber(foundItem) : null
+      if (!waveNumber) return null
+
+      const sid =
+        effectiveSessionId ??
+        (await getOpenSessionIdForTable(currentLocationId, activeStoreTable.id))
+      if (!sid) return null
+
+      const resolvedOrderId = await getOrderIdForSessionAndWave(sid, waveNumber)
+      if (resolvedOrderId) {
+        itemOrderIdsRef.current.set(itemId, resolvedOrderId)
+      }
+      return resolvedOrderId
+    },
+    [currentLocationId, activeStoreTable?.id, effectiveSessionId, table.seats, tableItems]
+  )
+
   const handleMarkServed = useCallback((itemId: string) => {
     if (isDbOrderItemId(itemId)) {
-      serveItem(itemId, { eventSource: "table_page" }).catch(() => {})
+      const run = async () => {
+        const orderId = await resolveOrderIdForItem(itemId)
+        if (!orderId) return
+        await fetch(`/api/orders/${orderId}/items/${itemId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "served", eventSource: "table_page" }),
+        }).catch(() => {})
+      }
+      run().catch(() => {})
     }
     setTable((prev) => ({
       ...prev,
@@ -1147,23 +1192,39 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     setTableItems((prev) =>
       prev.map((i) => (i.id === itemId ? { ...i, status: "served" as ItemStatus } : i))
     )
-  }, [])
+  }, [resolveOrderIdForItem])
 
   const handleAdvanceWaveStatus = useCallback(
     (waveNumber: number, nextStatus: "cooking" | "ready" | "served") => {
+      const getNextItemStatus = (item: TableOrderItem): ItemStatus => {
+        if (item.status === "void") return item.status
+        if (getItemWaveNumber(item) !== waveNumber) return item.status
+        if (nextStatus === "cooking" && item.status === "sent") return "cooking"
+        if (nextStatus === "ready" && item.status === "cooking") return "ready"
+        if (
+          nextStatus === "served" &&
+          (item.status === "ready" || item.status === "cooking" || item.status === "sent")
+        ) {
+          return "served"
+        }
+        return item.status
+      }
+
+      const dbItemsToUpdate = [
+        ...table.seats.flatMap((seat) => seat.items),
+        ...tableItems,
+      ]
+        .filter((item) => isDbOrderItemId(item.id))
+        .filter((item) => getItemWaveNumber(item) === waveNumber)
+        .filter((item) => item.status !== "void")
+        .filter((item) => getNextItemStatus(item) !== item.status)
+      const previousStatusByItemId = new Map<string, ItemStatus>(
+        dbItemsToUpdate.map((item) => [item.id, item.status])
+      )
+
       const advanceItem = (item: TableOrderItem): TableOrderItem => {
-        if (item.status === "void") return item
-        if (getItemWaveNumber(item) !== waveNumber) return item
-        if (nextStatus === "cooking" && item.status === "sent") {
-          return { ...item, status: "cooking" as ItemStatus }
-        }
-        if (nextStatus === "ready" && item.status === "cooking") {
-          return { ...item, status: "ready" as ItemStatus }
-        }
-        if (nextStatus === "served" && (item.status === "ready" || item.status === "cooking" || item.status === "sent")) {
-          return { ...item, status: "served" as ItemStatus }
-        }
-        return item
+        const nextItemStatus = getNextItemStatus(item)
+        return nextItemStatus === item.status ? item : { ...item, status: nextItemStatus }
       }
 
       setTable((prev) => ({
@@ -1175,15 +1236,60 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       }))
       setTableItems((prev) => prev.map(advanceItem))
 
+      const restoreStatuses = (idsToRestore: Set<string>) => {
+        if (idsToRestore.size === 0) return
+        const restoreItem = (item: TableOrderItem): TableOrderItem => {
+          if (!idsToRestore.has(item.id)) return item
+          const previousStatus = previousStatusByItemId.get(item.id)
+          return previousStatus ? { ...item, status: previousStatus } : item
+        }
+        setTable((prev) => ({
+          ...prev,
+          seats: prev.seats.map((seat) => ({
+            ...seat,
+            items: seat.items.map(restoreItem),
+          })),
+        }))
+        setTableItems((prev) => prev.map(restoreItem))
+      }
+
       const dbStatus: "preparing" | "ready" | "served" =
         nextStatus === "cooking" ? "preparing" : nextStatus === "ready" ? "ready" : "served"
       if (currentLocationId && activeStoreTable?.id) {
         const run = async () => {
           const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, activeStoreTable.id))
           if (sid) {
-            advanceWaveStatus(sid, waveNumber, dbStatus).catch(() => {})
+            const response = await fetch(`/api/sessions/${sid}/waves/${waveNumber}/advance`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                toStatus: dbStatus,
+                eventSource: "table_page",
+              }),
+            }).catch(() => null)
+            const payload = response ? await response.json().catch(() => null) : null
+
+            const failedIds = Array.isArray(payload?.failed)
+              ? payload.failed
+                  .map((entry: { itemId?: unknown }) =>
+                    typeof entry?.itemId === "string" ? entry.itemId : null
+                  )
+                  .filter((itemId: string | null): itemId is string => itemId != null)
+              : []
+
+            if (!response?.ok) {
+              if (failedIds.length > 0) {
+                restoreStatuses(new Set(failedIds))
+              } else {
+                restoreStatuses(new Set(previousStatusByItemId.keys()))
+              }
+              return
+            }
+            if (failedIds.length > 0) {
+              restoreStatuses(new Set(failedIds))
+            }
             if (nextStatus === "ready" || nextStatus === "served") {
-              recordSessionEventWithSource(
+              recordEventWithSource(
                 currentLocationId!,
                 sid,
                 nextStatus === "ready" ? "item_ready" : "served",
@@ -1196,7 +1302,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         run()
       }
     },
-    [currentLocationId, activeStoreTable?.id, effectiveSessionId]
+    [currentLocationId, activeStoreTable?.id, effectiveSessionId, table.seats, tableItems]
   )
 
   const handleMarkWaveServed = useCallback((waveId: string) => {
@@ -1209,7 +1315,19 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
 
   const handleVoidItem = useCallback((itemId: string) => {
     if (isDbOrderItemId(itemId)) {
-      voidItem(itemId, "Voided from table view", { eventSource: "table_page" }).catch(() => {})
+      const run = async () => {
+        const orderId = await resolveOrderIdForItem(itemId)
+        if (!orderId) return
+        await fetch(`/api/orders/${orderId}/items/${itemId}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            reason: "Voided from table view",
+            eventSource: "table_page",
+          }),
+        }).catch(() => {})
+      }
+      run().catch(() => {})
     }
     setTable((prev) => ({
       ...prev,
@@ -1223,7 +1341,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     setTableItems((prev) =>
       prev.map((i) => (i.id === itemId ? { ...i, status: "void" as ItemStatus } : i))
     )
-  }, [])
+  }, [resolveOrderIdForItem])
 
   const handleEnterOrdering = useCallback((seatNumber: number | null = null) => {
     if (table.seats.length === 0) return
@@ -1348,22 +1466,54 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         }
       }
 
-      const result = await addItemsToOrder(sid, addInputs, { eventSource: "table_page" })
-      if (!result.ok) {
-        console.error("[TableDetail] addItemsToOrder failed:", result.reason)
+      const response = await fetch("/api/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          locationId: currentLocationId,
+          sessionId: sid,
+          orderType: "dine_in",
+          paymentTiming: "pay_later",
+          guestCount: Math.max(1, table.guestCount ?? 0),
+          eventSource: "table_page",
+          items: addInputs.map((input) => ({
+            itemId: input.itemId,
+            quantity: input.quantity,
+            seatId: input.seatId,
+            notes: input.notes ?? null,
+          })),
+        }),
+      }).catch(() => null)
+      const payload = response ? await response.json().catch(() => null) : null
+      if (!response?.ok) {
+        const errMsg =
+          (payload?.error && typeof payload.error === "object" && payload.error.message) ||
+          (typeof payload?.error === "string" ? payload.error : null) ||
+          response?.statusText ||
+          "unknown_error"
+        console.error("[TableDetail] add items API failed:", errMsg)
         return
       }
 
-      if (result.sessionId && !effectiveSessionId) {
-        setSessionId(result.sessionId)
-        updateStoreTable(activeStoreTable.id, { sessionId: result.sessionId })
+      const data = payload?.ok === true && payload?.data ? payload.data : payload
+      const resultSessionId =
+        typeof data?.sessionId === "string" ? data.sessionId : sid
+      if (resultSessionId && !effectiveSessionId) {
+        setSessionId(resultSessionId)
+        updateStoreTable(activeStoreTable.id, { sessionId: resultSessionId })
       }
 
-      const addedIds = result.addedItemIds ?? []
+      const resultOrderId = typeof data?.orderId === "string" ? data.orderId : null
+      const addedIds = Array.isArray(data?.addedItemIds)
+        ? data.addedItemIds.filter((id): id is string => typeof id === "string")
+        : []
       let idIdx = 0
       const itemStatus = waveToSend === 1 ? ("sent" as ItemStatus) : ("held" as ItemStatus)
       for (const { draft, seat, waveNumber, mods } of draftExpanded) {
         const realId = addedIds[idIdx++] ?? `db-${idIdx}`
+        if (resultOrderId && isDbOrderItemId(realId)) {
+          itemOrderIdsRef.current.set(realId, resultOrderId)
+        }
         const item: TableOrderItem = {
           id: realId,
           menuItemId: draft.menuItemId,
@@ -1440,7 +1590,36 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
           activeStoreTable.id
         ))
         const result = sid
-          ? await closeSessionService(sid, payment, options)
+          ? await fetch(`/api/sessions/${sid}/close`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                payment,
+                options,
+                eventSource: "table_page",
+              }),
+            })
+              .then(async (response) => {
+                const payload = await response.json().catch(() => null)
+                if (payload && typeof payload === "object") {
+                  return payload as {
+                    ok: boolean
+                    reason?: string
+                    error?: string
+                    items?: Array<{ id: string; itemName: string; status: string; quantity: number }>
+                    remaining?: number
+                    sessionTotal?: number
+                    paymentsTotal?: number
+                    correlationId?: string
+                  }
+                }
+                return {
+                  ok: false,
+                  reason: response.ok ? "unknown_error" : "request_failed",
+                  error: response.ok ? "Unknown response" : response.statusText,
+                }
+              })
+              .catch(() => ({ ok: false, reason: "network_error", error: "Network request failed" }))
           : { ok: false as const, reason: "session_not_open" as const }
         if (!result.ok) {
         const msg =
@@ -1461,7 +1640,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         return
       }
       if (sid && result.ok) {
-        recordSessionEventWithSource(
+        recordEventWithSource(
           currentLocationId!,
           sid,
           "payment_completed",
@@ -1642,7 +1821,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         const sid = result.sessionId
         setSessionId(sid)
         updateStoreTable(activeStoreTable.id, { sessionId: sid })
-        recordSessionEventWithSource(currentLocationId!, sid, "guest_seated", "table_page", {
+        recordEventWithSource(currentLocationId!, sid, "guest_seated", "table_page", {
           guestCount: formData.partySize,
         }).catch(() => {})
       }
@@ -2147,7 +2326,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         onBill={() => {
           if (currentLocationId && id) {
             const record = (sid: string) =>
-              recordSessionEventWithSource(currentLocationId!, sid, "bill_requested", "table_page").catch(() => {})
+              recordEventWithSource(currentLocationId!, sid, "bill_requested", "table_page").catch(() => {})
             if (effectiveSessionId) record(effectiveSessionId)
             else getOpenSessionIdForTable(currentLocationId, id).then((sid) => { if (sid) record(sid) })
           }

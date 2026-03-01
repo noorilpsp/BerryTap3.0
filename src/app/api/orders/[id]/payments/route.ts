@@ -4,7 +4,8 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { orders, payments } from "@/lib/db/schema/orders";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
-import { addPayment } from "@/domain/serviceActions";
+import { addPayment } from "@/domain";
+import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
@@ -25,10 +26,7 @@ export async function GET(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     // Get existing order
@@ -45,10 +43,7 @@ export async function GET(
     });
 
     if (!existingOrder) {
-      return NextResponse.json(
-        { error: "Order not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Order not found", { status: 404 });
     }
 
     // Check user has access
@@ -64,10 +59,7 @@ export async function GET(
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "You don't have access to this location", { status: 403 });
     }
 
     // Fetch payments
@@ -76,16 +68,12 @@ export async function GET(
       orderBy: [desc(payments.createdAt)],
     });
 
-    return NextResponse.json(paymentsList);
+    return posSuccess(paymentsList);
   } catch (error) {
     console.error("[GET /api/orders/[id]/payments] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to fetch payments",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to fetch payments"),
       { status: 500 }
     );
   }
@@ -109,10 +97,7 @@ export async function POST(
     } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please log in" },
-        { status: 401 }
-      );
+      return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
     const body = await request.json().catch(() => ({}));
@@ -126,10 +111,7 @@ export async function POST(
     } = body;
 
     if (!amount || !method) {
-      return NextResponse.json(
-        { error: "Amount and method are required" },
-        { status: 400 }
-      );
+      return posFailure("BAD_REQUEST", "Amount and method are required", { status: 400 });
     }
 
     // Get existing order
@@ -146,10 +128,7 @@ export async function POST(
     });
 
     if (!existingOrder) {
-      return NextResponse.json(
-        { error: "Order not found" },
-        { status: 404 }
-      );
+      return posFailure("NOT_FOUND", "Order not found", { status: 404 });
     }
 
     // Check user has access
@@ -165,10 +144,9 @@ export async function POST(
     });
 
     if (!membership) {
-      return NextResponse.json(
-        { error: "Forbidden - You don't have access to this location" },
-        { status: 403 }
-      );
+      return posFailure("FORBIDDEN", "Forbidden - You don't have access to this location", {
+        status: 403,
+      });
     }
 
     const result = await addPayment(id, {
@@ -182,22 +160,20 @@ export async function POST(
 
     if (!result.ok) {
       const statusCode = result.reason === "unauthorized" ? 403 : 400;
-      return NextResponse.json({ error: result.reason }, { status: statusCode });
+      return posFailure(statusCode === 403 ? "FORBIDDEN" : "BAD_REQUEST", result.reason, {
+        status: statusCode,
+      });
     }
 
     const newPayment = await db.query.payments.findFirst({
       where: eq(payments.id, result.paymentId!),
     });
-    return NextResponse.json(newPayment ?? { id: result.paymentId }, { status: 201 });
+    return posSuccess(newPayment ?? { id: result.paymentId }, { status: 201 });
   } catch (error) {
     console.error("[POST /api/orders/[id]/payments] Error:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to create payment",
-      },
+    return posFailure(
+      "INTERNAL_ERROR",
+      toErrorMessage(error, "Internal server error - Failed to create payment"),
       { status: 500 }
     );
   }

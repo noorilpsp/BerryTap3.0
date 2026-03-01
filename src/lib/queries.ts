@@ -309,31 +309,28 @@ export const getSearchResults = unstable_cache(
 );
 
 export const getAdminPersonnel = unstable_cache(
-  () =>
-    db.query.platformPersonnel.findMany({
-      columns: {
-        userId: true,
-        role: true,
-        department: true,
-        isActive: true,
-        lastLoginAt: true,
-        createdAt: true,
-      },
-      with: {
+  async () =>
+    db
+      .select({
+        userId: platformPersonnel.userId,
+        role: platformPersonnel.role,
+        department: platformPersonnel.department,
+        isActive: platformPersonnel.isActive,
+        lastLoginAt: platformPersonnel.lastLoginAt,
+        createdAt: platformPersonnel.createdAt,
         user: {
-          columns: {
-            id: true,
-            email: true,
-            fullName: true,
-            avatarUrl: true,
-            isActive: true,
-            createdAt: true,
-          },
+          id: users.id,
+          email: users.email,
+          fullName: users.fullName,
+          avatarUrl: users.avatarUrl,
+          isActive: users.isActive,
+          createdAt: users.createdAt,
         },
-      },
-      orderBy: (platformPersonnel, { desc }) => [desc(platformPersonnel.createdAt)],
-      limit: 100,
-    }),
+      })
+      .from(platformPersonnel)
+      .leftJoin(users, eq(users.id, platformPersonnel.userId))
+      .orderBy(desc(platformPersonnel.createdAt))
+      .limit(100),
   ["admin-personnel-list"],
   {
     revalidate: 60 * 60 * 2, // two hours
