@@ -29,6 +29,7 @@ export function MenuItemCard({
       type="button"
       onClick={() => !isUnavailable && onClick(item)}
       disabled={isUnavailable}
+      data-testid={`menu-item-card-${item.id}`}
       className={cn(
         "group relative flex flex-col overflow-hidden border-2 bg-card text-left shadow-sm transition-all",
         isCompact ? "min-h-[82px] rounded-lg" : "min-h-[100px] rounded-xl",

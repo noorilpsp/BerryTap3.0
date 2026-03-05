@@ -1,4 +1,5 @@
 export {
+  addSeat,
   addItemToExistingOrder,
   addItemsToOrder,
   addPayment,
@@ -6,6 +7,7 @@ export {
   cancelOrder,
   closeSessionService,
   createNextWaveForSession,
+  removeWaveForSession,
   createOrderFromApi,
   ensureSession,
   ensureSessionByTableUuid,

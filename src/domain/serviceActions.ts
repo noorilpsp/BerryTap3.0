@@ -24,6 +24,7 @@ import {
   fireWave as fireWaveAction,
   closeSession as closeSessionAction,
   createNextWave,
+  removeWave as removeWaveAction,
   createOrderWithItemsForPickupDelivery,
   getOrderIdForSessionAndWave,
   ensureSessionForTable,
@@ -951,6 +952,30 @@ export async function createNextWaveForSession(sessionId: string): Promise<Servi
 }
 
 /**
+ * Remove a wave from a session.
+ * Allowed only when the wave is the last wave and has no active items.
+ */
+export async function removeWaveForSession(
+  sessionId: string,
+  waveNumber: number
+): Promise<ServiceResult> {
+  const result = await removeWaveAction(sessionId, waveNumber);
+  if (result.ok) {
+    return {
+      ok: true,
+      sessionId,
+      orderId: result.orderId,
+      wave: result.wave,
+    };
+  }
+  return {
+    ok: false,
+    reason: result.reason ?? "remove_wave_failed",
+    error: result.error,
+  };
+}
+
+/**
  * Fire a wave: validate, update order/items, set sentToKitchenAt, record course_fired.
  * If waveNumber omitted, finds the lowest unfired wave with items.
  */
@@ -1661,31 +1686,35 @@ export async function closeSessionService(
     const location = await verifyLocationAccess(session.locationId);
     if (!location) return { ok: false, reason: "unauthorized" };
 
-    await recalculateSessionTotals(sessionId, tx);
-    const canClose = await canCloseSessionAction(sessionId, {
-      incomingPaymentAmount: payment?.amount,
-    }, tx);
-    if (!canClose.ok) {
-      return {
-        ok: false,
-        reason: canClose.reason,
-        ...(canClose.reason === "unfinished_items" && { items: canClose.items }),
-        ...(canClose.reason === "unpaid_balance" && {
-          remaining: canClose.remaining,
-          sessionTotal: canClose.sessionTotal,
-          paymentsTotal: canClose.paymentsTotal,
-        }),
-        data:
-          canClose.reason === "unfinished_items"
-            ? { items: canClose.items }
-            : canClose.reason === "unpaid_balance"
-              ? {
-                  remaining: canClose.remaining,
-                  sessionTotal: canClose.sessionTotal,
-                  paymentsTotal: canClose.paymentsTotal,
-                }
-              : undefined,
-      };
+    const forceClose = options?.force === true;
+
+    if (!forceClose) {
+      await recalculateSessionTotals(sessionId, tx);
+      const canClose = await canCloseSessionAction(sessionId, {
+        incomingPaymentAmount: payment?.amount,
+      }, tx);
+      if (!canClose.ok) {
+        return {
+          ok: false,
+          reason: canClose.reason,
+          ...(canClose.reason === "unfinished_items" && { items: canClose.items }),
+          ...(canClose.reason === "unpaid_balance" && {
+            remaining: canClose.remaining,
+            sessionTotal: canClose.sessionTotal,
+            paymentsTotal: canClose.paymentsTotal,
+          }),
+          data:
+            canClose.reason === "unfinished_items"
+              ? { items: canClose.items }
+              : canClose.reason === "unpaid_balance"
+                ? {
+                    remaining: canClose.remaining,
+                    sessionTotal: canClose.sessionTotal,
+                    paymentsTotal: canClose.paymentsTotal,
+                  }
+                : undefined,
+        };
+      }
     }
 
     const result = await closeSessionAction(sessionId, payment, { ...options, correlationId }, tx);

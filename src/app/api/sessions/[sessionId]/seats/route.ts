@@ -1,21 +1,21 @@
 import { NextRequest } from "next/server";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { merchantUsers } from "@/lib/db/schema";
-import { sessions, seats, orderItems } from "@/lib/db/schema/orders";
-import { removeSeatByNumber } from "@/domain";
+import { sessions } from "@/lib/db/schema/orders";
+import { addSeat } from "@/domain";
 import { posFailure, posSuccess, requireIdempotencyKey, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
 
 /**
- * DELETE /api/sessions/[sessionId]/seats/[seatNumber]
- * Body: { reason?: string, eventSource?: "table_page"|"kds"|"system"|"api" } (optional)
+ * POST /api/sessions/[sessionId]/seats
+ * Body: { eventSource?: "table_page"|"kds"|"system"|"api" } (optional)
  */
-export async function DELETE(
+export async function POST(
   request: NextRequest,
-  { params }: { params: Promise<{ sessionId: string; seatNumber: string }> }
+  { params }: { params: Promise<{ sessionId: string }> }
 ) {
   let idemKey: string | undefined;
   try {
@@ -29,11 +29,7 @@ export async function DELETE(
       return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401, correlationId: idemKey });
     }
 
-    const { sessionId, seatNumber } = await params;
-    const parsedSeatNumber = Number.parseInt(seatNumber, 10);
-    if (!Number.isFinite(parsedSeatNumber) || parsedSeatNumber < 1) {
-      return posFailure("BAD_REQUEST", "Invalid seatNumber", { status: 400, correlationId: idemKey });
-    }
+    const { sessionId } = await params;
 
     const session = await db.query.sessions.findFirst({
       where: eq(sessions.id, sessionId),
@@ -56,45 +52,27 @@ export async function DELETE(
       return posFailure("FORBIDDEN", "You don't have access to this location", { status: 403, correlationId: idemKey });
     }
 
-    const seatRow = await db.query.seats.findFirst({
-      where: and(eq(seats.sessionId, sessionId), eq(seats.seatNumber, parsedSeatNumber)),
-      columns: { id: true },
-    });
-    if (seatRow) {
-      const nonVoidItems = await db.query.orderItems.findFirst({
-        where: and(eq(orderItems.seatId, seatRow.id), isNull(orderItems.voidedAt)),
-        columns: { id: true },
-      });
-      if (nonVoidItems) {
-        if (process.env.NODE_ENV !== "production") {
-          console.log("[seat delete] 409 CONFLICT: seat has items", { meta: { seatNumber: parsedSeatNumber } });
-        }
-        return posFailure("CONFLICT", "Seat has items", {
-          status: 409,
-          correlationId: idemKey,
-          meta: { seatNumber: parsedSeatNumber },
-        });
-      }
-    }
-
-    const result = await removeSeatByNumber(sessionId, parsedSeatNumber);
+    const result = await addSeat(sessionId);
     if (!result.ok) {
       return posFailure(
         "BAD_REQUEST",
-        result.error ?? "Failed to remove seat",
+        result.error ?? "Failed to add seat",
         { status: 400, correlationId: idemKey }
       );
     }
 
     return posSuccess(
-      { deletedSeatNumber: parsedSeatNumber },
+      {
+        seatId: result.seatId ?? null,
+        seatNumber: result.seatNumber ?? null,
+      },
       { correlationId: idemKey }
     );
   } catch (error) {
-    console.error("[DELETE /api/sessions/.../seats/...] Error:", error);
+    console.error("[POST /api/sessions/.../seats] Error:", error);
     return posFailure(
       "INTERNAL_ERROR",
-      toErrorMessage(error, "Internal server error - Failed to remove seat"),
+      toErrorMessage(error, "Internal server error - Failed to add seat"),
       { status: 500, correlationId: idemKey }
     );
   }

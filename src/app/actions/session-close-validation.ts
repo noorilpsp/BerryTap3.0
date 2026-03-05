@@ -2,6 +2,15 @@
 
 import { eq, and, inArray, sql, isNull, ne } from "drizzle-orm";
 import { db } from "@/db";
+
+const DEV = process.env.NODE_ENV !== "production";
+
+function devLogOrderItems(label: string, orderIds: string[], rows: unknown[]): void {
+  if (!DEV) return;
+  const sql = "SELECT * FROM order_items WHERE order_id = ANY($1::uuid[]) AND voided_at IS NULL";
+  // eslint-disable-next-line no-console
+  console.log(`[pos] ${label}`, { sql, params: [orderIds], rows: rows.length });
+}
 import {
   sessions as sessionsTable,
   orders as ordersTable,
@@ -78,6 +87,7 @@ export async function canCloseSession(
       startedAt: true,
     },
   });
+  devLogOrderItems("getSessionOutstandingItems/order_items", orderIds, orderItems);
 
   const unfinishedItems = orderItems.filter((i) =>
     UNFINISHED_STATUSES.includes(i.status as (typeof UNFINISHED_STATUSES)[number])

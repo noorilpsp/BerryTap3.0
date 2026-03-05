@@ -15,6 +15,17 @@ check-pos-add-items-safety: PASS
 check-pos-no-domain-writes: PASS
 ```
 
+### Playwright POS smoke (`tests/pos-table-flow.spec.ts`)
+
+Run:
+
+1. `npm run seed:pos`
+2. `npx playwright test tests/pos-table-flow.spec.ts`
+
+Notes:
+- Playwright config uses `127.0.0.1:3100` and `reuseExistingServer: true`.
+- The test uses `data-testid` selectors for floor-map/table flow actions so copy changes do not break it.
+
 ### `npm run build`
 
 ```

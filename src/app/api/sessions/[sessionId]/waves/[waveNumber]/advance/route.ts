@@ -151,11 +151,9 @@ export async function POST(
     const successBody = {
       ok: true as const,
       data: {
-        sessionId: result.sessionId,
-        orderId: result.orderId,
-        wave: result.wave,
-        updatedItemIds: result.updatedItemIds,
-        failed: result.failed,
+        waveNumber: result.wave,
+        toStatus,
+        updatedItemIds: result.updatedItemIds ?? [],
       },
       correlationId: idempotencyKey,
     };

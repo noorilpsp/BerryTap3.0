@@ -125,6 +125,9 @@ export function MapTableNode({
         top: table.position.y,
         ...nodeStyle,
       }}
+      data-testid={`floor-table-${table.id}`}
+      data-table-id={table.id}
+      data-table-status={table.status}
       aria-label={`Table ${table.number}, ${cfg.label}${table.guests ? `, ${table.guests} guests` : ""}`}
     >
       <span className={cn("font-mono text-sm font-bold", statusTextClasses[table.status])}>

@@ -2,6 +2,16 @@
 
 import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/db";
+
+const DEV = process.env.NODE_ENV !== "production";
+
+function devLogOrderItems(label: string, orderIds: string[], rows: unknown[]): void {
+  if (!DEV) return;
+  const sql =
+    "SELECT * FROM order_items WHERE order_id = ANY($1::uuid[]) AND sent_to_kitchen_at IS NOT NULL AND ready_at IS NULL AND voided_at IS NULL";
+  // eslint-disable-next-line no-console
+  console.log(`[pos] ${label}`, { sql, params: [orderIds], rows: rows.length });
+}
 import {
   orderItems as orderItemsTable,
   orders as ordersTable,
@@ -69,6 +79,7 @@ export async function detectKitchenDelays(
       stationOverride: true,
     },
   });
+  devLogOrderItems("checkKitchenDelays/order_items", orderIds, items);
 
   const now = Date.now();
   const results: KitchenDelayItem[] = [];

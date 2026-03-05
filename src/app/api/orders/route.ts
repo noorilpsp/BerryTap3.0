@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq, and, desc, gte, lte } from "drizzle-orm";
+import { eq, and, desc, gte, lte, inArray } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
-import { orders, orderTimeline } from "@/lib/db/schema/orders";
+import { orders, orderTimeline, seats } from "@/lib/db/schema/orders";
+import { devTimer, devSqlLog, devTimeStart, devTimeEnd, runExplain, DEV } from "@/lib/pos/devTimer";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
-import { createOrderFromApi } from "@/domain";
+import { createOrderFromApi, fireWave } from "@/domain";
 import {
   computeRequestHash,
   getIdempotentResponse,
@@ -184,17 +185,23 @@ const ROUTE_ORDERS_CREATE = "POST /api/orders";
  * Requires Idempotency-Key header.
  */
 export async function POST(request: NextRequest) {
+  const totalStart = DEV ? performance.now() : 0;
+  const explainMode = DEV && new URL(request.url).searchParams.get("explain") === "1";
   let idempotencyKey: string | undefined;
   try {
     const idem = requireIdempotencyKey(request);
     if (!idem.ok) return idem.failure;
     idempotencyKey = idem.key;
 
+    const t0 = DEV ? performance.now() : 0;
+    devTimeStart("POST /orders auth");
     const supabase = await supabaseServer();
     const {
       data: { user },
       error: userError,
     } = await supabase.auth.getUser();
+    devTimeEnd("POST /orders auth");
+    if (DEV) devTimer("POST /orders auth", t0);
 
     if (userError || !user) {
       return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401, correlationId: idempotencyKey });
@@ -214,6 +221,7 @@ export async function POST(request: NextRequest) {
       notes,
       guestCount,
       eventSource,
+      autoFireWave1,
     } = body;
 
     if (!locationId || !orderType || !paymentTiming || !items || !Array.isArray(items) || items.length === 0) {
@@ -225,12 +233,16 @@ export async function POST(request: NextRequest) {
     }
 
     const requestHash = computeRequestHash(body);
+    const t1 = DEV ? performance.now() : 0;
+    devTimeStart("POST /orders getIdempotentResponse");
     const cached = await getIdempotentResponse({
       key: idempotencyKey,
       userId: user.id,
       route: ROUTE_ORDERS_CREATE,
       requestHash,
     });
+    devTimeEnd("POST /orders getIdempotentResponse", cached ? 1 : 0);
+    if (DEV) devTimer("POST /orders getIdempotentResponse", t1, cached ? 1 : 0);
     if (cached) {
       if (!cached.ok) {
         return posFailure(IDEMPOTENCY_CONFLICT, "Idempotency-Key reuse with different request", {
@@ -243,6 +255,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(replayBody, { status: saved.status ?? 201 });
     }
 
+    const t2 = DEV ? performance.now() : 0;
+    devTimeStart("POST /orders createOrderFromApi");
     const result = await createOrderFromApi({
       locationId,
       customerId: customerId ?? null,
@@ -258,6 +272,8 @@ export async function POST(request: NextRequest) {
       eventSource,
       changedByUserId: user.id,
     });
+    devTimeEnd("POST /orders createOrderFromApi");
+    if (DEV) devTimer("POST /orders createOrderFromApi", t2);
 
     if (!result.ok) {
       const isForbidden =
@@ -270,6 +286,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const t3 = DEV ? performance.now() : 0;
+    devTimeStart("POST /orders completeOrder.findFirst");
     const completeOrder = await db.query.orders.findFirst({
       where: eq(orders.id, result.orderId),
       with: {
@@ -290,15 +308,95 @@ export async function POST(request: NextRequest) {
         delivery: true,
       },
     });
+    devTimeEnd("POST /orders completeOrder.findFirst", completeOrder ? 1 : 0);
+    if (DEV) devTimer("POST /orders completeOrder.findFirst", t3, completeOrder ? 1 : 0);
+
+    const ordersSelectSql = db.select().from(orders).where(eq(orders.id, result.orderId));
+    const { sql: ordersSql, params: ordersParams } = ordersSelectSql.toSQL();
+    if (DEV) devSqlLog("POST /orders", "orders.findFirst (main query)", ordersSql, ordersParams);
+
+    const addedItemIds = result.addedItemIds ?? [];
+    const waveNumber = completeOrder?.wave ?? 1;
+    const sid = result.sessionId ?? null;
+
+    const t4 = DEV ? performance.now() : 0;
+    devTimeStart("POST /orders seats.findMany");
+    const seatRows =
+      sid !== null
+        ? await db.query.seats.findMany({
+            where: and(eq(seats.sessionId, sid), eq(seats.status, "active")),
+            columns: { id: true, seatNumber: true },
+          })
+        : [];
+    devTimeEnd("POST /orders seats.findMany", seatRows.length);
+    if (DEV) devTimer("POST /orders seats.findMany", t4, seatRows.length);
+    const seatNumberBySeatId = new Map(seatRows.map((s) => [s.id, s.seatNumber]));
+
+    const addedItems =
+      completeOrder?.orderItems
+        ?.filter((oi) => addedItemIds.includes(oi.id))
+        .map((row) => {
+          const seatNumber =
+            row.seatId && seatNumberBySeatId.has(row.seatId)
+              ? seatNumberBySeatId.get(row.seatId)!
+              : (row.seat ?? 0);
+          const status: "held" | "sent" | "cooking" | "ready" | "served" | "void" = row.voidedAt
+            ? "void"
+            : row.status === "served"
+              ? "served"
+              : row.status === "ready"
+                ? "ready"
+                : row.status === "preparing"
+                  ? "cooking"
+                  : row.status === "pending"
+                    ? "held"
+                    : "sent";
+          return {
+            id: row.id,
+            orderId: row.orderId,
+            menuItemId: row.itemId,
+            name: row.itemName ?? "",
+            price: Number(row.itemPrice),
+            quantity: row.quantity ?? 1,
+            status,
+            seatNumber,
+            waveNumber,
+            notes: row.notes,
+          };
+        }) ?? [];
+
+    const affectedWaveNumbers = addedItems.length > 0
+      ? [...new Set(addedItems.map((i) => i.waveNumber))].sort((a, b) => a - b)
+      : [];
+
+    let autoFiredWave: number | undefined;
+    if (Boolean(autoFireWave1) && affectedWaveNumbers.includes(1) && sid) {
+      const t5 = DEV ? performance.now() : 0;
+      devTimeStart("POST /orders fireWave");
+      const fireResult = await fireWave(sid, { waveNumber: 1, eventSource });
+      devTimeEnd("POST /orders fireWave");
+      if (DEV) devTimer("POST /orders fireWave", t5);
+      if (fireResult.ok) {
+        autoFiredWave = 1;
+        for (const item of addedItems) {
+          if (item.waveNumber === 1) (item as { status: string }).status = "sent";
+        }
+      }
+    }
 
     const data = {
       order: completeOrder,
       orderId: result.orderId,
-      sessionId: result.sessionId ?? null,
-      addedItemIds: result.addedItemIds ?? [],
+      sessionId: sid,
+      addedItemIds,
+      addedItems,
+      affectedWaveNumbers,
+      ...(autoFiredWave !== undefined && { autoFiredWave }),
     };
     const responseBody = { ok: true as const, data, correlationId: idempotencyKey };
 
+    const t6 = DEV ? performance.now() : 0;
+    devTimeStart("POST /orders saveIdempotentResponse");
     await saveIdempotentResponse({
       key: idempotencyKey,
       userId: user.id,
@@ -306,8 +404,15 @@ export async function POST(request: NextRequest) {
       requestHash,
       responseJson: { body: responseBody, status: 201 },
     });
+    devTimeEnd("POST /orders saveIdempotentResponse", 1);
+    if (DEV) devTimer("POST /orders saveIdempotentResponse", t6);
+    if (DEV) devTimer("POST /orders total", totalStart);
 
-    return posSuccess(data, { status: 201, correlationId: idempotencyKey });
+    let meta: { explain?: string } | undefined;
+    if (explainMode) {
+      meta = { explain: await runExplain(ordersSql, ordersParams) };
+    }
+    return posSuccess(data, { status: 201, correlationId: idempotencyKey, meta });
   } catch (error) {
     console.error("[POST /api/orders] Error:", error);
     return posFailure(

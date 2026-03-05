@@ -426,6 +426,8 @@ export const seats = pgTable(
   },
   (table) => ({
     sessionIdIdx: index("seats_session_id_idx").on(table.sessionId),
+    /** Hot path: addItemsToOrder/pos WHERE session_id = ? AND status = 'active' */
+    sessionIdStatusIdx: index("seats_session_id_status_idx").on(table.sessionId, table.status),
     sessionSeatNumberUnique: uniqueIndex("seats_session_id_seat_number_key").on(
       table.sessionId,
       table.seatNumber
@@ -493,6 +495,8 @@ export const orders = pgTable(
   },
   (table) => ({
     sessionIdIdx: index("orders_session_id_idx").on(table.sessionId),
+    /** Hot path: getOpenWave WHERE session_id = ? AND fired_at IS NULL ORDER BY wave */
+    sessionIdFiredAtIdx: index("orders_session_id_fired_at_idx").on(table.sessionId, table.firedAt),
     locationIdIdx: index("orders_location_id_idx").on(table.locationId),
     customerIdIdx: index("orders_customer_id_idx").on(table.customerId),
     statusIdx: index("orders_status_idx").on(table.status),
@@ -539,6 +543,8 @@ export const orderItems = pgTable(
   },
   (table) => ({
     orderIdIdx: index("order_items_order_id_idx").on(table.orderId),
+    /** Hot path: fire/advance WHERE order_id = ? AND voided_at IS NULL */
+    orderIdVoidedAtIdx: index("order_items_order_id_voided_at_idx").on(table.orderId, table.voidedAt),
     statusIdx: index("order_items_status_idx").on(table.status),
     /** Kitchen timestamps must be ordered: sentToKitchenAt <= startedAt <= readyAt <= servedAt. */
     kitchenTimestampsOrder: check(

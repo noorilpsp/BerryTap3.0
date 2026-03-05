@@ -312,6 +312,7 @@ export function SeatPartyModal({ sectionConfig = defaultSectionConfig, open, tab
           </div>
           <div className="flex flex-col gap-2.5 w-full max-w-xs mt-2">
             <Button
+              data-testid="seat-party-view-table"
               onClick={() => handleSuccess("view")}
               className="h-12 rounded-xl bg-primary text-primary-foreground font-semibold tracking-wide hover:bg-primary/90"
             >
@@ -450,6 +451,7 @@ export function SeatPartyModal({ sectionConfig = defaultSectionConfig, open, tab
               Edit
             </Button>
             <Button
+              data-testid="seat-party-seat-now"
               onClick={handleSeat}
               disabled={!form.tableId}
               className="h-11 flex-1 max-w-[200px] rounded-xl bg-primary text-primary-foreground font-bold tracking-wide hover:bg-primary/90 disabled:opacity-40"
@@ -571,6 +573,7 @@ function StepPartySize({
           <button
             key={n}
             type="button"
+            data-testid={`seat-party-size-${n}`}
             onClick={() => onSetSize(n)}
             className={cn(
               "relative flex flex-col items-center justify-center rounded-xl border transition-all duration-150 h-16 sm:h-14",

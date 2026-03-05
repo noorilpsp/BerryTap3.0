@@ -79,7 +79,10 @@ export async function PUT(
       );
     }
 
-    return posSuccess({ ok: true }, { correlationId: idemKey });
+    return posSuccess(
+      { from: parsedSeatNumber, to: newSeatNumber },
+      { correlationId: idemKey }
+    );
   } catch (error) {
     console.error("[PUT /api/sessions/.../seats/.../rename] Error:", error);
     return posFailure(

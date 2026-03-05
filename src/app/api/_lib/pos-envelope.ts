@@ -3,20 +3,23 @@ import { NextResponse } from "next/server";
 type SuccessOptions = {
   status?: number;
   correlationId?: string;
+  meta?: Record<string, unknown>;
 };
 
 type FailureOptions = {
   status?: number;
   correlationId?: string;
+  meta?: Record<string, unknown>;
 };
 
 export function posSuccess<T>(data: T, options: SuccessOptions = {}) {
-  const { status = 200, correlationId } = options;
+  const { status = 200, correlationId, meta } = options;
   return NextResponse.json(
     {
       ok: true as const,
       data,
       ...(correlationId ? { correlationId } : {}),
+      ...(meta ? { meta } : {}),
     },
     { status }
   );
@@ -27,13 +30,14 @@ export function posFailure(
   message: string,
   options: FailureOptions = {}
 ) {
-  const { status = 400, correlationId } = options;
+  const { status = 400, correlationId, meta } = options;
   return NextResponse.json(
     {
       ok: false as const,
       error: {
         code,
         message,
+        ...(meta ? { meta } : {}),
       },
       ...(correlationId ? { correlationId } : {}),
     },

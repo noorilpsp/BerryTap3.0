@@ -168,6 +168,15 @@ export async function PUT(
           });
           return posFailure("BAD_REQUEST", result.reason, { status: 400, correlationId: idempotencyKey });
         }
+        const servedBody = { ok: true as const, data: { itemId, status: "served" as const }, correlationId: idempotencyKey };
+        await saveIdempotentResponse({
+          key: idempotencyKey,
+          userId: user.id,
+          route: ROUTE_PUT,
+          requestHash,
+          responseJson: { body: servedBody, status: 200 },
+        });
+        return posSuccess(servedBody.data, { correlationId: idempotencyKey });
       } else {
         const failureBody = {
           ok: false as const,
@@ -225,10 +234,7 @@ export async function PUT(
       }
     }
 
-    const updatedItem = await db.query.orderItems.findFirst({
-      where: and(eq(orderItems.orderId, id), eq(orderItems.id, itemId)),
-    });
-    const successBody = { ok: true as const, data: updatedItem ?? { id: itemId }, correlationId: idempotencyKey };
+    const successBody = { ok: true as const, data: { itemId }, correlationId: idempotencyKey };
     await saveIdempotentResponse({
       key: idempotencyKey,
       userId: user.id,
@@ -357,7 +363,7 @@ export async function DELETE(
       return posFailure("BAD_REQUEST", msg, { status: 400, correlationId: idempotencyKey });
     }
 
-    const successBody = { ok: true as const, data: { success: true }, correlationId: idempotencyKey };
+    const successBody = { ok: true as const, data: { itemId, status: "void" as const }, correlationId: idempotencyKey };
     await saveIdempotentResponse({
       key: idempotencyKey,
       userId: user.id,

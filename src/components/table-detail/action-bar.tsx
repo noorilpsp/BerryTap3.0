@@ -45,6 +45,7 @@ export function ActionBar({
         {onAddItems ? (
           <Button
             data-action="add-items"
+            data-testid="table-action-add-items"
             size="sm"
             variant="outline"
             className="flex-1 min-w-[100px] gap-1.5 text-xs bg-transparent border border-emerald-500/50 text-emerald-400 hover:border-emerald-400 hover:text-emerald-300 transition-all"
@@ -65,6 +66,7 @@ export function ActionBar({
         ) : (
           <Button
             data-action="add-items"
+            data-testid="table-action-add-items"
             size="sm"
             variant="outline"
             className="flex-1 min-w-[100px] gap-1.5 text-xs bg-transparent border border-emerald-500/50 text-emerald-400 hover:border-emerald-400 hover:text-emerald-300 transition-all"
@@ -80,6 +82,7 @@ export function ActionBar({
         {/* Fire Wave */}
         <Button
           data-action="fire-wave"
+          data-testid="table-action-fire-wave"
           size="sm"
           variant="outline"
           className={cn(
@@ -115,6 +118,7 @@ export function ActionBar({
         {/* Bill */}
         <Button
           data-action="bill"
+          data-testid={showSend ? "table-action-send" : "table-action-bill"}
           data-bill-mode={showSend ? "send" : canBill ? "bill" : "disabled"}
           size="sm"
           variant="outline"

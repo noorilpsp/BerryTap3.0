@@ -34,10 +34,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { getTableById, getReadyItems, buildTableDetailFromStore } from "@/lib/table-data"
+import { getReadyItems } from "@/lib/table-data"
 import type {
   TableDetail,
   ItemStatus,
+  Seat,
   WaveStatus,
   WaveType,
   OrderItem as TableOrderItem,
@@ -51,26 +52,12 @@ import type { MenuItem, OrderItem as TakeOrderItem } from "@/lib/take-order-data
 import { useLocationMenu } from "@/lib/hooks/useLocationMenu"
 import { useRestaurantStore } from "@/store/restaurantStore"
 import { useLocation } from "@/lib/contexts/LocationContext"
-import {
-  getOrderForTable,
-  getOrderIdForSessionAndWave,
-  getOpenSessionIdForTable,
-  getSeatsForSession,
-  type OrderForTableItem,
-  type OrderForTableResult,
-} from "@/app/actions/orders"
-import { checkKitchenDelays } from "@/domain"
-import { getSessionOutstandingItems } from "@/app/actions/session-close-validation"
-import type {
-  StoreAlertType,
-  StoreMealStage,
-  StoreTable,
-  StoreTableSessionState,
-  StoreTableStatus,
-} from "@/store/types"
+import { isTableView, type TableView, type TableViewItemStatus, type TableViewUiMode } from "@/lib/pos/tableView"
+import type { StoreTable, StoreTableSessionState } from "@/store/types"
 import { storeTablesToFloorTables } from "@/lib/floor-map-data"
-import { fetchPos, makeIdempotencyKey } from "@/lib/pos/fetchPos"
+import { fetchPos, getPosCorrelationId, makeIdempotencyKey } from "@/lib/pos/fetchPos"
 import { fireAndForget } from "@/lib/pos/fireAndForget"
+import { posDebugError } from "@/lib/pos/posDebugError"
 
 function getAutoSelectedOptions(item: MenuItem): Record<string, string> {
   const options: Record<string, string> = {}
@@ -97,6 +84,72 @@ function getAutoOptionUpcharge(item: MenuItem, selectedOptions: Record<string, s
     }
   }
   return upcharge
+}
+
+function toUiErrorMessage(value: unknown, fallback: string): string {
+  if (typeof value === "string" && value.trim()) return value
+  if (value instanceof Error && value.message.trim()) return value.message
+  if (value && typeof value === "object") {
+    const message = (value as { message?: unknown }).message
+    if (typeof message === "string" && message.trim()) return message
+  }
+  return fallback
+}
+
+function withPosDevContext(
+  message: string,
+  endpoint: string,
+  payload?: unknown,
+  res?: Response | null,
+  label = "POS request failed"
+): string {
+  if (process.env.NODE_ENV === "production") return message
+  posDebugError({ label, endpoint, payload, res })
+  const correlationId = getPosCorrelationId(payload, res)
+  const corrPart = correlationId ? `, corr: ${correlationId}` : ""
+  return `${message} (endpoint: ${endpoint}${corrPart})`
+}
+
+type PosMutationError = {
+  message: string
+  payload?: unknown
+  res?: Response | null
+}
+
+function mutationError(message: string, payload?: unknown, res?: Response | null): PosMutationError {
+  return { message, payload, res }
+}
+
+type OptimisticSeatOps = {
+  added: Array<{ opId: string; tempSeatNumber: number }>
+  deleted: number[]
+  renamed: Record<number, number>
+}
+
+function applyOptimisticSeats(baseSeats: Seat[], ops: OptimisticSeatOps): Seat[] {
+  const deletedSet = new Set(ops.deleted)
+  let seats = baseSeats
+    .filter((s) => !deletedSet.has(s.number))
+    .map((s) => {
+      const newNum = ops.renamed[s.number] ?? s.number
+      return { ...s, number: newNum }
+    })
+  for (const { tempSeatNumber } of ops.added) {
+    seats.push({
+      number: tempSeatNumber,
+      dietary: [],
+      notes: [],
+      items: [],
+      guestName: null,
+    })
+  }
+  return seats.sort((a, b) => a.number - b.number)
+}
+
+function isPosMutationError(error: unknown): error is PosMutationError {
+  if (!error || typeof error !== "object") return false
+  const maybe = error as { message?: unknown }
+  return typeof maybe.message === "string"
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -239,218 +292,134 @@ function cloneTableItems(items: StoreTableSessionState["tableItems"] | undefined
   }))
 }
 
-function mapTableStatusToStoreStatus(
-  status: TableDetail["status"],
-  currentStatus?: StoreTableStatus
-): StoreTableStatus {
-  switch (status) {
-    case "available":
-      return "free"
-    case "bill_requested":
-      return "billing"
-    case "served":
-      return "closed"
-    case "food_ready":
-    case "needs_attention":
-      return "urgent"
-    case "seated":
-    case "ordering":
-    case "in_kitchen":
-      if (currentStatus === "urgent") return "urgent"
-      return "active"
-    default:
-      return currentStatus ?? "active"
-  }
-}
-
-function getAllActiveItems(table: TableDetail, tableItems: TableOrderItem[]): TableOrderItem[] {
-  return [
-    ...table.seats.flatMap((seat) => seat.items),
-    ...tableItems,
-  ].filter((item) => item.status !== "void")
-}
-
-function deriveStoreStage(
-  table: TableDetail,
-  tableItems: TableOrderItem[],
-  fallbackStage: StoreMealStage | null = null
-): StoreMealStage | null {
-  if (table.status === "available" || table.guestCount <= 0) return null
-  if (table.status === "bill_requested") return "bill"
-
-  const activeItems = getAllActiveItems(table, tableItems)
-  if (activeItems.length === 0) return fallbackStage ?? "drinks"
-  if (activeItems.some((item) => item.wave === "dessert" && item.status !== "held")) return "dessert"
-  return "food"
-}
-
-function deriveStoreAlerts(table: TableDetail, tableItems: TableOrderItem[]): StoreAlertType[] | undefined {
-  const alerts = new Set<StoreAlertType>()
-  if (getAllActiveItems(table, tableItems).some((item) => item.status === "ready")) {
-    alerts.add("food_ready")
-  }
-  if (table.status === "needs_attention") {
-    alerts.add("no_checkin")
-  }
-  return alerts.size > 0 ? Array.from(alerts) : undefined
-}
-
-function buildStoreSession(
-  table: TableDetail,
-  tableItems: TableOrderItem[],
-  waveCount: number
-): StoreTableSessionState {
-  return {
-    status: table.status,
-    guestCount: table.guestCount,
-    lastCheckIn: table.lastCheckIn,
-    pacing: table.pacing,
-    notes: table.notes.map((note) => ({ ...note })),
-    seats: table.seats.map((seat) => ({
-      number: seat.number,
-      dietary: [...seat.dietary],
-      notes: [...seat.notes],
-      items: cloneTableItems(seat.items),
-      ...(seat.guestName != null && { guestName: seat.guestName }),
-    })),
-    tableItems: cloneTableItems(tableItems),
-    waveCount: Math.max(1, waveCount),
-    bill: { ...table.bill },
-  }
-}
-
-/** Map DB item status to store item status */
-function dbItemStatusToStore(
-  status: OrderForTableItem["status"]
-): TableOrderItem["status"] {
-  switch (status) {
-    case "pending":
-      return "sent"
-    case "preparing":
-      return "cooking"
-    case "ready":
-      return "ready"
-    case "served":
-      return "served"
-    default:
-      return "sent"
-  }
-}
-
-/** Parse "Seat 2 · Wave 1" or "Shared · Wave 2" from notes */
-function parseSeatAndWave(notes: string | null): { seatNumber: number; waveNumber: number } {
-  let seatNumber = 0
-  let waveNumber = 1
-  if (notes) {
-    const parts = notes.split("·").map((p) => p.trim())
-    for (const part of parts) {
-      const seatMatch = part.match(/^Seat\s+(\d+)$/i)
-      if (seatMatch) seatNumber = parseInt(seatMatch[1], 10) || 0
-      const waveMatch = part.match(/^Wave\s+(\d+)$/i)
-      if (waveMatch) waveNumber = parseInt(waveMatch[1], 10) || 1
-    }
-  }
-  return { seatNumber, waveNumber }
-}
-
 /** Wave number to type: 1->drinks, 2->food, 3->dessert, then cycle */
 function waveNumberToType(n: number): "drinks" | "food" | "dessert" {
   const i = ((n - 1) % 3) + 1
   return i === 1 ? "drinks" : i === 2 ? "food" : "dessert"
 }
 
-/** Seat from DB (getSeatsForSession) for building table state from database */
-type SeatFromDb = { seatNumber: number; guestName: string | null }
+function mapPosShapeToUi(shape: string): TableDetail["shape"] {
+  if (shape === "round") return "round"
+  if (shape === "square") return "square"
+  return "rectangular"
+}
 
-/**
- * Convert getOrderForTable result into session + per-seat items and shared items for local state.
- * Uses DB seat number per item when present; optionally uses seatsFromDb for seat list and guest names.
- */
-function orderForTableToSession(
-  data: NonNullable<OrderForTableResult>,
-  tableId: string,
-  capacity: number,
-  seatsFromDb?: SeatFromDb[]
-): {
-  session: StoreTableSessionState
+function createEmptyTableDetail(tableId: string): TableDetail {
+  return {
+    id: tableId,
+    number: 0,
+    shape: "round",
+    section: "Main Dining",
+    server: null,
+    seatedAt: "",
+    lastCheckIn: "",
+    guestCount: 0,
+    status: "available",
+    pacing: "quick",
+    returningGuest: null,
+    notes: [],
+    seats: [],
+    waves: [],
+    bill: { subtotal: 0, tax: 0, total: 0 },
+  }
+}
+
+function projectTableView(view: TableView | null, tableId: string): {
+  table: TableDetail
   tableItems: TableOrderItem[]
-  seatsByNumber: Map<number, TableOrderItem[]>
-  itemOrderIds: Map<string, string>
   waveCount: number
-  seats: Array<{ number: number; dietary: string[]; notes: string[]; items: TableOrderItem[]; guestName?: string | null }>
+  sessionId: string | null
+  uiMode: TableViewUiMode
+  furnitureStatus: "active" | "maintenance" | "disabled"
+  outstandingItems: TableView["outstanding"]
+  kitchenDelays: TableView["delays"]
+  seatIdByNumber: Map<number, string>
+  itemOrderIds: Map<string, string>
 } {
-  const seatsByNumber = new Map<number, TableOrderItem[]>()
+  if (!view) {
+    return {
+      table: createEmptyTableDetail(tableId),
+      tableItems: [],
+      waveCount: 1,
+      sessionId: null,
+      uiMode: "needs_seating",
+      furnitureStatus: "active",
+      outstandingItems: null,
+      kitchenDelays: null,
+      seatIdByNumber: new Map(),
+      itemOrderIds: new Map(),
+    }
+  }
+
+  const seatsSorted = [...view.seats].sort((a, b) => a.seatNumber - b.seatNumber)
+  const seatIdByNumber = new Map<number, string>()
+  for (const seat of seatsSorted) {
+    seatIdByNumber.set(seat.seatNumber, seat.id)
+  }
+  const seatMap = new Map<number, TableOrderItem[]>()
   const itemOrderIds = new Map<string, string>()
   const sharedItems: TableOrderItem[] = []
   let maxWave = 1
 
-  data.items.forEach((row, index) => {
-    const seatNumber =
-      typeof row.seatNumber === "number" && Number.isFinite(row.seatNumber)
-        ? row.seatNumber
-        : parseSeatAndWave(row.notes).seatNumber
-    const waveNumber = parseSeatAndWave(row.notes).waveNumber
-    maxWave = Math.max(maxWave, waveNumber)
+  for (const row of view.items) {
+    maxWave = Math.max(maxWave, row.waveNumber)
+    itemOrderIds.set(row.id, row.orderId)
+    const notes = row.notes?.trim() ? row.notes.split("·").map((part) => part.trim()).filter(Boolean) : []
     const item: TableOrderItem = {
-      id: row.id ?? `db-${tableId}-${index}`,
-      ...(row.itemId && { menuItemId: row.itemId }),
+      id: row.id,
+      ...(row.menuItemId && { menuItemId: row.menuItemId }),
       name: row.name,
-      price: row.price,
-      status: dbItemStatusToStore(row.status),
-      wave: waveNumberToType(waveNumber),
-      waveNumber,
-      mods: row.notes ? [`Wave ${waveNumber}`] : undefined,
+      price: row.price * Math.max(1, row.quantity),
+      status: row.status,
+      wave: waveNumberToType(row.waveNumber),
+      waveNumber: row.waveNumber,
+      mods: notes.length > 0 ? notes : undefined,
     }
-    if (row.id && row.orderId) {
-      itemOrderIds.set(row.id, row.orderId)
-    }
-    if (seatNumber > 0) {
-      const list = seatsByNumber.get(seatNumber) ?? []
+    if (row.seatNumber > 0) {
+      const list = seatMap.get(row.seatNumber) ?? []
       list.push(item)
-      seatsByNumber.set(seatNumber, list)
+      seatMap.set(row.seatNumber, list)
     } else {
       sharedItems.push(item)
     }
-  })
+  }
 
-  const waveCount = Math.max(1, maxWave)
-  const seatNumbersFromItems = Array.from(seatsByNumber.keys())
-  const allSeatNumbers = new Set(seatNumbersFromItems)
-  seatsFromDb?.forEach((s) => allSeatNumbers.add(s.seatNumber))
-  const maxSeat = Math.max(capacity, ...Array.from(allSeatNumbers), 1)
-  const seatNumbersSorted =
-    (seatsFromDb?.length ?? 0) > 0
-      ? Array.from(allSeatNumbers).sort((a, b) => a - b)
-      : Array.from({ length: maxSeat }, (_, i) => i + 1)
-
-  const seats = seatNumbersSorted.map((seatNum) => {
-    const fromDb = seatsFromDb?.find((s) => s.seatNumber === seatNum)
-    return {
-      number: seatNum,
-      dietary: [] as string[],
-      notes: [] as string[],
-      items: cloneTableItems(seatsByNumber.get(seatNum) ?? []),
-      ...(fromDb && { guestName: fromDb.guestName }),
-    }
-  })
-
-  const session: StoreTableSessionState = {
-    status: "ordering",
-    guestCount: data.guestCount,
-    notes: [],
-    seats,
-    tableItems: cloneTableItems(sharedItems),
-    waveCount,
-    bill: { subtotal: 0, tax: 0, total: 0 },
+  const waveCount = view.openSession?.waveCount ?? Math.max(1, ...view.waves.map((w) => w.waveNumber), maxWave)
+  const table: TableDetail = {
+    ...createEmptyTableDetail(view.table.id),
+    id: view.table.id,
+    number: view.table.number,
+    section: view.table.section,
+    shape: mapPosShapeToUi(view.table.shape),
+    guestCount: view.openSession?.guestCount ?? view.table.guests ?? seatsSorted.length,
+    seatedAt: view.table.seatedAt ?? view.openSession?.openedAt ?? "",
+    lastCheckIn: view.table.seatedAt ?? view.openSession?.openedAt ?? "",
+    status: view.serviceStage ?? "available",
+    seats: seatsSorted.map((seat) => ({
+      number: seat.seatNumber,
+      dietary: [],
+      notes: [],
+      items: cloneTableItems(seatMap.get(seat.seatNumber) ?? []),
+      guestName: seat.guestName,
+    })),
+    bill: {
+      subtotal: view.bill.subtotal,
+      tax: view.bill.tax,
+      total: view.bill.total,
+    },
   }
 
   return {
-    session,
+    table,
     tableItems: sharedItems,
-    seatsByNumber,
-    itemOrderIds,
     waveCount,
-    seats,
+    sessionId: view.openSession?.id ?? null,
+    uiMode: view.uiMode ?? (view.openSession ? "in_service" : "needs_seating"),
+    furnitureStatus: (view.table.status === "maintenance" || view.table.status === "disabled" ? view.table.status : "active") as "active" | "maintenance" | "disabled",
+    outstandingItems: view.outstanding ?? null,
+    kitchenDelays: view.delays ?? null,
+    seatIdByNumber,
+    itemOrderIds,
   }
 }
 
@@ -460,39 +429,23 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   const { currentLocationId } = useLocation()
   const { menuItems: locationMenuItems, categories: locationCategories, loading: menuLoading } = useLocationMenu(currentLocationId)
   const storeTables = useRestaurantStore((s) => s.tables)
-  const updateStoreTable = useRestaurantStore((s) => s.updateTable)
   const openOrderForTable = useRestaurantStore((s) => s.openOrderForTable)
-  const syncOrderSession = useRestaurantStore((s) => s.syncOrderSession)
   const closeOrder = useRestaurantStore((s) => s.closeOrder)
   const activeStoreTable = useMemo<StoreTable | undefined>(
     () => storeTables.find((t) => t.id === id || t.id === id.toLowerCase()),
     [id, storeTables]
   )
-  const persistedSession = activeStoreTable?.session ?? null
-  const [sessionId, setSessionId] = useState<string | null>(null)
-  /** Prefer sessionId from store (persisted when loading/syncing); fallback to component state. */
-  const effectiveSessionId = activeStoreTable?.sessionId ?? sessionId
   const floorTablesForModal = useMemo(
     () => storeTablesToFloorTables(storeTables),
     [storeTables]
   )
-  const tableFromStore = useMemo(() => {
-    if (activeStoreTable) return buildTableDetailFromStore(activeStoreTable)
-    return getTableById(id)
-  }, [activeStoreTable, id])
-  const [table, setTable] = useState<TableDetail>(tableFromStore)
   const prevTableIdRef = useRef<string | null>(null)
   const itemOrderIdsRef = useRef<Map<string, string>>(new Map())
+  const seatIdByNumberRef = useRef<Map<number, string>>(new Map())
   const addItemsInFlightRef = useRef(false)
-  useEffect(() => {
-    if (prevTableIdRef.current !== id) {
-      prevTableIdRef.current = id
-      setTable(tableFromStore)
-      setKitchenDelayDismissed(false)
-      setSessionId(null)
-      itemOrderIdsRef.current = new Map()
-    }
-  }, [id, tableFromStore])
+  const mutationInFlightRef = useRef(0)
+  const refreshInFlightRef = useRef(false)
+  const rollbackSnapshotRef = useRef<{ items?: TableView["items"]; waves?: TableView["waves"] } | null>(null)
   const [selectedSeat, setSelectedSeat] = useState<number | null>(null)
   const [infoOpen, setInfoOpen] = useState(false)
   const [alertDismissed, setAlertDismissed] = useState(false)
@@ -505,13 +458,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   const [customizeDefaults, setCustomizeDefaults] = useState<{ seat: number; wave: number } | null>(null)
   const [editingOrderItemId, setEditingOrderItemId] = useState<string | null>(null)
   const [orderItems, setOrderItems] = useState<TakeOrderItem[]>([])
-  const [tableItems, setTableItems] = useState<TableOrderItem[]>(() =>
-    cloneTableItems(persistedSession?.tableItems)
-  )
   const [selectedWaveNumber, setSelectedWaveNumber] = useState(1)
-  const [waveCount, setWaveCount] = useState(() =>
-    Math.max(1, persistedSession?.waveCount ?? tableFromStore.waves.length)
-  )
   const [summaryScope, setSummaryScope] = useState<"seat" | "all">("all")
   const [warningDialog, setWarningDialog] = useState<{
     open: boolean
@@ -523,15 +470,23 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     description: "",
   })
   const [discardDraftDialogOpen, setDiscardDraftDialogOpen] = useState(false)
+  const [optimisticSeatOps, setOptimisticSeatOps] = useState<OptimisticSeatOps>({
+    added: [],
+    deleted: [],
+    renamed: {},
+  })
+  const [optimisticWavesAdded, setOptimisticWavesAdded] = useState<Array<{ opId: string; waveNumber: number }>>([])
+  const [optimisticWavesDeleted, setOptimisticWavesDeleted] = useState<number[]>([])
+  const [waveAddInFlight, setWaveAddInFlight] = useState(false)
+  const [waveDeleteInFlight, setWaveDeleteInFlight] = useState<Set<number>>(new Set())
+  const [seatAddInFlight, setSeatAddInFlight] = useState(false)
+  const [seatDeleteInFlight, setSeatDeleteInFlight] = useState<Set<number>>(new Set())
+  const [seatRenameInFlight, setSeatRenameInFlight] = useState<Set<number>>(new Set())
   const [armedWaveDelete, setArmedWaveDelete] = useState<number | null>(null)
   const [armedSeatDelete, setArmedSeatDelete] = useState<number | null>(null)
   const [seatRenameState, setSeatRenameState] = useState<{ seatNumber: number; input: string } | null>(null)
-  const [outstandingItems, setOutstandingItems] = useState<
-    Awaited<ReturnType<typeof getSessionOutstandingItems>> | null
-  >(null)
-  const [kitchenDelays, setKitchenDelays] = useState<
-    Awaited<ReturnType<typeof checkKitchenDelays>> | null
-  >(null)
+  const [tableViewLoading, setTableViewLoading] = useState(false)
+  const [tableViewError, setTableViewError] = useState<string | null>(null)
   const [kitchenDelayDismissed, setKitchenDelayDismissed] = useState(false)
   const waveHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const seatHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -542,246 +497,365 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     targetLabel: string
     waveLabel: string
   } | null>(null)
+  const [tableView, setTableView] = useState<TableView | null>(null)
+  const {
+    table,
+    tableItems,
+    waveCount,
+    sessionId: tableViewSessionId,
+    uiMode,
+    furnitureStatus,
+    outstandingItems,
+    kitchenDelays,
+    seatIdByNumber,
+    itemOrderIds,
+  } = useMemo(() => {
+    if (process.env.NODE_ENV !== "production") {
+      console.time("[perf] projectTableView")
+    }
+    const result = projectTableView(tableView, id)
+    if (process.env.NODE_ENV !== "production") {
+      console.timeEnd("[perf] projectTableView")
+    }
+    return result
+  }, [id, tableView])
 
-  const readyItems = getReadyItems(table.seats)
+  const projectedSeats = useMemo(
+    () => applyOptimisticSeats(table.seats, optimisticSeatOps),
+    [table.seats, optimisticSeatOps]
+  )
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production") {
+      // eslint-disable-next-line no-console
+      console.debug("[table]", { tableStatus: table.status, hasSession: !!tableViewSessionId, uiMode })
+    }
+  }, [table.status, tableViewSessionId, uiMode])
+  const effectiveSessionId = tableViewSessionId ?? activeStoreTable?.sessionId ?? null
+  const isInteractionOpen = useMemo(
+    () =>
+      isOrderingInline ||
+      paymentOpen ||
+      seatPartyOpen ||
+      discardDraftDialogOpen ||
+      warningDialog.open ||
+      seatRenameState !== null ||
+      customizingItem !== null,
+    [
+      customizingItem,
+      discardDraftDialogOpen,
+      isOrderingInline,
+      paymentOpen,
+      seatPartyOpen,
+      seatRenameState,
+      warningDialog.open,
+    ]
+  )
+  const isInteractionOpenRef = useRef(false)
+
+  const withMutation = useCallback(async <T,>(fn: () => Promise<T>): Promise<T> => {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[perf] UI blocking state active", { source: "mutationInFlightRef" })
+    }
+    mutationInFlightRef.current += 1
+    try {
+      return await fn()
+    } finally {
+      mutationInFlightRef.current = Math.max(0, mutationInFlightRef.current - 1)
+    }
+  }, [])
+
+  const applyTableView = useCallback((view: TableView) => {
+    setTableView(view)
+  }, [])
+
+  const patchTableView = useCallback((patchFn: (prev: TableView) => TableView) => {
+    setTableView((prev) => (prev ? patchFn(prev) : prev))
+  }, [])
+
+  const refreshTableView = useCallback(async (options?: { silent?: boolean }) => {
+    if (refreshInFlightRef.current) {
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[perf] refresh skipped: inFlight")
+      }
+      return
+    }
+    refreshInFlightRef.current = true
+    if (process.env.NODE_ENV !== "production") {
+      console.time("[perf] refreshTableView total")
+    }
+    if (!options?.silent) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[perf] UI blocking state active", { source: "tableViewLoading" })
+      }
+      setTableViewLoading(true)
+      setTableViewError(null)
+    }
+    try {
+      const endpoint = `/api/tables/${encodeURIComponent(id)}/pos`
+      if (process.env.NODE_ENV !== "production") {
+        console.time("[perf] refresh fetch")
+      }
+      const res = await fetch(endpoint, { cache: "no-store" })
+      const payload = await res.json().catch(() => null)
+      if (process.env.NODE_ENV !== "production") {
+        console.timeEnd("[perf] refresh fetch")
+      }
+      if (!res.ok || payload?.ok === false || !isTableView(payload?.data)) {
+        const message = withPosDevContext(
+          toUiErrorMessage(payload?.error, "Failed to load table view."),
+          endpoint,
+          payload,
+          res,
+          "Failed to load table view"
+        )
+        setTableViewError(message)
+        return false
+      }
+      if (process.env.NODE_ENV !== "production") {
+        console.time("[perf] refresh apply state")
+      }
+      applyTableView(payload.data)
+      setKitchenDelayDismissed(false)
+      if (!options?.silent) setTableViewError(null)
+      if (process.env.NODE_ENV !== "production") {
+        console.timeEnd("[perf] refresh apply state")
+      }
+      return true
+    } catch {
+      setTableViewError("Network error. Failed to load table view.")
+      return false
+    } finally {
+      refreshInFlightRef.current = false
+      if (!options?.silent) setTableViewLoading(false)
+      if (process.env.NODE_ENV !== "production") {
+        console.timeEnd("[perf] refreshTableView total")
+      }
+    }
+  }, [applyTableView, id])
+
+  const mutateThenRefresh = useCallback(
+    async <T,>(label: string, endpoint: string, fn: () => Promise<T>): Promise<T | null> =>
+      withMutation(async () => {
+        try {
+          const result = await fn()
+          refreshTableView({ silent: true })
+          return result
+        } catch (error) {
+          const normalized = isPosMutationError(error)
+            ? error
+            : mutationError(toUiErrorMessage(error, "Request failed. Please try again."))
+          const endpointWithContext = withPosDevContext(
+            normalized.message,
+            endpoint,
+            normalized.payload,
+            normalized.res ?? null,
+            label
+          )
+          posDebugError({
+            label,
+            endpoint,
+            payload: normalized.payload ?? normalized.message,
+            res: normalized.res ?? null,
+          })
+          setWarningDialog({
+            open: true,
+            title: label,
+            description: endpointWithContext,
+          })
+          return null
+        }
+      }),
+    [refreshTableView, withMutation]
+  )
+
+  const fireAndReconcile = useCallback(
+    async <T,>(opts: {
+      label: string
+      endpoint: string
+      optimisticApply: () => void
+      optimisticRollback: () => void
+      onSuccessClearOptimistic?: () => void
+      /** If provided, patch tableView with mutation response; no refresh. */
+      onSuccessPatch?: (result: T) => void
+      /** Neutral name for success logs (e.g. "addSeat", "deleteWave"). */
+      successLabel?: string
+      requestFn: () => Promise<T>
+    }) => {
+      opts.optimisticApply()
+      try {
+        const reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0
+        const result = await opts.requestFn()
+        if (process.env.NODE_ENV !== "production" && reqStart > 0) {
+          console.log("[perf] mutation request duration", { ms: Math.round(performance.now() - reqStart), endpoint: opts.endpoint })
+        }
+        if (opts.onSuccessPatch) {
+          opts.onSuccessPatch(result)
+          opts.onSuccessClearOptimistic?.()
+          if (process.env.NODE_ENV !== "production") {
+            console.log("[perf] mutation success: patched tableView (no refresh)", { action: opts.successLabel ?? opts.label })
+          }
+        } else {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[perf] handler called refreshTableView on success (no onSuccessPatch)", { label: opts.label, endpoint: opts.endpoint })
+          }
+          const p = refreshTableView({ silent: true })
+          fireAndForget(p, `reconcile after ${opts.label}`)
+          p.then(() => opts.onSuccessClearOptimistic?.())
+        }
+        return result
+      } catch (error) {
+        opts.optimisticRollback()
+        const normalized = isPosMutationError(error)
+          ? error
+          : mutationError(toUiErrorMessage(error, "Request failed. Please try again."))
+        const endpointWithContext = withPosDevContext(
+          normalized.message,
+          opts.endpoint,
+          normalized.payload,
+          normalized.res ?? null,
+          opts.label
+        )
+        posDebugError({
+          label: opts.label,
+          endpoint: opts.endpoint,
+          payload: normalized.payload ?? normalized.message,
+          res: normalized.res ?? null,
+        })
+        setWarningDialog({
+          open: true,
+          title: opts.label,
+          description: endpointWithContext,
+        })
+        throw error
+      }
+    },
+    [refreshTableView]
+  )
+
+  useEffect(() => {
+    if (prevTableIdRef.current !== id) {
+      prevTableIdRef.current = id
+      setTableView(null)
+      setSelectedWaveNumber(1)
+      setOptimisticSeatOps({ added: [], deleted: [], renamed: {} })
+      setOptimisticWavesAdded([])
+      setOptimisticWavesDeleted([])
+      setWaveAddInFlight(false)
+      setWaveDeleteInFlight(new Set())
+      setSeatAddInFlight(false)
+      setSeatDeleteInFlight(new Set())
+      setSeatRenameInFlight(new Set())
+      setOrderItems([])
+      setKitchenDelayDismissed(false)
+      itemOrderIdsRef.current = new Map()
+      seatIdByNumberRef.current = new Map()
+    }
+    refreshTableView()
+  }, [id, refreshTableView])
+
+  useEffect(() => {
+    itemOrderIdsRef.current = itemOrderIds
+    seatIdByNumberRef.current = seatIdByNumber
+  }, [itemOrderIds, seatIdByNumber])
+
+  const readyItems = getReadyItems(projectedSeats)
   const showAlert = readyItems.length > 0 && !alertDismissed
   const selectedSeatNumber = selectedSeat
-  const mealProgress = useMemo(
-    () => buildMealProgressState(table, tableItems, waveCount),
-    [table, tableItems, waveCount]
-  )
+  const waveNumbers = useMemo(() => {
+    const backend = (tableView?.waves ?? []).map((w) => w.waveNumber)
+    const deletedSet = new Set(optimisticWavesDeleted)
+    const filtered = backend.filter((n) => !deletedSet.has(n))
+    const base = filtered.length > 0 ? filtered : [1]
+    const addedNums = optimisticWavesAdded.map((a) => a.waveNumber)
+    const withOptimistic = [...new Set([...base, ...addedNums])].sort((a, b) => a - b)
+    if (withOptimistic.length === 0 || !withOptimistic.includes(1)) {
+      return [1, ...withOptimistic.filter((n) => n !== 1)].sort((a, b) => a - b)
+    }
+    return withOptimistic
+  }, [tableView?.waves, optimisticWavesAdded, optimisticWavesDeleted])
+  const mealProgress = useMemo(() => {
+    const serverWaves = tableView?.waves ?? []
+    const allItemsWithSeat = [
+      ...projectedSeats.flatMap((seat) =>
+        seat.items.map((item) => ({ seatNumber: seat.number, item }))
+      ),
+      ...tableItems.map((item) => ({ seatNumber: 0, item })),
+    ].filter(({ item }) => item.status !== "void")
+
+    const waveItemsById: Record<string, { seatNumber: number; item: TableOrderItem }[]> = {}
+    const waveLabelsById: Record<string, string> = {}
+    const serverWaveByNumber = new Map(serverWaves.map((w) => [w.waveNumber, w]))
+    const waves: TableDetail["waves"] = waveNumbers.map((waveNumber) => {
+      const waveId = `mw-${waveNumber}`
+      const itemsForWave = allItemsWithSeat.filter(
+        ({ item }) => getItemWaveNumber(item) === waveNumber
+      )
+      waveItemsById[waveId] = itemsForWave
+      waveLabelsById[waveId] = `W${waveNumber}`
+      const server = serverWaveByNumber.get(waveNumber)
+      const onlyItems = itemsForWave.map(({ item }) => item)
+      const status = server
+        ? (server.status === "sent" ? "fired" : server.status)
+        : getMealWaveStatus(onlyItems)
+      return {
+        id: waveId,
+        type: waveNumberToType(waveNumber),
+        status,
+        items: server?.itemCount ?? onlyItems.length,
+      }
+    })
+
+    const nextFireableWaveNumber =
+      serverWaves.find((wave) => wave.canFire)?.waveNumber ?? null
+
+    return { waves, waveItemsById, waveLabelsById, nextFireableWaveNumber }
+  }, [projectedSeats, tableItems, tableView?.waves, waveNumbers])
   const hasMealProgress = mealProgress.waves.length > 0
+  useEffect(() => {
+    isInteractionOpenRef.current = isInteractionOpen
+  }, [isInteractionOpen])
 
   useEffect(() => {
-    if (persistedSession) {
-      setTableItems(cloneTableItems(persistedSession.tableItems))
-      const persistedWaveCount = Math.max(1, persistedSession.waveCount || 1)
-      setWaveCount(persistedWaveCount)
-      setSelectedWaveNumber((prev) => Math.min(Math.max(1, prev), persistedWaveCount))
-      return
-    }
+    if (!effectiveSessionId) return
+    const interval = setInterval(() => {
+      if (isInteractionOpenRef.current) return
+      if (mutationInFlightRef.current > 0) return
+      refreshTableView({ silent: true })
+    }, 60_000)
+    return () => clearInterval(interval)
+  }, [effectiveSessionId, refreshTableView])
 
-    setTableItems([])
-    const defaultWaveCount = Math.max(1, tableFromStore.waves.length)
-    setWaveCount(defaultWaveCount)
-    setSelectedWaveNumber((prev) => Math.min(Math.max(1, prev), defaultWaveCount))
-  }, [id, persistedSession, tableFromStore.waves.length])
-
-  // Hydrate from DB when opening table (e.g. after refresh) if store has no session data
-  const hasSessionData =
-    persistedSession &&
-    (persistedSession.tableItems.length > 0 ||
-      persistedSession.seats.some((s) => s.items.length > 0))
-  useEffect(() => {
-    if (!currentLocationId || !id || !activeStoreTable) return
-    if (hasSessionData) return
-
-    let cancelled = false
-    getOrderForTable(currentLocationId, id).then(async (data) => {
-      if (cancelled || !data) return
-      if (data.guestCount <= 0 && data.items.length === 0) return
-
-      const capacity = Math.max(1, activeStoreTable.capacity ?? tableFromStore.seats.length)
-      const seatsFromDb =
-        data.sessionId != null
-          ? await getSeatsForSession(data.sessionId, true).catch(() => undefined)
-          : undefined
-      const seatsPayload =
-        seatsFromDb != null
-          ? seatsFromDb.map((s) => ({ seatNumber: s.seatNumber, guestName: s.guestName }))
-          : undefined
-      const { session, tableItems: sharedItems, waveCount: wc, seats, itemOrderIds } = orderForTableToSession(
-        data,
-        id,
-        capacity,
-        seatsPayload
-      )
-
-      if (cancelled) return
-      if (data.sessionId) setSessionId(data.sessionId)
-      openOrderForTable(activeStoreTable.id, data.guestCount)
-      syncOrderSession(activeStoreTable.id, session)
-      updateStoreTable(activeStoreTable.id, {
-        guests: data.guestCount,
-        seatedAt: data.seatedAt ?? undefined,
-        sessionId: data.sessionId ?? undefined,
+  const ensureSessionForMutations = useCallback(async (): Promise<string | null> => {
+    if (effectiveSessionId) return effectiveSessionId
+    if (!currentLocationId || !id) return null
+    const ensureRes = await fetch("/api/sessions/ensure", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tableUuid: id,
+        locationId: currentLocationId,
+        guestCount: Math.max(1, table.guestCount),
+        eventSource: "table_page",
+      }),
+    }).catch(() => null)
+    const ensurePayload = ensureRes ? await ensureRes.json().catch(() => null) : null
+    if (!ensureRes?.ok || ensurePayload?.ok === false) {
+      posDebugError({
+        label: "Failed to ensure session",
+        endpoint: "/api/sessions/ensure",
+        payload: ensurePayload,
+        res: ensureRes,
       })
-
-      setTable((prev) => ({
-        ...prev,
-        guestCount: data.guestCount,
-        seatedAt: data.seatedAt ?? prev.seatedAt ?? "",
-        status: prev.status === "available" ? "seated" : prev.status,
-        seats,
-      }))
-      setTableItems(sharedItems)
-      setWaveCount(wc)
-      setSelectedWaveNumber((prev) => Math.min(Math.max(1, prev), wc))
-      itemOrderIdsRef.current = new Map(itemOrderIds)
-    })
-    return () => {
-      cancelled = true
+      return null
     }
-  }, [currentLocationId, id, activeStoreTable?.id, activeStoreTable?.capacity, hasSessionData, openOrderForTable, syncOrderSession, updateStoreTable, tableFromStore.seats.length])
-
-  // Backfill sessionId when we have store data but didn't load from DB (e.g. navigated from floor map with existing table state)
-  useEffect(() => {
-    if (!hasSessionData || !currentLocationId || !id || effectiveSessionId) return
-    let cancelled = false
-    getOpenSessionIdForTable(currentLocationId, id).then((sid) => {
-      if (!cancelled && sid) setSessionId(sid)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [hasSessionData, currentLocationId, id, effectiveSessionId])
-
-  // Fetch outstanding items when payment modal opens so we can show blocking reasons
-  useEffect(() => {
-    if (!paymentOpen || !currentLocationId || !id) {
-      setOutstandingItems(null)
-      return
-    }
-    let cancelled = false
-    const load = async () => {
-      const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, id))
-      if (cancelled || !sid) {
-        if (!cancelled) setOutstandingItems(null)
-        return
-      }
-      const result = await getSessionOutstandingItems(sid)
-      if (!cancelled) setOutstandingItems(result)
-    }
-    load()
-    return () => {
-      cancelled = true
-    }
-  }, [paymentOpen, currentLocationId, id, effectiveSessionId])
-
-  const shouldPersistSession = useMemo(
-    () =>
-      table.guestCount > 0 ||
-      tableItems.length > 0 ||
-      table.seats.some((seat) => seat.items.some((item) => item.status !== "void")),
-    [table.guestCount, table.seats, tableItems]
-  )
-  const nextStoreAlerts = useMemo(() => {
-    const base = deriveStoreAlerts(table, tableItems) ?? []
-    const withKitchen =
-      kitchenDelays && kitchenDelays.length > 0 && !kitchenDelayDismissed
-        ? [...new Set([...base, "kitchen_delay"])]
-        : base
-    return withKitchen.length > 0 ? withKitchen : undefined
-  }, [table, tableItems, kitchenDelays, kitchenDelayDismissed])
-  const nextStoreStatus = useMemo(() => {
-    const mapped = mapTableStatusToStoreStatus(table.status, activeStoreTable?.status)
-    if (mapped === "active" && (nextStoreAlerts?.includes("food_ready") || nextStoreAlerts?.includes("kitchen_delay")))
-      return "urgent"
-    return mapped
-  }, [activeStoreTable?.status, nextStoreAlerts, table.status])
-  const nextStoreStage = useMemo(
-    () => deriveStoreStage(table, tableItems, activeStoreTable?.stage ?? null),
-    [activeStoreTable?.stage, table, tableItems]
-  )
-  const nextStoreSession = useMemo(
-    () => (shouldPersistSession ? buildStoreSession(table, tableItems, waveCount) : null),
-    [shouldPersistSession, table, tableItems, waveCount]
-  )
-
-  // Poll kitchen delays when table has active session (display only, no event recording)
-  useEffect(() => {
-    if (!shouldPersistSession || !currentLocationId || !id) {
-      setKitchenDelays(null)
-      return
-    }
-    let cancelled = false
-    const poll = async () => {
-      const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, id))
-      if (cancelled || !sid) {
-        if (!cancelled) setKitchenDelays(null)
-        return
-      }
-      const result = await checkKitchenDelays(sid, { recordEvents: false })
-      if (!cancelled) setKitchenDelays(result)
-    }
-    poll()
-    const interval = setInterval(poll, 60_000)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [shouldPersistSession, currentLocationId, id, effectiveSessionId])
-
-  useEffect(() => {
-    if (!activeStoreTable) return
-
-    if (nextStoreSession) {
-      syncOrderSession(activeStoreTable.id, nextStoreSession)
-    }
-
-    const nextSeatedAt =
-      table.guestCount > 0
-        ? table.seatedAt || activeStoreTable.seatedAt || new Date().toISOString()
+    const sid =
+      typeof ensurePayload?.data?.sessionId === "string"
+        ? ensurePayload.data.sessionId
         : null
-
-    const currentSnapshot = JSON.stringify({
-      status: activeStoreTable.status,
-      guests: activeStoreTable.guests ?? 0,
-      seatedAt: activeStoreTable.seatedAt ?? null,
-      stage: activeStoreTable.stage ?? null,
-      alerts: activeStoreTable.alerts ?? [],
-      session: activeStoreTable.session ?? null,
-    })
-    const nextSnapshot = JSON.stringify({
-      status: nextStoreStatus,
-      guests: table.guestCount,
-      seatedAt: nextSeatedAt,
-      stage: nextStoreStage ?? null,
-      alerts: nextStoreAlerts ?? [],
-      session: nextStoreSession,
-    })
-    if (currentSnapshot === nextSnapshot) return
-
-    updateStoreTable(activeStoreTable.id, {
-      status: nextStoreStatus,
-      guests: table.guestCount,
-      seatedAt: nextSeatedAt,
-      stage: nextStoreStage,
-      alerts: nextStoreAlerts,
-      session: nextStoreSession,
-    })
-
-    if (currentLocationId) {
-      fireAndForget(
-        fetchPos(`/api/tables/${encodeURIComponent(activeStoreTable.id)}/layout`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            locationId: currentLocationId,
-            layout: {
-              status: nextStoreStatus,
-              guests: table.guestCount,
-              seatedAt: nextSeatedAt,
-              stage: nextStoreStage,
-              alerts: nextStoreAlerts,
-            },
-          }),
-        }),
-        "persist table layout"
-      )
-    }
-  }, [
-    activeStoreTable,
-    currentLocationId,
-    nextStoreAlerts,
-    nextStoreSession,
-    nextStoreStage,
-    nextStoreStatus,
-    syncOrderSession,
-    table.guestCount,
-    table.seatedAt,
-    updateStoreTable,
-  ])
+    if (!sid) return null
+    return sid
+  }, [currentLocationId, effectiveSessionId, id, table.guestCount])
 
   // Use real menu from location when available; otherwise placeholder for demo/no-location
   const menuSource = useMemo(() => {
@@ -792,8 +866,12 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   }, [currentLocationId, menuLoading, locationMenuItems, locationCategories])
 
   const orderSeats = useMemo(() => {
-    const seats = table.seats.map((seat) => {
-      const seatItems = orderItems.filter((item) => item.seat === seat.number)
+    const seats = projectedSeats.map((seat) => {
+      const originalsForDisplay = Object.entries(optimisticSeatOps.renamed)
+        .filter(([_, to]) => to === seat.number)
+        .map(([from]) => Number(from))
+      const matchingSeats = [seat.number, ...originalsForDisplay]
+      const seatItems = orderItems.filter((item) => matchingSeats.includes(item.seat))
       const total = seatItems.reduce((sum, item) => sum + item.price * item.quantity, 0)
       const itemCount = seatItems.reduce((sum, item) => sum + item.quantity, 0)
       return {
@@ -820,7 +898,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       ]
     }
     return seats
-  }, [orderItems, table.seats])
+  }, [orderItems, projectedSeats, optimisticSeatOps.renamed])
 
   const filteredMenuItems = useMemo(() => {
     let items = menuSource.menuItems
@@ -858,13 +936,23 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     return orderSeats
   }, [orderSeats, selectedSeat, summaryScope])
   const summaryTotals = useMemo(() => calculateOrderTotals(summaryItems), [summaryItems])
-  const waveNumbers = useMemo(
-    () => Array.from({ length: Math.max(1, waveCount) }, (_, index) => index + 1),
-    [waveCount]
-  )
+
+  useEffect(() => {
+    const maxWave = waveNumbers.length > 0 ? Math.max(...waveNumbers) : 1
+    setSelectedWaveNumber((prev) => Math.min(Math.max(1, prev), maxWave))
+  }, [waveNumbers])
+
+  useEffect(() => {
+    const seatNumbers = new Set(projectedSeats.map((s) => s.number))
+    setSelectedSeat((prev) => {
+      if (prev === null) return null
+      return seatNumbers.has(prev) ? prev : null
+    })
+  }, [projectedSeats])
+
   const nextSendableWaveNumber = useMemo(() => {
     const allItems = [
-      ...table.seats.flatMap((seat) => seat.items),
+      ...projectedSeats.flatMap((seat) => seat.items),
       ...tableItems,
       ...orderItems.map((draft): TableOrderItem => ({
         id: draft.id,
@@ -876,10 +964,10 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       })),
     ]
     return getNextHeldWaveNumberFromItems(allItems)
-  }, [orderItems, table.seats, tableItems])
-  const hasPendingSend = nextSendableWaveNumber !== null
+  }, [orderItems, projectedSeats, tableItems])
+  const hasPendingSend = orderItems.length > 0 || Boolean(tableView?.actions.canSend)
   const canBill = useMemo(() => {
-    const seatedItemsTotal = table.seats.reduce(
+    const seatedItemsTotal = projectedSeats.reduce(
       (sum, seat) =>
         sum +
         seat.items.reduce(
@@ -893,25 +981,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       0
     )
     return seatedItemsTotal + sharedItemsTotal > 0
-  }, [table.seats, tableItems])
-  const hasItemsInWave = useCallback(
-    (waveNumber: number) =>
-      table.seats.some((seat) =>
-        seat.items.some(
-          (item) =>
-            getItemWaveNumber(item) === waveNumber && item.status !== "void"
-        )
-      ) ||
-      tableItems.some(
-        (item) =>
-          getItemWaveNumber(item) === waveNumber && item.status !== "void"
-      ) ||
-      orderItems.some((item) =>
-        new RegExp(`\\bWave\\s+${waveNumber}\\b`, "i").test(item.notes ?? "")
-      ),
-    [orderItems, table.seats, tableItems]
-  )
-
+  }, [projectedSeats, tableItems])
   const clearWaveHoldTimer = useCallback(() => {
     if (waveHoldTimerRef.current) {
       clearTimeout(waveHoldTimerRef.current)
@@ -966,56 +1036,339 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
 
   const handleDeleteWave = useCallback(
     (waveNumber: number) => {
-      if (waveCount <= 1) return
-      if (hasItemsInWave(waveNumber)) {
+      const timerId = process.env.NODE_ENV !== "production" ? `[perf] deleteWave ${performance.now()}` : ""
+      if (timerId) console.time(timerId)
+      if (process.env.NODE_ENV !== "production") {
+        const t = performance.now()
+        queueMicrotask(() => {
+          console.log("[perf] event loop delay", performance.now() - t)
+        })
+      }
+      if (waveDeleteInFlight.has(waveNumber)) {
+        if (timerId) console.timeEnd(timerId)
+        return
+      }
+      if (!tableView?.actions.canDeleteWave) {
+        if (timerId) console.timeEnd(timerId)
         setWarningDialog({
           open: true,
           title: "Cannot delete wave",
-          description: `Wave ${waveNumber} has items. Move or remove them first.`,
+          description: "Wave deletion is not allowed right now.",
         })
         return
       }
-
-      setWaveCount((prev) => Math.max(1, prev - 1))
-      setArmedWaveDelete(null)
-      setSelectedWaveNumber((prev) => {
-        if (prev === waveNumber) return Math.max(1, waveNumber - 1)
-        if (prev > waveNumber) return prev - 1
-        return prev
+      const label = "Cannot delete wave"
+      const endpoint = `/api/sessions/{sid}/waves/${waveNumber}`
+      const prevSelected = selectedWaveNumber
+      setWaveDeleteInFlight((prev) => {
+        const next = new Set(prev).add(waveNumber)
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[perf] waveDeleteInFlight disabled", { waveNumber, inFlight: [...next] })
+        }
+        return next
       })
+      void fireAndReconcile({
+        label,
+        endpoint,
+        optimisticApply: () => {
+          setOptimisticWavesDeleted((prev) => [...prev, waveNumber])
+          if (prevSelected === waveNumber) {
+            const remaining = waveNumbers.filter((n) => n !== waveNumber)
+            setSelectedWaveNumber(remaining.length > 0 ? Math.min(...remaining) : 1)
+          }
+          setArmedWaveDelete(null)
+          if (timerId) console.timeEnd(timerId)
+          if (process.env.NODE_ENV !== "production") console.log("[perf] optimistic UI applied", performance.now())
+        },
+        optimisticRollback: () => {
+          setWaveDeleteInFlight((prev) => {
+            const next = new Set(prev)
+            next.delete(waveNumber)
+            if (process.env.NODE_ENV !== "production") {
+              console.log("[perf] waveDeleteInFlight enabled", { waveNumber, inFlight: [...next] })
+            }
+            return next
+          })
+          setOptimisticWavesDeleted((prev) => prev.filter((n) => n !== waveNumber))
+        },
+        onSuccessClearOptimistic: () => {
+          setWaveDeleteInFlight((prev) => {
+            const next = new Set(prev)
+            next.delete(waveNumber)
+            if (process.env.NODE_ENV !== "production") {
+              console.log("[perf] waveDeleteInFlight enabled", { waveNumber, inFlight: [...next] })
+            }
+            return next
+          })
+          setOptimisticWavesDeleted((prev) => prev.filter((n) => n !== waveNumber))
+        },
+        successLabel: "deleteWave",
+        onSuccessPatch: (data: { deletedWaveNumber?: number }) => {
+          const deleted = data?.deletedWaveNumber ?? waveNumber
+          patchTableView((prev) => {
+            const waves = prev.waves.filter((w) => w.waveNumber !== deleted)
+            const waveCount = waves.length
+            return {
+              ...prev,
+              waves,
+              openSession: prev.openSession
+                ? { ...prev.openSession, waveCount }
+                : null,
+              actions: {
+                ...prev.actions,
+                canDeleteWave: waveCount > 1,
+              },
+            }
+          })
+        },
+        requestFn: async () => {
+          if (process.env.NODE_ENV !== "production") console.time("[perf] deleteWave ensureSession")
+          const sid = await ensureSessionForMutations()
+          if (process.env.NODE_ENV !== "production") console.timeEnd("[perf] deleteWave ensureSession")
+          if (!sid) throw mutationError("Could not open a session for this table.")
+          const url = `/api/sessions/${encodeURIComponent(sid)}/waves/${waveNumber}`
+          if (process.env.NODE_ENV !== "production") console.time(`[perf] deleteWave DELETE waves/${waveNumber}`)
+          const res = await fetchPos(url, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ eventSource: "table_page" }),
+          }).catch(() => null)
+          const payload = res ? (await res.json().catch(() => null)) as { ok?: boolean; data?: { deletedWaveNumber?: number }; error?: unknown } | null : null
+          if (process.env.NODE_ENV !== "production") console.timeEnd(`[perf] deleteWave DELETE waves/${waveNumber}`)
+          if (!res?.ok || payload?.ok === false) {
+            throw mutationError(
+              toUiErrorMessage(payload?.error, res ? "Could not remove wave. Please try again." : "Network error. Please try again."),
+              payload,
+              res
+            )
+          }
+          return payload?.data ?? { deletedWaveNumber: waveNumber }
+        },
+      }).catch(() => {})
     },
-    [hasItemsInWave, waveCount]
+    [
+      tableView?.actions.canDeleteWave,
+      selectedWaveNumber,
+      waveNumbers,
+      waveDeleteInFlight,
+      ensureSessionForMutations,
+      fireAndReconcile,
+      patchTableView,
+    ]
   )
 
+  const handleAddWave = useCallback(() => {
+    const timerId = process.env.NODE_ENV !== "production" ? `[perf] addWave ${performance.now()}` : ""
+    if (timerId) console.time(timerId)
+    if (process.env.NODE_ENV !== "production") {
+      const t = performance.now()
+      queueMicrotask(() => {
+        console.log("[perf] event loop delay (addWave)", performance.now() - t)
+      })
+    }
+    if (waveAddInFlight) {
+      if (timerId) console.timeEnd(timerId)
+      return
+    }
+    const label = "Failed to add wave"
+    const endpoint = "/api/sessions/{sid}/waves/next"
+    if (!tableView?.actions.canAddWave) {
+      if (timerId) console.timeEnd(timerId)
+      setWarningDialog({
+        open: true,
+        title: label,
+        description: "Adding a wave is not allowed right now.",
+      })
+      return
+    }
+    const nextWave = waveNumbers.length > 0 ? Math.max(...waveNumbers) + 1 : 1
+    const opId = crypto.randomUUID()
+    const addEntry = { opId, waveNumber: nextWave }
+    setWaveAddInFlight(true)
+    if (process.env.NODE_ENV !== "production") console.log("[perf] waveAddInFlight disabled (true)")
+    void fireAndReconcile({
+      label,
+      endpoint,
+      optimisticApply: () => {
+        setOptimisticWavesAdded((prev) => [...prev, addEntry])
+        setSelectedWaveNumber(nextWave)
+        if (timerId) console.timeEnd(timerId)
+        if (process.env.NODE_ENV !== "production") console.log("[perf] optimistic UI applied", performance.now())
+      },
+      optimisticRollback: () => {
+        setWaveAddInFlight(false)
+        if (process.env.NODE_ENV !== "production") console.log("[perf] waveAddInFlight enabled (false)")
+        setOptimisticWavesAdded((prev) => prev.filter((a) => a.opId !== opId))
+        setSelectedWaveNumber((prev) => Math.max(1, prev - 1))
+      },
+      onSuccessClearOptimistic: () => {
+        setWaveAddInFlight(false)
+        if (process.env.NODE_ENV !== "production") console.log("[perf] waveAddInFlight enabled (false)")
+        setOptimisticWavesAdded((prev) => prev.filter((a) => a.opId !== opId))
+      },
+      successLabel: "addWave",
+      onSuccessPatch: (data: { waveNumber?: number }) => {
+        const waveNum = data?.waveNumber ?? nextWave
+        patchTableView((prev) => {
+          const newWave = {
+            waveNumber: waveNum,
+            status: "held" as const,
+            itemCount: 0,
+            canFire: false,
+            canAdvanceToPreparing: false,
+            canAdvanceToReady: false,
+            canAdvanceToServed: false,
+          }
+          const waves = [...prev.waves, newWave].sort((a, b) => a.waveNumber - b.waveNumber)
+          const waveCount = waves.length
+          return {
+            ...prev,
+            waves,
+            openSession: prev.openSession
+              ? { ...prev.openSession, waveCount }
+              : null,
+            actions: {
+              ...prev.actions,
+              canDeleteWave: true,
+            },
+          }
+        })
+      },
+      requestFn: async () => {
+        if (process.env.NODE_ENV !== "production") console.time("[perf] addWave ensureSession")
+        const sid = await ensureSessionForMutations()
+        if (process.env.NODE_ENV !== "production") console.timeEnd("[perf] addWave ensureSession")
+        if (!sid) throw mutationError("Could not open a session for this table.")
+        const url = `/api/sessions/${encodeURIComponent(sid)}/waves/next`
+        if (process.env.NODE_ENV !== "production") console.time("[perf] addWave POST waves/next")
+        const res = await fetchPos(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ eventSource: "table_page" }),
+        }).catch(() => null)
+        const payload = res ? await res.json().catch(() => null) : null
+        if (process.env.NODE_ENV !== "production") console.timeEnd("[perf] addWave POST waves/next")
+        if (!res?.ok || payload?.ok === false) {
+          throw mutationError(
+            toUiErrorMessage(
+              (payload as { error?: unknown })?.error,
+              res ? "Could not create wave. Please try again." : "Network error. Please try again."
+            ),
+            payload,
+            res
+          )
+        }
+        const data = (payload as { ok?: boolean; data?: { waveNumber?: number } })?.data
+        return data ? { waveNumber: data.waveNumber ?? nextWave } : { waveNumber: nextWave }
+      },
+    }).catch(() => {})
+  }, [tableView?.actions.canAddWave, waveNumbers, waveAddInFlight, ensureSessionForMutations, fireAndReconcile, patchTableView])
+
   const handleAddSeat = useCallback(() => {
-    let nextSeatNumber = 1
-    setTable((prev) => {
-      nextSeatNumber =
-        prev.seats.length > 0
-          ? Math.max(...prev.seats.map((seat) => seat.number)) + 1
-          : 1
-      return {
-        ...prev,
-        guestCount: prev.guestCount + 1,
-        seats: [
-          ...prev.seats,
-          {
-            number: nextSeatNumber,
-            dietary: [],
-            notes: [],
-            items: [],
-          },
-        ],
-      }
-    })
-    setSelectedSeat(nextSeatNumber)
-    setArmedSeatDelete(null)
-  }, [])
+    const timerId = process.env.NODE_ENV !== "production" ? `[perf] addSeat ${performance.now()}` : ""
+    if (timerId) console.time(timerId)
+    if (process.env.NODE_ENV !== "production") {
+      const t = performance.now()
+      queueMicrotask(() => {
+        console.log("[perf] event loop delay (addSeat)", performance.now() - t)
+      })
+    }
+    if (seatAddInFlight) {
+      if (timerId) console.timeEnd(timerId)
+      return
+    }
+    const label = "Cannot add seat"
+    const endpoint = "/api/sessions/{sid}/seats"
+    const nextNum = projectedSeats.length > 0 ? Math.max(...projectedSeats.map((s) => s.number)) + 1 : 1
+    const opId = crypto.randomUUID()
+    const addEntry = { opId, tempSeatNumber: nextNum }
+    setSeatAddInFlight(true)
+    void fireAndReconcile({
+      label,
+      endpoint,
+      optimisticApply: () => {
+        setOptimisticSeatOps((prev) => ({
+          ...prev,
+          added: [...prev.added, addEntry],
+        }))
+        setSelectedSeat(nextNum)
+        setArmedSeatDelete(null)
+        if (timerId) console.timeEnd(timerId)
+        if (process.env.NODE_ENV !== "production") console.log("[perf] optimistic UI applied", performance.now())
+      },
+      optimisticRollback: () => {
+        setSeatAddInFlight(false)
+        setOptimisticSeatOps((prev) => ({
+          ...prev,
+          added: prev.added.filter((a) => a.opId !== opId),
+        }))
+        setSelectedSeat((prev) => (prev === nextNum ? null : prev))
+      },
+      onSuccessClearOptimistic: () => {
+        setSeatAddInFlight(false)
+        setOptimisticSeatOps((prev) => ({
+          ...prev,
+          added: prev.added.filter((a) => a.opId !== opId),
+        }))
+      },
+      successLabel: "addSeat",
+      onSuccessPatch: (data: { seatId?: string | null; seatNumber?: number | null }) => {
+        const seatId = data?.seatId ?? crypto.randomUUID()
+        const num = data?.seatNumber ?? nextNum
+        patchTableView((prev) => {
+          const seats = [
+            ...prev.seats,
+            { id: seatId, seatNumber: num, guestName: null as string | null },
+          ].sort((a, b) => a.seatNumber - b.seatNumber)
+          return { ...prev, seats }
+        })
+      },
+      requestFn: async () => {
+        const sid = await ensureSessionForMutations()
+        if (!sid) throw mutationError("Could not open a session for this table.")
+        const url = `/api/sessions/${encodeURIComponent(sid)}/seats`
+        const res = await fetchPos(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ eventSource: "table_page" }),
+        }).catch(() => null)
+        const payload = res ? (await res.json().catch(() => null)) as { ok?: boolean; data?: { seatId?: string | null; seatNumber?: number | null }; error?: unknown } | null : null
+        if (!res?.ok || payload?.ok === false) {
+          throw mutationError(
+            toUiErrorMessage(payload?.error, res ? "Could not add seat. Please try again." : "Network error. Please try again."),
+            payload,
+            res
+          )
+        }
+        return payload?.data ?? { seatId: null, seatNumber: nextNum }
+      },
+    }).catch(() => {})
+  }, [projectedSeats, seatAddInFlight, ensureSessionForMutations, fireAndReconcile, patchTableView])
 
   const handleDeleteSeat = useCallback(
-    async (seatNumber: number) => {
-      if (table.seats.length <= 1) return
-      if (orderItems.some((item) => item.seat === seatNumber)) {
+    (seatNumber: number) => {
+      const timerId = process.env.NODE_ENV !== "production" ? `[perf] deleteSeat ${performance.now()}` : ""
+      if (timerId) console.time(timerId)
+      if (process.env.NODE_ENV !== "production") {
+        const t = performance.now()
+        queueMicrotask(() => {
+          console.log("[perf] event loop delay (deleteSeat)", performance.now() - t)
+        })
+      }
+      if (seatDeleteInFlight.has(seatNumber)) {
+        if (timerId) console.timeEnd(timerId)
+        return
+      }
+      if (projectedSeats.length <= 1) {
+        if (timerId) console.timeEnd(timerId)
+        return
+      }
+      const hasNonVoidItems =
+        tableView?.items.some(
+          (item) => item.seatNumber === seatNumber && item.status !== "void"
+        ) ?? false
+      if (hasNonVoidItems) {
+        if (timerId) console.timeEnd(timerId)
         setWarningDialog({
           open: true,
           title: "Cannot delete seat",
@@ -1023,73 +1376,181 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         })
         return
       }
-
-      if (currentLocationId && activeStoreTable?.id) {
-        const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(
-          currentLocationId,
-          activeStoreTable.id
-        ))
-        if (sid) {
-          const res = await fetchPos(`/api/sessions/${encodeURIComponent(sid)}/seats/${seatNumber}`, {
+      const label = "Cannot delete seat"
+      const endpoint = `/api/sessions/{sid}/seats/${seatNumber}`
+      const prevSelected = selectedSeat
+      const remainingAfterDelete = projectedSeats.filter((s) => s.number !== seatNumber)
+      const nextSeat = remainingAfterDelete.length > 0 ? Math.min(...remainingAfterDelete.map((s) => s.number)) : null
+      setSeatDeleteInFlight((prev) => new Set(prev).add(seatNumber))
+      void fireAndReconcile({
+        label,
+        endpoint,
+        optimisticApply: () => {
+          setOptimisticSeatOps((prev) => ({
+            ...prev,
+            deleted: [...prev.deleted, seatNumber],
+          }))
+          if (prevSelected === seatNumber) setSelectedSeat(nextSeat)
+          setArmedSeatDelete(null)
+          if (timerId) console.timeEnd(timerId)
+          if (process.env.NODE_ENV !== "production") console.log("[perf] optimistic UI applied", performance.now())
+        },
+        optimisticRollback: () => {
+          setSeatDeleteInFlight((prev) => {
+            const next = new Set(prev)
+            next.delete(seatNumber)
+            return next
+          })
+          setOptimisticSeatOps((prev) => ({
+            ...prev,
+            deleted: prev.deleted.filter((n) => n !== seatNumber),
+          }))
+          if (prevSelected === seatNumber) setSelectedSeat(seatNumber)
+        },
+        onSuccessClearOptimistic: () => {
+          setSeatDeleteInFlight((prev) => {
+            const next = new Set(prev)
+            next.delete(seatNumber)
+            return next
+          })
+          setOptimisticSeatOps((prev) => ({
+            ...prev,
+            deleted: prev.deleted.filter((n) => n !== seatNumber),
+          }))
+          setSelectedSeat((prev) => (prev === seatNumber ? nextSeat : prev))
+        },
+        successLabel: "deleteSeat",
+        onSuccessPatch: (data: { deletedSeatNumber?: number }) => {
+          const deleted = data?.deletedSeatNumber ?? seatNumber
+          patchTableView((prev) => ({
+            ...prev,
+            seats: prev.seats.filter((s) => s.seatNumber !== deleted),
+          }))
+        },
+        requestFn: async () => {
+          const sid = await ensureSessionForMutations()
+          if (!sid) throw mutationError("Could not open a session for this table.")
+          const url = `/api/sessions/${encodeURIComponent(sid)}/seats/${seatNumber}`
+          const res = await fetchPos(url, {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ eventSource: "table_page" }),
-          })
-          const payload = await res.json().catch(() => null)
-          if (!res.ok || payload?.ok === false) {
-            setWarningDialog({
-              open: true,
-              title: "Cannot delete seat",
-              description: payload?.error?.message ?? "Seat has order items referencing it.",
-            })
-            return
+          }).catch(() => null)
+          const payload = res ? (await res.json().catch(() => null)) as { ok?: boolean; data?: { deletedSeatNumber?: number }; error?: { meta?: { seatNumber?: number } } } | null : null
+          if (!res?.ok || payload?.ok === false) {
+            if (res?.status === 409 && process.env.NODE_ENV !== "production") {
+              const meta = (payload as { error?: { meta?: { seatNumber?: number } } })?.error?.meta
+              console.log("[seat delete] 409 CONFLICT from backend", { meta: meta?.seatNumber })
+            }
+            throw mutationError(
+              toUiErrorMessage((payload as { error?: unknown })?.error, res ? "Seat has items." : "Network error. Please try again."),
+              payload,
+              res
+            )
           }
-        }
-      }
-
-      setTable((prev) => ({
-        ...prev,
-        guestCount: Math.max(0, prev.guestCount - 1),
-        seats: prev.seats.filter((seat) => seat.number !== seatNumber),
-      }))
-      setArmedSeatDelete(null)
-      setSelectedSeat((prev) => (prev === seatNumber ? null : prev))
+          return payload?.data ?? { deletedSeatNumber: seatNumber }
+        },
+      }).catch(() => {})
     },
-    [orderItems, table.seats.length, currentLocationId, activeStoreTable?.id, effectiveSessionId]
+    [projectedSeats, tableView?.items, selectedSeat, seatDeleteInFlight, ensureSessionForMutations, fireAndReconcile, patchTableView]
   )
 
   const handleRenameSeat = useCallback(
-    async (seatNumber: number, newSeatNumber: number) => {
-      if (!currentLocationId || !activeStoreTable?.id) return
-      const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(
-        currentLocationId,
-        activeStoreTable.id
-      ))
-      if (!sid) return
-      const res = await fetchPos(`/api/sessions/${encodeURIComponent(sid)}/seats/${seatNumber}/rename`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ newSeatNumber, eventSource: "table_page" }),
-      })
-      const payload = await res.json().catch(() => null)
-      if (!res.ok || payload?.ok === false) {
-        setWarningDialog({
-          open: true,
-          title: "Cannot rename seat",
-          description: payload?.error?.message ?? "Seat number already exists.",
+    (seatNumber: number, newSeatNumber: number) => {
+      const timerId = process.env.NODE_ENV !== "production" ? `[perf] renameSeat ${performance.now()}` : ""
+      if (timerId) console.time(timerId)
+      if (process.env.NODE_ENV !== "production") {
+        const t = performance.now()
+        queueMicrotask(() => {
+          console.log("[perf] event loop delay (renameSeat)", performance.now() - t)
         })
+      }
+      if (seatRenameInFlight.has(seatNumber)) {
+        if (timerId) console.timeEnd(timerId)
         return
       }
-      setTable((prev) => ({
-        ...prev,
-        seats: prev.seats.map((s) =>
-          s.number === seatNumber ? { ...s, number: newSeatNumber } : s
-        ),
-      }))
-      setSeatRenameState(null)
-      setArmedSeatDelete(null)
+      if (seatNumber === newSeatNumber) {
+        if (timerId) console.timeEnd(timerId)
+        return
+      }
+      const label = "Cannot rename seat"
+      const endpoint = `/api/sessions/{sid}/seats/${seatNumber}/rename`
+      const prevSelected = selectedSeat
+      setSeatRenameInFlight((prev) => new Set(prev).add(seatNumber))
+      void fireAndReconcile({
+        label,
+        endpoint,
+        optimisticApply: () => {
+          setOptimisticSeatOps((prev) => ({
+            ...prev,
+            renamed: { ...prev.renamed, [seatNumber]: newSeatNumber },
+          }))
+          setSeatRenameState(null)
+          setArmedSeatDelete(null)
+          if (prevSelected === seatNumber) setSelectedSeat(newSeatNumber)
+          if (timerId) console.timeEnd(timerId)
+          if (process.env.NODE_ENV !== "production") console.log("[perf] optimistic UI applied", performance.now())
+        },
+        optimisticRollback: () => {
+          setSeatRenameInFlight((prev) => {
+            const next = new Set(prev)
+            next.delete(seatNumber)
+            return next
+          })
+          setOptimisticSeatOps((prev) => {
+            const { [seatNumber]: _, ...rest } = prev.renamed
+            return { ...prev, renamed: rest }
+          })
+          if (prevSelected === seatNumber) setSelectedSeat(seatNumber)
+        },
+        onSuccessClearOptimistic: () => {
+          setSeatRenameInFlight((prev) => {
+            const next = new Set(prev)
+            next.delete(seatNumber)
+            return next
+          })
+          setOptimisticSeatOps((prev) => {
+            const { [seatNumber]: _, ...rest } = prev.renamed
+            return { ...prev, renamed: rest }
+          })
+          setSelectedSeat((prev) => (prev === seatNumber ? newSeatNumber : prev))
+        },
+        successLabel: "renameSeat",
+        onSuccessPatch: (data: { from?: number; to?: number }) => {
+          const fromNum = data?.from ?? seatNumber
+          const toNum = data?.to ?? newSeatNumber
+          patchTableView((prev) => ({
+            ...prev,
+            seats: prev.seats.map((s) =>
+              s.seatNumber === fromNum ? { ...s, seatNumber: toNum } : s
+            ).sort((a, b) => a.seatNumber - b.seatNumber),
+            items: prev.items.map((item) =>
+              item.seatNumber === fromNum ? { ...item, seatNumber: toNum } : item
+            ),
+          }))
+        },
+        requestFn: async () => {
+          const sid = await ensureSessionForMutations()
+          if (!sid) throw mutationError("Could not open a session for this table.")
+          const url = `/api/sessions/${encodeURIComponent(sid)}/seats/${seatNumber}/rename`
+          const res = await fetchPos(url, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ newSeatNumber, eventSource: "table_page" }),
+          }).catch(() => null)
+          const payload = res ? (await res.json().catch(() => null)) as { ok?: boolean; data?: { from?: number; to?: number }; error?: unknown } | null : null
+          if (!res?.ok || payload?.ok === false) {
+            throw mutationError(
+              toUiErrorMessage(payload?.error, res ? "Seat number already exists." : "Network error. Please try again."),
+              payload,
+              res
+            )
+          }
+          return payload?.data ?? { from: seatNumber, to: newSeatNumber }
+        },
+      }).catch(() => {})
     },
-    [currentLocationId, activeStoreTable?.id, effectiveSessionId]
+    [selectedSeat, seatRenameInFlight, ensureSessionForMutations, fireAndReconcile, patchTableView]
   )
 
   useEffect(() => {
@@ -1112,65 +1573,77 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     }
   }, [])
 
-  const fireWaveNumber = useCallback((waveNumber: number) => {
-    if (currentLocationId && activeStoreTable?.id) {
-      const run = async () => {
-        const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, activeStoreTable!.id))
-        if (!sid) return
-        const unfireItem = (item: TableOrderItem): TableOrderItem =>
-          item.status === "sent" && getItemWaveNumber(item) === waveNumber
-            ? { ...item, status: "held" as ItemStatus }
-            : item
-        const revert = () => {
-          setTable((prev) => ({
-            ...prev,
-            seats: prev.seats.map((seat) => ({ ...seat, items: seat.items.map(unfireItem) })),
-          }))
-          setTableItems((prev) => prev.map(unfireItem))
-        }
-        try {
-          const res = await fetchPos(`/api/sessions/${sid}/waves/${waveNumber}/fire`, {
+  const fireWaveNumber = useCallback(
+    (waveNumber: number) => {
+      const label = "Failed to fire wave"
+      const endpoint = `/api/sessions/{sid}/waves/${waveNumber}/fire`
+      void fireAndReconcile({
+        label,
+        endpoint,
+        successLabel: "fireWave",
+        optimisticApply: () => {
+          rollbackSnapshotRef.current = tableView
+            ? {
+                items: tableView.items.map((i) => ({ ...i })),
+                waves: tableView.waves.map((w) => ({ ...w })),
+              }
+            : null
+          patchTableView((prev) => {
+            const items = prev.items.map((item) =>
+              item.waveNumber === waveNumber && item.status === "held"
+                ? { ...item, status: "sent" as const }
+                : item
+            )
+            const waves = prev.waves.map((w) =>
+              w.waveNumber === waveNumber ? { ...w, status: "sent" as const } : w
+            )
+            return { ...prev, items, waves }
+          })
+        },
+        optimisticRollback: () => {
+          const snap = rollbackSnapshotRef.current
+          if (snap?.items && snap?.waves) {
+            patchTableView((prev) => ({ ...prev, items: snap.items!, waves: snap.waves! }))
+          }
+          rollbackSnapshotRef.current = null
+        },
+        onSuccessPatch: (data: { waveNumber?: number; status?: string; affectedItemIds?: string[] }) => {
+          const wn = data?.waveNumber ?? waveNumber
+          const ids = new Set(data?.affectedItemIds ?? [])
+          patchTableView((prev) => {
+            const items = prev.items.map((item) =>
+              (item.waveNumber === wn && item.status === "held") || (ids.has(item.id) && item.status === "held")
+                ? { ...item, status: "sent" as const }
+                : item
+            )
+            const waves = prev.waves.map((w) =>
+              w.waveNumber === wn ? { ...w, status: "sent" as const } : w
+            )
+            return { ...prev, items, waves }
+          })
+        },
+        requestFn: async () => {
+          const sid = await ensureSessionForMutations()
+          if (!sid) throw mutationError("Could not open a session for this table.")
+          const res = await fetchPos(`/api/sessions/${encodeURIComponent(sid)}/waves/${waveNumber}/fire`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ eventSource: "table_page" }),
-          })
-          const payload = await res.json().catch(() => null)
-          if (!res.ok || !payload?.ok) {
-            revert()
-            setWarningDialog({
-              open: true,
-              title: "Failed to fire wave",
-              description: payload?.error?.message ?? "Server rejected the request. Please try again.",
-            })
-            return
+          }).catch(() => null)
+          const payload = res ? (await res.json().catch(() => null)) as { ok?: boolean; data?: { waveNumber?: number; status?: string; affectedItemIds?: string[] }; error?: unknown } | null : null
+          if (!res?.ok || payload?.ok === false) {
+            throw mutationError(
+              toUiErrorMessage(payload?.error, res ? "Server rejected the request. Please try again." : "Network error. Please try again."),
+              payload,
+              res
+            )
           }
-        } catch {
-          revert()
-          setWarningDialog({
-            open: true,
-            title: "Failed to fire wave",
-            description: "Network error. Please try again.",
-          })
-        }
-      }
-      run()
-    }
-
-    const fireItem = (item: TableOrderItem): TableOrderItem => {
-      if (item.status !== "held") return item
-      if (getItemWaveNumber(item) !== waveNumber) return item
-      return { ...item, status: "sent" as ItemStatus }
-    }
-
-    setTable((prev) => ({
-      ...prev,
-      seats: prev.seats.map((seat) => ({
-        ...seat,
-        items: seat.items.map(fireItem),
-      })),
-    }))
-    setTableItems((prev) => prev.map(fireItem))
-  }, [currentLocationId, activeStoreTable?.id, effectiveSessionId])
+          return payload?.data ?? { waveNumber, status: "sent", affectedItemIds: [] }
+        },
+      }).catch(() => {})
+    },
+    [tableView, ensureSessionForMutations, fireAndReconcile, patchTableView]
+  )
 
   const handleFireWave = useCallback((waveId: string) => {
     const match = waveId.match(/^mw-(\d+)$/)
@@ -1189,204 +1662,183 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     async (itemId: string): Promise<string | null> => {
       const knownOrderId = itemOrderIdsRef.current.get(itemId)
       if (knownOrderId) return knownOrderId
-      if (!currentLocationId || !activeStoreTable?.id) return null
-
-      const foundItem = [
-        ...table.seats.flatMap((seat) => seat.items),
-        ...tableItems,
-      ].find((item) => item.id === itemId)
-      const waveNumber = foundItem ? getItemWaveNumber(foundItem) : null
-      if (!waveNumber) return null
-
-      const sid =
-        effectiveSessionId ??
-        (await getOpenSessionIdForTable(currentLocationId, activeStoreTable.id))
-      if (!sid) return null
-
-      const resolvedOrderId = await getOrderIdForSessionAndWave(sid, waveNumber)
-      if (resolvedOrderId) {
-        itemOrderIdsRef.current.set(itemId, resolvedOrderId)
+      const fromView = tableView?.items.find((item) => item.id === itemId)?.orderId ?? null
+      if (fromView) {
+        itemOrderIdsRef.current.set(itemId, fromView)
       }
-      return resolvedOrderId
+      return fromView
     },
-    [currentLocationId, activeStoreTable?.id, effectiveSessionId, table.seats, tableItems]
+    [tableView?.items]
   )
 
-  const handleMarkServed = useCallback((itemId: string) => {
-    if (isDbOrderItemId(itemId)) {
-      const run = async () => {
-        const orderId = await resolveOrderIdForItem(itemId)
-        if (!orderId) return
-        const revert = (prevStatus: ItemStatus) => {
-          setTable((prev) => ({
+  const handleMarkServed = useCallback(
+    (itemId: string) => {
+      if (!isDbOrderItemId(itemId)) return
+      const label = "Failed to mark served"
+      const endpoint = `/api/orders/{orderId}/items/${itemId}`
+      void fireAndReconcile({
+        label,
+        endpoint,
+        successLabel: "markServed",
+        optimisticApply: () => {
+          rollbackSnapshotRef.current = tableView
+            ? { items: tableView.items.map((i) => ({ ...i })), waves: undefined }
+            : null
+          patchTableView((prev) => ({
             ...prev,
-            seats: prev.seats.map((s) => ({
-              ...s,
-              items: s.items.map((i) => (i.id === itemId ? { ...i, status: prevStatus } : i)),
-            })),
+            items: prev.items.map((item) =>
+              item.id === itemId ? { ...item, status: "served" as const } : item
+            ),
           }))
-          setTableItems((prev) =>
-            prev.map((i) => (i.id === itemId ? { ...i, status: prevStatus } : i))
-          )
-        }
-        const prevStatus = [
-          ...table.seats.flatMap((s) => s.items),
-          ...tableItems,
-        ].find((i) => i.id === itemId)?.status ?? "ready"
-        try {
+        },
+        optimisticRollback: () => {
+          const snap = rollbackSnapshotRef.current
+          if (snap?.items) {
+            patchTableView((prev) => ({ ...prev, items: snap.items! }))
+          }
+          rollbackSnapshotRef.current = null
+        },
+        onSuccessPatch: (data: { itemId?: string; status?: string }) => {
+          const id = data?.itemId ?? itemId
+          patchTableView((prev) => ({
+            ...prev,
+            items: prev.items.map((item) =>
+              item.id === id ? { ...item, status: "served" as const } : item
+            ),
+          }))
+        },
+        requestFn: async () => {
+          const orderId = await resolveOrderIdForItem(itemId)
+          if (!orderId) throw mutationError("Could not resolve order for item.")
           const res = await fetchPos(`/api/orders/${orderId}/items/${itemId}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ status: "served", eventSource: "table_page" }),
-          })
-          const payload = await res.json().catch(() => null)
-          if (!res.ok || !payload?.ok) {
-            revert(prevStatus)
-            setWarningDialog({
-              open: true,
-              title: "Failed to mark served",
-              description: payload?.error?.message ?? "Server rejected the request. Please try again.",
-            })
+          }).catch(() => null)
+          const payload = res
+            ? (await res.json().catch(() => null)) as {
+                ok?: boolean
+                data?: { itemId?: string; status?: string }
+                error?: unknown
+              } | null
+            : null
+          if (!res?.ok || payload?.ok === false) {
+            throw mutationError(
+              toUiErrorMessage(
+                payload?.error,
+                res ? "Server rejected the request. Please try again." : "Network error. Please try again."
+              ),
+              payload,
+              res
+            )
           }
-        } catch {
-          revert(prevStatus)
-          setWarningDialog({
-            open: true,
-            title: "Failed to mark served",
-            description: "Network error. Please try again.",
-          })
-        }
-      }
-      run()
-    }
-    setTable((prev) => ({
-      ...prev,
-      seats: prev.seats.map((s) => ({
-        ...s,
-        items: s.items.map((i) =>
-          i.id === itemId ? { ...i, status: "served" as ItemStatus } : i
-        ),
-      })),
-    }))
-    setTableItems((prev) =>
-      prev.map((i) => (i.id === itemId ? { ...i, status: "served" as ItemStatus } : i))
-    )
-  }, [resolveOrderIdForItem, table.seats, tableItems])
+          return payload?.data ?? { itemId, status: "served" }
+        },
+      }).catch(() => {})
+    },
+    [tableView, resolveOrderIdForItem, fireAndReconcile, patchTableView]
+  )
 
   const handleAdvanceWaveStatus = useCallback(
     (waveNumber: number, nextStatus: "cooking" | "ready" | "served") => {
-      const getNextItemStatus = (item: TableOrderItem): ItemStatus => {
-        if (item.status === "void") return item.status
-        if (getItemWaveNumber(item) !== waveNumber) return item.status
-        if (nextStatus === "cooking" && item.status === "sent") return "cooking"
-        if (nextStatus === "ready" && item.status === "cooking") return "ready"
-        if (
-          nextStatus === "served" &&
-          (item.status === "ready" || item.status === "cooking" || item.status === "sent")
-        ) {
-          return "served"
-        }
-        return item.status
-      }
-
-      const dbItemsToUpdate = [
-        ...table.seats.flatMap((seat) => seat.items),
-        ...tableItems,
-      ]
-        .filter((item) => isDbOrderItemId(item.id))
-        .filter((item) => getItemWaveNumber(item) === waveNumber)
-        .filter((item) => item.status !== "void")
-        .filter((item) => getNextItemStatus(item) !== item.status)
-      const previousStatusByItemId = new Map<string, ItemStatus>(
-        dbItemsToUpdate.map((item) => [item.id, item.status])
-      )
-
-      const advanceItem = (item: TableOrderItem): TableOrderItem => {
-        const nextItemStatus = getNextItemStatus(item)
-        return nextItemStatus === item.status ? item : { ...item, status: nextItemStatus }
-      }
-
-      setTable((prev) => ({
-        ...prev,
-        seats: prev.seats.map((seat) => ({
-          ...seat,
-          items: seat.items.map(advanceItem),
-        })),
-      }))
-      setTableItems((prev) => prev.map(advanceItem))
-
-      const restoreStatuses = (idsToRestore: Set<string>) => {
-        if (idsToRestore.size === 0) return
-        const restoreItem = (item: TableOrderItem): TableOrderItem => {
-          if (!idsToRestore.has(item.id)) return item
-          const previousStatus = previousStatusByItemId.get(item.id)
-          return previousStatus ? { ...item, status: previousStatus } : item
-        }
-        setTable((prev) => ({
-          ...prev,
-          seats: prev.seats.map((seat) => ({
-            ...seat,
-            items: seat.items.map(restoreItem),
-          })),
-        }))
-        setTableItems((prev) => prev.map(restoreItem))
-      }
-
       const dbStatus: "preparing" | "ready" | "served" =
         nextStatus === "cooking" ? "preparing" : nextStatus === "ready" ? "ready" : "served"
-      if (currentLocationId && activeStoreTable?.id) {
-        const run = async () => {
-          const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, activeStoreTable.id))
-          if (sid) {
-            const response = await fetchPos(`/api/sessions/${sid}/waves/${waveNumber}/advance`, {
+      const label = "Failed to advance wave"
+      const endpoint = `/api/sessions/{sid}/waves/${waveNumber}/advance`
+      const itemStatus = nextStatus
+      const waveStatus = nextStatus === "cooking" ? ("preparing" as const) : nextStatus
+      void fireAndReconcile({
+        label,
+        endpoint,
+        successLabel: "advanceWave",
+        optimisticApply: () => {
+          rollbackSnapshotRef.current = tableView
+            ? {
+                items: tableView.items.map((i) => ({ ...i })),
+                waves: tableView.waves.map((w) => ({ ...w })),
+              }
+            : null
+          patchTableView((prev) => {
+            const ids = new Set(
+              prev.items.filter((i) => i.waveNumber === waveNumber && i.status !== "void").map((i) => i.id)
+            )
+            const items = prev.items.map((item) =>
+              ids.has(item.id) ? { ...item, status: itemStatus as "cooking" | "ready" | "served" } : item
+            )
+            const waves = prev.waves.map((w) =>
+              w.waveNumber === waveNumber ? { ...w, status: waveStatus } : w
+            )
+            return { ...prev, items, waves }
+          })
+        },
+        optimisticRollback: () => {
+          const snap = rollbackSnapshotRef.current
+          if (snap?.items && snap?.waves) {
+            patchTableView((prev) => ({ ...prev, items: snap.items!, waves: snap.waves! }))
+          }
+          rollbackSnapshotRef.current = null
+        },
+        onSuccessPatch: (data: { waveNumber?: number; toStatus?: string; updatedItemIds?: string[] }) => {
+          const wn = data?.waveNumber ?? waveNumber
+          const toStat = (data?.toStatus ?? dbStatus) as "preparing" | "ready" | "served"
+          const itemStat =
+            toStat === "preparing" ? ("cooking" as const) : toStat === "ready" ? ("ready" as const) : ("served" as const)
+          const waveStat =
+            toStat === "preparing" ? ("preparing" as const) : toStat === "ready" ? ("ready" as const) : ("served" as const)
+          const ids = new Set(data?.updatedItemIds ?? [])
+          patchTableView((prev) => {
+            const items = prev.items.map((item) =>
+              item.waveNumber === wn && (ids.size === 0 || ids.has(item.id)) && item.status !== "void"
+                ? { ...item, status: itemStat }
+                : item
+            )
+            const waves = prev.waves.map((w) =>
+              w.waveNumber === wn ? { ...w, status: waveStat } : w
+            )
+            return { ...prev, items, waves }
+          })
+        },
+        requestFn: async () => {
+          const sid = await ensureSessionForMutations()
+          if (!sid) throw mutationError("Could not open a session for this table.")
+          const response = await fetchPos(`/api/sessions/${encodeURIComponent(sid)}/waves/${waveNumber}/advance`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ toStatus: dbStatus, eventSource: "table_page" }),
+          }).catch(() => null)
+          const payload = response
+            ? (await response.json().catch(() => null)) as {
+                ok?: boolean
+                data?: { waveNumber?: number; toStatus?: string; updatedItemIds?: string[] }
+                error?: unknown
+              } | null
+            : null
+          if (!response?.ok || payload?.ok === false) {
+            throw mutationError(
+              toUiErrorMessage(
+                payload?.error,
+                response ? "Server rejected the request. Please try again." : "Network error. Please try again."
+              ),
+              payload,
+              response
+            )
+          }
+          if (nextStatus === "ready" || nextStatus === "served") {
+            fetchPos(`/api/sessions/${encodeURIComponent(sid!)}/events`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                toStatus: dbStatus,
+                type: nextStatus === "ready" ? "item_ready" : "served",
+                payload: { waveNumber },
                 eventSource: "table_page",
               }),
             }).catch(() => null)
-            const payload = response ? await response.json().catch(() => null) : null
-
-            const failedIds = Array.isArray(payload?.data?.failed)
-              ? payload.data.failed
-                  .map((entry: { itemId?: unknown }) =>
-                    typeof entry?.itemId === "string" ? entry.itemId : null
-                  )
-                  .filter((itemId: string | null): itemId is string => itemId != null)
-              : []
-
-            if (!response?.ok) {
-              if (failedIds.length > 0) {
-                restoreStatuses(new Set(failedIds))
-              } else {
-                restoreStatuses(new Set(previousStatusByItemId.keys()))
-              }
-              return
-            }
-            if (failedIds.length > 0) {
-              restoreStatuses(new Set(failedIds))
-            }
-            if (nextStatus === "ready" || nextStatus === "served") {
-              fireAndForget(
-                fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    type: nextStatus === "ready" ? "item_ready" : "served",
-                    payload: { waveNumber },
-                    eventSource: "table_page",
-                  }),
-                }),
-                "record item_ready/served event"
-              )
-            }
           }
-        }
-        run()
-      }
+          return payload?.data ?? { waveNumber, toStatus: dbStatus, updatedItemIds: [] }
+        },
+      }).catch(() => {})
     },
-    [currentLocationId, activeStoreTable?.id, effectiveSessionId, table.seats, tableItems]
+    [tableView, ensureSessionForMutations, fireAndReconcile, patchTableView]
   )
 
   const handleMarkWaveServed = useCallback((waveId: string) => {
@@ -1397,28 +1849,45 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     handleAdvanceWaveStatus(waveNumber, "served")
   }, [handleAdvanceWaveStatus])
 
-  const handleVoidItem = useCallback((itemId: string) => {
-    if (isDbOrderItemId(itemId)) {
-      const run = async () => {
-        const orderId = await resolveOrderIdForItem(itemId)
-        if (!orderId) return
-        const prevStatus = [
-          ...table.seats.flatMap((s) => s.items),
-          ...tableItems,
-        ].find((i) => i.id === itemId)?.status ?? "held"
-        const revert = () => {
-          setTable((prev) => ({
+  const handleVoidItem = useCallback(
+    (itemId: string) => {
+      if (!isDbOrderItemId(itemId)) return
+      const label = "Failed to void item"
+      const endpoint = `/api/orders/{orderId}/items/${itemId}`
+      void fireAndReconcile({
+        label,
+        endpoint,
+        successLabel: "voidItem",
+        optimisticApply: () => {
+          rollbackSnapshotRef.current = tableView
+            ? { items: tableView.items.map((i) => ({ ...i })), waves: undefined }
+            : null
+          patchTableView((prev) => ({
             ...prev,
-            seats: prev.seats.map((s) => ({
-              ...s,
-              items: s.items.map((i) => (i.id === itemId ? { ...i, status: prevStatus } : i)),
-            })),
+            items: prev.items.map((item) =>
+              item.id === itemId ? { ...item, status: "void" as const } : item
+            ),
           }))
-          setTableItems((prev) =>
-            prev.map((i) => (i.id === itemId ? { ...i, status: prevStatus } : i))
-          )
-        }
-        try {
+        },
+        optimisticRollback: () => {
+          const snap = rollbackSnapshotRef.current
+          if (snap?.items) {
+            patchTableView((prev) => ({ ...prev, items: snap.items! }))
+          }
+          rollbackSnapshotRef.current = null
+        },
+        onSuccessPatch: (data: { itemId?: string; status?: string }) => {
+          const id = data?.itemId ?? itemId
+          patchTableView((prev) => ({
+            ...prev,
+            items: prev.items.map((item) =>
+              item.id === id ? { ...item, status: "void" as const } : item
+            ),
+          }))
+        },
+        requestFn: async () => {
+          const orderId = await resolveOrderIdForItem(itemId)
+          if (!orderId) throw mutationError("Could not resolve order for item.")
           const res = await fetchPos(`/api/orders/${orderId}/items/${itemId}`, {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
@@ -1426,46 +1895,36 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
               reason: "Voided from table view",
               eventSource: "table_page",
             }),
-          })
-          const payload = await res.json().catch(() => null)
-          if (!res.ok || !payload?.ok) {
-            revert()
-            setWarningDialog({
-              open: true,
-              title: "Failed to void item",
-              description: payload?.error?.message ?? "Server rejected the request. Please try again.",
-            })
+          }).catch(() => null)
+          const payload = res
+            ? (await res.json().catch(() => null)) as {
+                ok?: boolean
+                data?: { itemId?: string; status?: string }
+                error?: unknown
+              } | null
+            : null
+          if (!res?.ok || payload?.ok === false) {
+            throw mutationError(
+              toUiErrorMessage(
+                payload?.error,
+                res ? "Server rejected the request. Please try again." : "Network error. Please try again."
+              ),
+              payload,
+              res
+            )
           }
-        } catch {
-          revert()
-          setWarningDialog({
-            open: true,
-            title: "Failed to void item",
-            description: "Network error. Please try again.",
-          })
-        }
-      }
-      run()
-    }
-    setTable((prev) => ({
-      ...prev,
-      seats: prev.seats.map((s) => ({
-        ...s,
-        items: s.items.map((i) =>
-          i.id === itemId ? { ...i, status: "void" as ItemStatus } : i
-        ),
-      })),
-    }))
-    setTableItems((prev) =>
-      prev.map((i) => (i.id === itemId ? { ...i, status: "void" as ItemStatus } : i))
-    )
-  }, [resolveOrderIdForItem, table.seats, tableItems])
+          return (payload as { data?: { itemId?: string; status?: string } })?.data ?? { itemId, status: "void" }
+        },
+      }).catch(() => {})
+    },
+    [tableView, resolveOrderIdForItem, fireAndReconcile, patchTableView]
+  )
 
   const handleEnterOrdering = useCallback((seatNumber: number | null = null) => {
-    if (table.seats.length === 0) return
+    if (projectedSeats.length === 0) return
     setSelectedSeat(seatNumber)
     setIsOrderingInline(true)
-  }, [table.seats.length])
+  }, [projectedSeats.length])
 
   const handleQuantityChange = useCallback((itemId: string, delta: number) => {
     setOrderItems((prev) =>
@@ -1495,230 +1954,225 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     if (orderItems.length === 0 && !nextSendableWaveNumber) return
     if (addItemsInFlightRef.current) return
 
-    const idempotencyKey = makeIdempotencyKey()
-    const existingHeldWaveNumbers = [
-      ...table.seats.flatMap((seat) =>
-        seat.items
-          .filter((item) => item.status === "held")
-          .map((item) => getItemWaveNumber(item))
-      ),
-      ...tableItems
-        .filter((item) => item.status === "held")
-        .map((item) => getItemWaveNumber(item)),
-    ].filter((wave): wave is number => typeof wave === "number" && Number.isFinite(wave))
-
-    const draftHeldWaveNumbers = orderItems
+    const newDrafts = orderItems.filter((d) => !d.id || !isDbOrderItemId(d.id))
+    const draftWaveNumbers = newDrafts
       .flatMap((draft) => Array.from({ length: Math.max(1, draft.quantity) }, () => getDraftItemWaveNumber(draft)))
       .filter((wave): wave is number => Number.isFinite(wave) && wave > 0)
+    const waveToSend = draftWaveNumbers.includes(1) ? 1 : null
 
-    const allHeldWaveNumbers = [...existingHeldWaveNumbers, ...draftHeldWaveNumbers]
-    const lowestHeld = allHeldWaveNumbers.length > 0 ? Math.min(...allHeldWaveNumbers) : null
-    const waveToSend = lowestHeld === 1 ? 1 : null
+    if (newDrafts.length === 0) {
+      setOrderItems([])
+      handleExitOrderingView()
+      if (waveToSend !== null) await fireWaveNumber(waveToSend)
+      return
+    }
 
-    const draftSeatItems: Array<{ seat: number; item: TableOrderItem }> = []
-    const draftSharedItems: TableOrderItem[] = []
+    const sid = await ensureSessionForMutations()
+    if (!sid || !currentLocationId) {
+      throw mutationError("Could not open a session for this table.")
+    }
 
-    if (orderItems.length > 0 && currentLocationId && activeStoreTable?.id) {
-      const newDrafts = orderItems.filter((d) => !d.id || !isDbOrderItemId(d.id))
-      if (newDrafts.length === 0) {
-        setOrderItems([])
-        handleExitOrderingView()
-        if (waveToSend !== null) fireWaveNumber(waveToSend)
-        return
+    const draftsSnapshot = [...newDrafts]
+    const tempIds: string[] = []
+    for (const draft of newDrafts) {
+      for (let i = 0; i < Math.max(1, draft.quantity); i += 1) {
+        tempIds.push(`temp-${draft.id}-${i}`)
       }
+    }
 
-      addItemsInFlightRef.current = true
-      try {
-      let sid = effectiveSessionId
-      if (!sid) {
+    const idempotencyKey = makeIdempotencyKey()
+    const addInputs: Array<{ itemId: string; quantity: number; seatId?: string; notes?: string }> = []
+    for (const draft of newDrafts) {
+      const waveNumber = getDraftItemWaveNumber(draft)
+      const visibleNotes = (draft.notes ?? "")
+        .replace(/\bWave\s+\d+\b/gi, "")
+        .replace(/[·|,-]\s*$/g, "")
+        .replace(/^\s*[·|,-]\s*/g, "")
+        .trim()
+      const mods = [
+        `Wave ${waveNumber}`,
+        ...Object.values(draft.options ?? {}),
+        ...(draft.extras ?? []).map((e) => `+ ${e}`),
+        ...(visibleNotes ? [visibleNotes] : []),
+      ]
+      const notesStr = mods.filter(Boolean).join(" · ")
+      const seatId = draft.seat > 0 ? seatIdByNumberRef.current.get(draft.seat) : undefined
+      for (let i = 0; i < Math.max(1, draft.quantity); i += 1) {
+        addInputs.push({
+          itemId: draft.menuItemId,
+          quantity: 1,
+          seatId,
+          notes: notesStr || undefined,
+        })
+      }
+    }
+
+    const tempItems: Array<{
+      id: string
+      orderId: string
+      menuItemId: string | null
+      name: string
+      price: number
+      quantity: number
+      status: "held"
+      seatNumber: number
+      waveNumber: number
+      notes: string | null
+    }> = []
+    let idx = 0
+    for (const draft of newDrafts) {
+      const waveNumber = getDraftItemWaveNumber(draft)
+      for (let i = 0; i < Math.max(1, draft.quantity); i += 1) {
+        tempItems.push({
+          id: tempIds[idx],
+          orderId: "temp",
+          menuItemId: draft.menuItemId,
+          name: draft.name,
+          price: draft.price,
+          quantity: 1,
+          status: "held",
+          seatNumber: draft.seat,
+          waveNumber,
+          notes: draft.notes ?? null,
+        })
+        idx += 1
+      }
+    }
+
+    addItemsInFlightRef.current = true
+    void fireAndReconcile({
+      label: "Failed to add items",
+      endpoint: "/api/orders",
+      successLabel: "sendOrder",
+      optimisticApply: () => {
+        patchTableView((prev) => ({
+          ...prev,
+          items: [...prev.items, ...tempItems],
+        }))
+        setOrderItems((prev) => prev.filter((d) => d.id && isDbOrderItemId(d.id)))
+        handleExitOrderingView()
+        if (process.env.NODE_ENV !== "production") console.log("[perf] optimistic UI applied", performance.now())
+      },
+      optimisticRollback: () => {
+        patchTableView((prev) => ({
+          ...prev,
+          items: prev.items.filter((i) => !tempIds.includes(i.id)),
+        }))
+        setOrderItems((prev) => {
+          const withoutNew = prev.filter((d) => d.id && isDbOrderItemId(d.id))
+          return [...withoutNew, ...draftsSnapshot]
+        })
+      },
+      onSuccessClearOptimistic: () => {},
+      onSuccessPatch: (
+        result: {
+          addedItems?: Array<{
+            id: string
+            orderId: string
+            menuItemId: string | null
+            name: string
+            price: number
+            quantity: number
+            status: string
+            seatNumber: number
+            waveNumber: number
+            notes: string | null
+          }>
+          affectedWaveNumbers?: number[]
+          autoFiredWave?: number
+        }
+      ) => {
+        const rawAdded = result.addedItems ?? []
+        const addedItems = rawAdded.map((i) => ({ ...i, status: i.status as TableViewItemStatus }))
+        const autoFiredWave = result.autoFiredWave
+        patchTableView((prev) => {
+          const withoutTemps = prev.items.filter((i) => !i.id.startsWith("temp-"))
+          let items: TableView["items"] = [...withoutTemps, ...addedItems]
+          if (typeof autoFiredWave === "number") {
+            items = items.map((item) =>
+              item.waveNumber === autoFiredWave && item.status === "held"
+                ? { ...item, status: "sent" as const }
+                : item
+            )
+          }
+          const waves =
+            typeof autoFiredWave === "number"
+              ? prev.waves.map((w) =>
+                  w.waveNumber === autoFiredWave ? { ...w, status: "sent" as const } : w
+                )
+              : prev.waves
+          return { ...prev, items, waves }
+        })
+      },
+      requestFn: async () => {
         try {
-          const res = await fetchPos("/api/sessions/ensure", {
+          const response = await fetchPos("/api/orders", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              tableUuid: activeStoreTable.id,
               locationId: currentLocationId,
+              sessionId: sid,
+              orderType: "dine_in",
+              paymentTiming: "pay_later",
               guestCount: Math.max(1, table.guestCount ?? 0),
               eventSource: "table_page",
+              autoFireWave1: waveToSend === 1,
+              items: addInputs.map((input) => ({
+                itemId: input.itemId,
+                quantity: input.quantity,
+                seatId: input.seatId,
+                notes: input.notes ?? null,
+              })),
             }),
-          }, { idempotencyKey })
-          const payload = await res.json()
-          if (!payload.ok) throw new Error(payload.error?.message ?? "Failed to ensure session")
-          const data = payload.data
-          sid = data.sessionId ?? null
-        } catch (e) {
-          setWarningDialog({
-            open: true,
-            title: "Failed to create session",
-            description: e instanceof Error ? e.message : "Could not create session. Please try again.",
-          })
-          return
+          }, { idempotencyKey }).catch(() => null)
+          const payload = response ? (await response.json().catch(() => null)) : null
+          if (!response?.ok || payload?.ok === false || !payload?.data) {
+            throw mutationError(
+              toUiErrorMessage(payload?.error, response ? "Unable to add items. Please try again." : "Network error. Please try again."),
+              payload,
+              response
+            )
+          }
+          return payload.data as {
+            orderId: string
+            addedItems: Array<{
+              id: string
+              orderId: string
+              menuItemId: string | null
+              name: string
+              price: number
+              quantity: number
+              status: string
+              seatNumber: number
+              waveNumber: number
+              notes: string | null
+            }>
+            affectedWaveNumbers?: number[]
+            autoFiredWave?: number
+          }
+        } finally {
+          addItemsInFlightRef.current = false
         }
-      }
-      if (!sid) {
-        console.error("[TableDetail] No session for add items")
-        return
-      }
-
-      const seatRows = await getSeatsForSession(sid)
-      const seatNumberToId = new Map(seatRows.map((s) => [s.seatNumber, s.id]))
-
-      const addInputs: Array<{
-        itemId: string
-        quantity: number
-        seatId?: string
-        notes?: string
-      }> = []
-      const draftExpanded: Array<{
-        draft: TakeOrderItem
-        seat: number
-        waveNumber: number
-        mods: string[]
-      }> = []
-
-      for (const draft of newDrafts) {
-        const waveNumber = getDraftItemWaveNumber(draft)
-        const visibleNotes = (draft.notes ?? "")
-          .replace(/\bWave\s+\d+\b/gi, "")
-          .replace(/[·|,-]\s*$/g, "")
-          .replace(/^\s*[·|,-]\s*/g, "")
-          .trim()
-        const mods = [
-          `Wave ${waveNumber}`,
-          ...Object.values(draft.options ?? {}),
-          ...(draft.extras ?? []).map((e) => `+ ${e}`),
-          ...(visibleNotes ? [visibleNotes] : []),
-        ]
-        const notesStr = mods.filter(Boolean).join(" · ")
-
-        const seatId = draft.seat > 0 ? seatNumberToId.get(draft.seat) : undefined
-        const qty = Math.max(1, draft.quantity)
-
-        for (let i = 0; i < qty; i++) {
-          addInputs.push({
-            itemId: draft.menuItemId,
-            quantity: 1,
-            seatId,
-            notes: notesStr || undefined,
-          })
-          draftExpanded.push({ draft, seat: draft.seat, waveNumber, mods })
-        }
-      }
-
-      const response = await fetchPos("/api/orders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          locationId: currentLocationId,
-          sessionId: sid,
-          orderType: "dine_in",
-          paymentTiming: "pay_later",
-          guestCount: Math.max(1, table.guestCount ?? 0),
-          eventSource: "table_page",
-          items: addInputs.map((input) => ({
-            itemId: input.itemId,
-            quantity: input.quantity,
-            seatId: input.seatId,
-            notes: input.notes ?? null,
-          })),
-        }),
-      }, { idempotencyKey }).catch(() => null)
-      const payload = response ? await response.json().catch(() => null) : null
-      const data = payload?.ok === true && payload?.data ? payload.data : null
-      if (!response?.ok || payload?.ok === false || !data) {
-        let errMsg = "Unable to add items. Please try again."
-        if (payload?.error && typeof payload.error === "object" && payload.error !== null && "message" in payload.error) {
-          const m = (payload.error as { message?: unknown }).message
-          if (typeof m === "string" && m) errMsg = m
-        } else if (typeof payload?.error === "string" && payload.error) {
-          errMsg = payload.error
-        }
-        setWarningDialog({
-          open: true,
-          title: "Failed to add items",
-          description: errMsg,
-        })
-        return
-      }
-
-      const resultSessionId =
-        typeof data?.sessionId === "string" ? data.sessionId : sid
-      if (resultSessionId && !effectiveSessionId) {
-        setSessionId(resultSessionId)
-        updateStoreTable(activeStoreTable.id, { sessionId: resultSessionId })
-      }
-
-      const resultOrderId = typeof data?.orderId === "string" ? data.orderId : null
-      const addedIds = Array.isArray(data?.addedItemIds)
-        ? data.addedItemIds.filter((id): id is string => typeof id === "string")
-        : []
-      let idIdx = 0
-      const itemStatus = waveToSend === 1 ? ("sent" as ItemStatus) : ("held" as ItemStatus)
-      for (const { draft, seat, waveNumber, mods } of draftExpanded) {
-        const realId = addedIds[idIdx++] ?? `db-${idIdx}`
-        if (resultOrderId && isDbOrderItemId(realId)) {
-          itemOrderIdsRef.current.set(realId, resultOrderId)
-        }
-        const item: TableOrderItem = {
-          id: realId,
-          menuItemId: draft.menuItemId,
-          name: draft.name,
-          mods: mods.length > 0 ? mods : undefined,
-          price: draft.price,
-          status: itemStatus,
-          wave: draft.wave === "drinks" ? "drinks" : "food",
-          waveNumber,
-        }
-        if (seat === 0) draftSharedItems.push(item)
-        else draftSeatItems.push({ seat, item })
-      }
-      } finally {
-        addItemsInFlightRef.current = false
-      }
-    }
-
-    if (draftSeatItems.length > 0 || draftSharedItems.length > 0) {
-      setTable((prev) => ({
-        ...prev,
-        status: prev.status === "seated" ? "ordering" : prev.status,
-        seats: prev.seats.map((seat) => ({
-          ...seat,
-          items: [
-            ...seat.items,
-            ...draftSeatItems
-              .filter((entry) => entry.seat === seat.number)
-              .map((entry) => entry.item),
-          ],
-        })),
-      }))
-      setTableItems((prev) => [...prev, ...draftSharedItems])
-    }
-
-    if (waveToSend !== null) {
-      fireWaveNumber(waveToSend)
-    }
-
-    setOrderItems([])
-    handleExitOrderingView()
+      },
+    }).catch(() => {
+      addItemsInFlightRef.current = false
+    })
   }, [
     currentLocationId,
-    activeStoreTable,
-    effectiveSessionId,
-    table.guestCount,
-    table.seats,
-    table.status,
+    ensureSessionForMutations,
+    fireWaveNumber,
     handleExitOrderingView,
     nextSendableWaveNumber,
     orderItems,
-    tableItems,
-    fireWaveNumber,
-    updateStoreTable,
+    table.guestCount,
+    fireAndReconcile,
+    patchTableView,
   ])
 
   const handleCloseTable = useCallback(
     async (
       arg?: { force?: boolean } | { mode: string; method: string; subtotal: number; tip: number; total: number; charges: Array<{ label: string; amount: number }> }
-    ) => {
+    ) => mutateThenRefresh("Cannot close table", "/api/sessions/{sid}/close", async () => {
       const idempotencyKey = makeIdempotencyKey()
       const isPaymentSummary = arg != null && "total" in arg
       const options = isPaymentSummary ? undefined : (arg as { force?: boolean } | undefined)
@@ -1734,11 +2188,18 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
             method: "other" as const,
           }
       if (currentLocationId && activeStoreTable?.id) {
-        const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(
-          currentLocationId,
-          activeStoreTable.id
-        ))
-        const result = sid
+        type CloseResult = {
+          ok: boolean
+          reason?: string
+          error?: unknown
+          items?: Array<{ id: string; itemName: string; status: string; quantity: number }>
+          remaining?: number
+          sessionTotal?: number
+          paymentsTotal?: number
+          correlationId?: string
+        }
+        const sid = effectiveSessionId
+        const result: CloseResult = sid
           ? await fetchPos(`/api/sessions/${sid}/close`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -1751,43 +2212,47 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
               .then(async (response) => {
                 const payload = await response.json().catch(() => null)
                 if (payload && typeof payload === "object") {
-                  return payload as {
-                    ok: boolean
-                    reason?: string
-                    error?: string
-                    items?: Array<{ id: string; itemName: string; status: string; quantity: number }>
-                    remaining?: number
-                    sessionTotal?: number
-                    paymentsTotal?: number
-                    correlationId?: string
-                  }
+                  return payload as CloseResult
                 }
                 return {
                   ok: false,
                   reason: response.ok ? "unknown_error" : "request_failed",
                   error: response.ok ? "Unknown response" : response.statusText,
-                }
+                } satisfies CloseResult
               })
-              .catch(() => ({ ok: false, reason: "network_error", error: "Network request failed" }))
-          : { ok: false as const, reason: "session_not_open" as const }
+              .catch(() => ({ ok: false, reason: "network_error", error: "Network request failed" }) satisfies CloseResult)
+          : ({ ok: false, reason: "session_not_open" } satisfies CloseResult)
         if (!result.ok) {
-        const msg =
-          result.reason === "unfinished_items"
-            ? `Cannot close: ${result.items?.length ?? 0} item(s) still pending, preparing, or ready. Finish or void them first.`
-            : result.reason === "unpaid_balance"
-              ? `Cannot close: $${(result.remaining ?? 0).toFixed(2)} unpaid. Session total: $${(result.sessionTotal ?? 0).toFixed(2)}, payments: $${(result.paymentsTotal ?? 0).toFixed(2)}.`
-              : result.reason === "invalid_tip"
-                ? "Tip amount must be >= 0."
-                : result.reason === "payment_in_progress"
-                  ? "Cannot close: a payment is in progress."
-                  : result.reason === "kitchen_mid_fire"
-                    ? "Cannot close: items sent to kitchen but not yet started."
-                    : result.reason === "session_not_open"
-                      ? "Session is not open."
-                      : result.error ?? "Cannot close table."
-        setWarningDialog({ open: true, title: "Cannot close table", description: msg })
-        return
-      }
+          const fallbackReason = toUiErrorMessage(result.error, "")
+          const reason =
+            result.reason ??
+            (fallbackReason === "unfinished_items" ||
+            fallbackReason === "unpaid_balance" ||
+            fallbackReason === "invalid_tip" ||
+            fallbackReason === "payment_in_progress" ||
+            fallbackReason === "kitchen_mid_fire" ||
+            fallbackReason === "session_not_open"
+              ? fallbackReason
+              : undefined)
+          const msg =
+            reason === "unfinished_items"
+              ? typeof result.items?.length === "number"
+                ? `Cannot close: ${result.items.length} item(s) still pending, preparing, or ready. Finish or void them first.`
+                : "Cannot close: items are still pending, preparing, or ready. Finish or void them first."
+              : reason === "unpaid_balance"
+                ? `Cannot close: $${(result.remaining ?? 0).toFixed(2)} unpaid. Session total: $${(result.sessionTotal ?? 0).toFixed(2)}, payments: $${(result.paymentsTotal ?? 0).toFixed(2)}.`
+                : reason === "invalid_tip"
+                  ? "Tip amount must be >= 0."
+                  : reason === "payment_in_progress"
+                    ? "Cannot close: a payment is in progress."
+                    : reason === "kitchen_mid_fire"
+                      ? "Cannot close: items sent to kitchen but not yet started."
+                      : reason === "session_not_open"
+                        ? "Session is not open."
+                        : toUiErrorMessage(result.error, "Cannot close table.")
+          throw mutationError(msg, result, null)
+          return
+        }
       if (sid && result.ok) {
         fireAndForget(
           fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
@@ -1801,72 +2266,20 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
           "record payment_completed event"
         )
       }
-      setSessionId(null)
     }
     if (activeStoreTable?.orderId) {
       closeOrder(activeStoreTable.orderId, table.bill)
     }
-    if (activeStoreTable) {
-      updateStoreTable(activeStoreTable.id, {
-        status: "free",
-        guests: 0,
-        seatedAt: null,
-        stage: null,
-        session: null,
-        sessionId: null,
-      })
-      if (currentLocationId) {
-        fireAndForget(
-          fetchPos(`/api/tables/${encodeURIComponent(activeStoreTable.id)}/layout`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              locationId: currentLocationId,
-              layout: {
-                status: "free",
-                guests: 0,
-                seatedAt: null,
-                stage: null,
-              },
-            }),
-          }),
-          "persist close table layout"
-        )
-      }
-      // Sync local state from store so meal progress / waves / orders clear immediately
-      const closedTable = useRestaurantStore.getState().tables.find(
-        (t) => t.id === activeStoreTable.id || t.id === activeStoreTable.id.toLowerCase()
-      )
-      if (closedTable) {
-        setTable(buildTableDetailFromStore(closedTable))
-      }
-    }
 
-    setTable((prev) => ({
-      ...prev,
-      status: "available",
-      guestCount: 0,
-      seats: [],
-      waves: [],
-      notes: [],
-      bill: {
-        subtotal: 0,
-        tax: 0,
-        total: 0,
-      },
-    }))
     setOrderItems([])
-    setTableItems([])
     setSelectedSeat(null)
-    setWaveCount(1)
-    setSelectedWaveNumber(1)
     setIsOrderingInline(false)
     setPaymentOpen(false)
     setInfoOpen(false)
     setAlertDismissed(false)
     router.push("/floor-map")
-  },
-    [activeStoreTable, closeOrder, currentLocationId, table.bill, updateStoreTable, router, effectiveSessionId]
+  }),
+    [activeStoreTable, closeOrder, currentLocationId, table.bill, router, effectiveSessionId, mutateThenRefresh]
   )
 
   const handlePaymentComplete = handleCloseTable
@@ -1922,103 +2335,57 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     triggerAddContextPulse(seatNumber, selectedWaveNumber)
   }, [selectedSeatNumber, selectedWaveNumber, triggerAddContextPulse])
 
-  const handleSeated = useCallback((formData: import("@/lib/floor-map-data").SeatPartyForm) => {
-    // Update the table state to reflect the newly seated party with all details
-    setTable((prev) => {
-      // Create seats array from form data
-      const seats = Array.from({ length: formData.partySize }, (_, i) => {
-        const seatNumber = i + 1
-        const dietary: string[] = []
-        
-        // Add dietary restrictions for this seat
-        formData.dietary.forEach((d) => {
-          if (d.seats.includes(seatNumber)) {
-            dietary.push(d.restriction)
-          }
-        })
-        
-        const notes: string[] = []
-        
-        // Add occasion note if this is the occasion seat
-        if (formData.occasion && formData.occasion.seat === seatNumber) {
-          notes.push(`${formData.occasion.type}: ${formData.occasion.notes}`)
-        }
-        
-        return {
-          number: seatNumber,
-          dietary,
-          notes,
-          items: [],
-        }
+  const handleSeated = useCallback(async (formData: import("@/lib/floor-map-data").SeatPartyForm) => mutateThenRefresh("Failed to seat party", "/api/sessions/ensure", async () => {
+    if (!currentLocationId) {
+      setWarningDialog({
+        open: true,
+        title: "Failed to seat party",
+        description: "No location selected.",
       })
-      
-      // Add general notes to the table
-      const tableNotes = formData.notes ? [{ text: formData.notes, icon: "📝" }] : []
-      if (formData.occasion && !formData.occasion.seat) {
-        tableNotes.push({ text: `${formData.occasion.type}: ${formData.occasion.notes}`, icon: "🎉" })
-      }
-      
-      return {
-        ...prev,
-        status: "seated",
-        guestCount: formData.partySize,
-        seatedAt: new Date().toISOString(),
-        lastCheckIn: new Date().toISOString(),
-        seats,
-        notes: [...prev.notes, ...tableNotes],
-      }
-    })
-    setOrderItems([])
-    setTableItems([])
-    setWaveCount(1)
-    setSelectedWaveNumber(1)
-    setArmedWaveDelete(null)
-    setArmedSeatDelete(null)
-    setIsOrderingInline(false)
-    setSeatPartyOpen(false)
+      return
+    }
     openOrderForTable(activeStoreTable?.id ?? id, formData.partySize)
-    fetchPos("/api/sessions/ensure", {
+    const res = await fetchPos("/api/sessions/ensure", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         tableUuid: id,
-        locationId: currentLocationId ?? "",
+        locationId: currentLocationId,
         guestCount: formData.partySize,
         eventSource: "table_page",
       }),
-    })
-      .then(async (res) => {
-        const payload = await res.json()
-        if (!payload.ok) throw new Error(payload.error?.message ?? "Failed to ensure session")
-        return payload.data
-      })
-      .then((data) => {
-        if (data?.sessionId && activeStoreTable) {
-          const sid = data.sessionId
-          setSessionId(sid)
-          updateStoreTable(activeStoreTable.id, { sessionId: sid })
-          fireAndForget(
-            fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                type: "guest_seated",
-                payload: { guestCount: formData.partySize },
-                eventSource: "table_page",
-              }),
-            }),
-            "record guest_seated event"
-          )
-        }
-      })
-      .catch((err: unknown) => {
-        setWarningDialog({
-          open: true,
-          title: "Failed to seat party",
-          description: err instanceof Error ? err.message : "Could not create session. Please try again.",
-        })
-      })
-  }, [currentLocationId, activeStoreTable?.id, activeStoreTable, id, openOrderForTable, updateStoreTable])
+    }).catch(() => null)
+    const payload = res ? await res.json().catch(() => null) : null
+    if (!res?.ok || payload?.ok === false) {
+      throw mutationError(
+        toUiErrorMessage(payload?.error, res ? "Could not create session. Please try again." : "Network error. Please try again."),
+        payload,
+        res
+      )
+    }
+    const sid = typeof payload?.data?.sessionId === "string" ? payload.data.sessionId : null
+    if (!sid) {
+      throw mutationError("Could not create session. Please try again.", payload, res)
+      return
+    }
+    fireAndForget(
+      fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "guest_seated",
+          payload: { guestCount: formData.partySize },
+          eventSource: "table_page",
+        }),
+      }),
+      "record guest_seated event"
+    )
+    setSeatPartyOpen(false)
+    setIsOrderingInline(false)
+    setArmedWaveDelete(null)
+    setArmedSeatDelete(null)
+    setOrderItems([])
+  }), [activeStoreTable, currentLocationId, id, mutateThenRefresh, openOrderForTable])
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background pb-14">
@@ -2029,10 +2396,24 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         onCloseTable={handleCloseTable}
       />
 
+      {tableViewError && (
+        <div className="mx-3 mt-2 flex items-center justify-between rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200 md:mx-4">
+          <span>{tableViewError}</span>
+          <Button size="sm" variant="outline" onClick={() => { void refreshTableView() }}>
+            Retry
+          </Button>
+        </div>
+      )}
+      {tableViewLoading && (
+        <div className="mx-3 mt-2 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground md:mx-4">
+          Loading table...
+        </div>
+      )}
+
       {/* Food Ready Alert */}
       {showAlert && (
         <FoodReadyAlert
-          seats={table.seats}
+          seats={projectedSeats}
           onDismiss={() => setAlertDismissed(true)}
           onAcknowledge={() => setAlertDismissed(true)}
         />
@@ -2056,7 +2437,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
               <div className="p-3">
                 <TableVisual
                   tableNumber={table.number}
-                  seats={table.seats}
+                  seats={projectedSeats}
                   selectedSeat={selectedSeat}
                   onSelectSeat={setSelectedSeat}
                   status={table.status}
@@ -2066,19 +2447,44 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
             </div>
 
             <div className="flex-1 overflow-y-auto">
-              {table.status === "available" ? (
-                /* Available Table CTA */
+              {uiMode === "blocked" ? (
+                /* Blocked (furniture maintenance/disabled) */
+                <div className="flex h-full flex-col items-center justify-center gap-4 p-3 md:p-4 lg:p-5">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="flex h-16 w-16 items-center justify-center rounded-full bg-amber-500/10">
+                      <AlertTriangle className="h-8 w-8 text-amber-500" />
+                    </div>
+                    <div className="text-center">
+                      <h3 className="text-lg font-semibold text-foreground">Table Unavailable</h3>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        {furnitureStatus === "maintenance"
+                          ? "This table is under maintenance."
+                          : "This table is disabled."}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() => router.push("/floor-map")}
+                    className="gap-2"
+                  >
+                    Back to floor map
+                  </Button>
+                </div>
+              ) : uiMode === "needs_seating" ? (
+                /* Seat Party CTA */
                 <div className="flex h-full flex-col items-center justify-center gap-4 p-3 md:p-4 lg:p-5">
                   <div className="flex flex-col items-center gap-3">
                     <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
                       <Users className="h-8 w-8 text-primary" />
                     </div>
                     <div className="text-center">
-                      <h3 className="text-lg font-semibold text-foreground">Table is Available</h3>
+                      <h3 className="text-lg font-semibold text-foreground">Table is Active</h3>
                       <p className="text-sm text-muted-foreground mt-1">Ready to seat a new party</p>
                     </div>
                   </div>
                   <Button 
+                    data-testid="table-seat-party-open"
                     size="lg" 
                     onClick={() => setSeatPartyOpen(true)}
                     className="gap-2 bg-primary/90 hover:bg-primary text-primary-foreground mt-2"
@@ -2148,14 +2554,15 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                               >
                                 W{waveNumber}
                               </button>
-                              {armedWaveDelete === waveNumber && waveCount > 1 && (
+                              {armedWaveDelete === waveNumber && waveNumbers.length > 1 && (
                                 <button
                                   type="button"
-                                  onClick={(e) => {
+                                  disabled={waveDeleteInFlight.has(waveNumber)}
+                                onClick={(e) => {
                                     e.stopPropagation()
                                     handleDeleteWave(waveNumber)
                                   }}
-                                  className="ml-1 inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-400/40 bg-red-500/10 text-red-300 hover:bg-red-500/20"
+                                  className="ml-1 inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-400/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                                   aria-label={`Delete wave ${waveNumber}`}
                                   title={`Delete Wave ${waveNumber}`}
                                 >
@@ -2166,39 +2573,9 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                           ))}
                           <button
                             type="button"
-                            onClick={() => {
-                              const nextWave = waveCount + 1
-                              setWaveCount(nextWave)
-                              setSelectedWaveNumber(nextWave)
-                              if (currentLocationId && activeStoreTable?.id) {
-                                const run = async () => {
-                                  const sid = effectiveSessionId ?? (await getOpenSessionIdForTable(currentLocationId, activeStoreTable.id))
-                                  if (sid) {
-                                    fetchPos(`/api/sessions/${sid}/waves/next`, {
-                                      method: "POST",
-                                      headers: { "Content-Type": "application/json" },
-                                      body: JSON.stringify({ eventSource: "table_page" }),
-                                    })
-                                      .then(async (res) => {
-                                        const payload = await res.json()
-                                        if (!payload.ok) throw new Error(payload.error?.message ?? "Failed to create next wave")
-                                        return payload.data
-                                      })
-                                      .catch((err: unknown) => {
-                                        setWaveCount(waveCount)
-                                        setSelectedWaveNumber(waveCount)
-                                        setWarningDialog({
-                                          open: true,
-                                          title: "Failed to add wave",
-                                          description: err instanceof Error ? err.message : "Could not create wave. Please try again.",
-                                        })
-                                      })
-                                  }
-                                }
-                                run()
-                              }
-                            }}
-                            className="h-7 shrink-0 rounded-md border border-border bg-background px-2 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-accent"
+                            disabled={waveAddInFlight}
+                            onClick={handleAddWave}
+                            className="relative z-50 h-7 shrink-0 rounded-md border border-border bg-background px-2 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation"
                             aria-label="Add wave"
                             title="Add wave"
                           >
@@ -2226,7 +2603,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                             >
                               T-{table.number}
                             </button>
-                            {table.seats.map((seat) => (
+                            {projectedSeats.map((seat) => (
                               <div key={seat.number} className="relative flex shrink-0 items-center">
                                 <button
                                   type="button"
@@ -2252,7 +2629,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                                 >
                                   S{seat.number}
                                 </button>
-                                {armedSeatDelete === seat.number && table.seats.length > 1 && (
+                                {armedSeatDelete === seat.number && projectedSeats.length > 1 && (
                                   <div className="ml-1 flex items-center gap-0.5">
                                     {seatRenameState?.seatNumber === seat.number ? (
                                       <>
@@ -2290,6 +2667,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                                         />
                                         <button
                                           type="button"
+                                          disabled={seatRenameInFlight.has(seat.number)}
                                           onClick={() => {
                                             const n = parseInt(
                                               seatRenameState.input,
@@ -2303,7 +2681,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                                               handleRenameSeat(seat.number, n)
                                             }
                                           }}
-                                          className="h-7 px-1.5 text-[10px] font-semibold text-emerald-400"
+                                          className="h-7 px-1.5 text-[10px] font-semibold text-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed"
                                         >
                                           OK
                                         </button>
@@ -2322,23 +2700,25 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                                       <>
                                         <button
                                           type="button"
+                                          disabled={seatRenameInFlight.has(seat.number)}
                                           onClick={() =>
                                             setSeatRenameState({
                                               seatNumber: seat.number,
                                               input: String(seat.number),
                                             })
                                           }
-                                          className="h-7 px-1.5 text-[10px] font-semibold text-sky-400 hover:text-sky-300"
+                                          className="h-7 px-1.5 text-[10px] font-semibold text-sky-400 hover:text-sky-300 disabled:opacity-50 disabled:cursor-not-allowed"
                                           title={`Rename seat ${seat.number}`}
                                         >
                                           Rename
                                         </button>
                                         <button
                                           type="button"
+                                          disabled={seatDeleteInFlight.has(seat.number)}
                                           onClick={() =>
                                             handleDeleteSeat(seat.number)
                                           }
-                                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-400/40 bg-red-500/10 text-red-300 hover:bg-red-500/20"
+                                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-400/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
                                           aria-label={`Delete seat ${seat.number}`}
                                           title={`Delete Seat ${seat.number}`}
                                         >
@@ -2352,8 +2732,9 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                             ))}
                             <button
                               type="button"
+                              disabled={seatAddInFlight}
                               onClick={handleAddSeat}
-                              className="h-7 shrink-0 rounded-md border border-border bg-background px-2 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-accent"
+                              className="h-7 shrink-0 rounded-md border border-border bg-background px-2 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed"
                               aria-label="Add seat"
                               title="Add seat"
                             >
@@ -2414,7 +2795,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                                     item.category
                                   : undefined
                               }
-                              hasAllergyConflict={!!selectedSeat && hasAllergyConflict(item, table.seats.find((seat) => seat.number === selectedSeat)?.dietary ?? [])}
+                              hasAllergyConflict={!!selectedSeat && hasAllergyConflict(item, projectedSeats.find((seat) => seat.number === selectedSeat)?.dietary ?? [])}
                               onClick={handleQuickAddMenuItem}
                             />
                           ))}
@@ -2436,7 +2817,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                     <div className="mb-4 px-3 pb-1 pt-3 md:px-4 md:pb-1 md:pt-4 lg:px-5 lg:pb-1 lg:pt-5">
                       <WaveTimeline
                         waves={mealProgress.waves}
-                        seats={table.seats}
+                        seats={projectedSeats}
                         onFireWave={handleFireWave}
                         onMarkWaveServed={handleMarkWaveServed}
                         tableNumber={table.number}
@@ -2456,7 +2837,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                   >
                     <OrderList
                       tableNumber={table.number}
-                      seats={table.seats}
+                      seats={projectedSeats}
                       tableItems={tableItems}
                       selectedSeat={selectedSeat}
                       onAddItemsTarget={handleEnterOrdering}
@@ -2508,7 +2889,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
               <div className="px-4 pt-7 pb-1">
                 <TableVisual
                   tableNumber={table.number}
-                  seats={table.seats}
+                  seats={projectedSeats}
                   selectedSeat={selectedSeat}
                   onSelectSeat={setSelectedSeat}
                   status={table.status}
@@ -2547,7 +2928,6 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                 "record bill_requested event"
               )
             if (effectiveSessionId) record(effectiveSessionId)
-            else getOpenSessionIdForTable(currentLocationId, id).then((sid) => { if (sid) record(sid) })
           }
           setPaymentOpen(true)
         }}
@@ -2572,10 +2952,21 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         onOpenChange={setPaymentOpen}
         tableNumber={table.number}
         guestCount={table.guestCount}
-        seats={table.seats}
+        seats={projectedSeats}
         tableItems={tableItems}
         onComplete={handlePaymentComplete}
-        outstandingItems={outstandingItems}
+        outstandingItems={
+          outstandingItems
+            ? {
+                ...outstandingItems,
+                unfinishedItems: outstandingItems.unfinishedItems?.map((item) => ({
+                  id: item.id,
+                  name: item.itemName,
+                  status: item.status,
+                })),
+              }
+            : null
+        }
       />
 
       {/* Mobile/Tablet: Info panel as sheet */}
@@ -2621,7 +3012,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       <CustomizeItemModal
         item={customizingItem}
         seats={orderSeats}
-        defaultSeat={customizeDefaults?.seat ?? selectedSeat ?? table.seats[0]?.number ?? 1}
+        defaultSeat={customizeDefaults?.seat ?? selectedSeat ?? projectedSeats[0]?.number ?? 1}
         defaultWave={customizeDefaults?.wave ?? selectedWaveNumber}
         waveOptions={waveNumbers}
         submitLabel={editingOrderItemId ? "Save Changes" : "Add to Order"}

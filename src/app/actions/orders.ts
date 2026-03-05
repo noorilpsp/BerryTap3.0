@@ -27,6 +27,7 @@ import {
   markItemServed,
 } from "@/app/actions/order-item-lifecycle";
 import { addSeatToSession, syncSeatsWithGuestCount } from "@/app/actions/seat-management";
+import { normalizeFurnitureStatus } from "@/lib/pos/tableStatus";
 import { canFireWave, canAddItems } from "@/domain/serviceFlow";
 import { recalculateSessionTotals, recalculateStandaloneOrderTotals } from "@/domain/orderTotals";
 
@@ -124,6 +125,7 @@ async function getOrCreateSessionForTable(
     .returning({ id: sessionsTable.id });
   if (!inserted?.id) return null;
   await ensureSeatsForSession(inserted.id, guestCount);
+  await createNextWave(inserted.id);
   return inserted.id;
 }
 
@@ -153,12 +155,13 @@ export type EnsureSessionResult =
   | { ok: true; sessionId: string }
   | { ok: false; reason: "user_not_staff" }
   | { ok: false; reason: "no_location" }
-  | { ok: false; reason: "no_table" };
+  | { ok: false; reason: "no_table" }
+  | { ok: false; reason: "table_not_active" };
 
 /**
- * Get or create an open session for a table by table UUID (tables.id) or by table_number/display_id.
- * Accepts either UUID or human-readable id (e.g. "t6") for lookup within the location.
- * Requires userId to resolve staff.id for session creation.
+ * Get or create an open session for a table by table UUID (tables.id) or displayId.
+ * Table lookup matches /api/tables/[id]/pos: UUID → eq(id), else ilike(displayId).
+ * Requires userId to resolve staff.id. Rejects if furniture status is maintenance/disabled.
  */
 export async function ensureSessionForTableByTableUuid(
   locationId: string,
@@ -172,7 +175,7 @@ export async function ensureSessionForTableByTableUuid(
   const staffId = await getStaffIdForUser(locationId, userId);
   if (!staffId) return { ok: false, reason: "user_not_staff" };
 
-  let tableRow: { id: string } | null;
+  let tableRow: { id: string; status: string | null } | null;
   if (isValidUuid(tableUuid)) {
     tableRow =
       (await db.query.tables.findFirst({
@@ -180,22 +183,24 @@ export async function ensureSessionForTableByTableUuid(
           eq(tablesTable.locationId, locationId),
           eq(tablesTable.id, tableUuid)
         ),
-        columns: { id: true },
+        columns: { id: true, status: true },
       })) ?? null;
   } else {
     tableRow =
       (await db.query.tables.findFirst({
         where: and(
           eq(tablesTable.locationId, locationId),
-          or(
-            ilike(tablesTable.tableNumber, tableUuid),
-            eq(tablesTable.displayId, tableUuid)
-          )
+          ilike(tablesTable.displayId, tableUuid)
         ),
-        columns: { id: true },
+        columns: { id: true, status: true },
       })) ?? null;
   }
   if (!tableRow) return { ok: false, reason: "no_table" };
+
+  const furnitureStatus = normalizeFurnitureStatus(tableRow.status ?? "");
+  if (furnitureStatus === "maintenance" || furnitureStatus === "disabled") {
+    return { ok: false, reason: "table_not_active" };
+  }
 
   const sessionId = await getOrCreateSessionForTable(locationId, tableRow.id, guestCount, staffId);
   return sessionId ? { ok: true, sessionId } : { ok: false, reason: "no_table" };
@@ -343,6 +348,81 @@ export async function createNextWave(
 
   if (!inserted) return { ok: false, error: "Failed to create order" };
   return { ok: true, order: { id: inserted.id, wave: inserted.wave } };
+}
+
+export type RemoveWaveResult =
+  | { ok: true; orderId: string; wave: number }
+  | {
+      ok: false
+      error: string
+      reason?: "session_not_found" | "wave_not_found" | "not_last_wave" | "wave_has_items"
+    }
+
+/**
+ * Remove a wave order from a session.
+ * Safety rules:
+ * - only the highest wave can be removed (prevents wave-number gaps)
+ * - wave must have no non-void items
+ */
+export async function removeWave(
+  sessionId: string,
+  waveNumber: number,
+  dbOrTx: DbOrTx = db
+): Promise<RemoveWaveResult> {
+  if (!Number.isFinite(waveNumber) || waveNumber <= 0) {
+    return { ok: false, error: "Invalid wave number" }
+  }
+
+  const session = await dbOrTx.query.sessions.findFirst({
+    where: eq(sessionsTable.id, sessionId),
+    columns: { id: true, locationId: true },
+  })
+  if (!session) return { ok: false, error: "Session not found", reason: "session_not_found" }
+
+  const location = await verifyLocationAccess(session.locationId)
+  if (!location) return { ok: false, error: "Unauthorized or location not found" }
+
+  const [maxRow] = await dbOrTx
+    .select({
+      maxWave: sql<number>`COALESCE(MAX(${ordersTable.wave}), 0)::int`,
+    })
+    .from(ordersTable)
+    .where(eq(ordersTable.sessionId, sessionId))
+  const highestWave = maxRow?.maxWave ?? 0
+  if (waveNumber !== highestWave) {
+    return {
+      ok: false,
+      error: `Only the last wave (W${highestWave}) can be removed`,
+      reason: "not_last_wave",
+    }
+  }
+
+  const waveOrder = await dbOrTx.query.orders.findFirst({
+    where: and(
+      eq(ordersTable.sessionId, sessionId),
+      eq(ordersTable.wave, waveNumber)
+    ),
+    columns: { id: true, wave: true },
+  })
+  if (!waveOrder) return { ok: false, error: "Wave not found", reason: "wave_not_found" }
+
+  const activeItem = await dbOrTx.query.orderItems.findFirst({
+    where: and(
+      eq(orderItemsTable.orderId, waveOrder.id),
+      isNull(orderItemsTable.voidedAt)
+    ),
+    columns: { id: true },
+  })
+  if (activeItem) {
+    return {
+      ok: false,
+      error: `Wave ${waveNumber} has items. Move or remove them first.`,
+      reason: "wave_has_items",
+    }
+  }
+
+  await dbOrTx.delete(ordersTable).where(eq(ordersTable.id, waveOrder.id))
+  return { ok: true, orderId: waveOrder.id, wave: waveOrder.wave }
 }
 
 /**

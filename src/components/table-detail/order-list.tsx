@@ -399,6 +399,7 @@ function ByWaveView({
                 <Button
                   variant="outline"
                   size="sm"
+                  data-testid={`table-wave-action-${nextWaveAction.nextStatus}-w${waveNumber}`}
                   className="h-6 rounded-md px-2 text-[11px] bg-transparent"
                   onClick={() => onAdvanceWaveStatus(waveNumber, nextWaveAction.nextStatus)}
                 >
@@ -550,7 +551,7 @@ export function OrderList({
             <TabsTrigger value="by-seat" className="text-xs px-3 py-1">
               By Seat
             </TabsTrigger>
-            <TabsTrigger value="by-wave" className="text-xs px-3 py-1">
+            <TabsTrigger value="by-wave" className="text-xs px-3 py-1" data-testid="table-orders-tab-by-wave">
               By Wave
             </TabsTrigger>
           </TabsList>

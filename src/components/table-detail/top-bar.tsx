@@ -104,7 +104,13 @@ export function TopBar({
       {/* More menu */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="More options">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            aria-label="More options"
+            data-testid="table-more-options"
+          >
             <MoreHorizontal className="h-4 w-4" />
           </Button>
         </DropdownMenuTrigger>
@@ -119,6 +125,7 @@ export function TopBar({
           {table.status !== "available" && (
             <>
               <DropdownMenuItem
+                data-testid="table-close-session"
                 className="cursor-pointer"
                 onSelect={() => {
                   queueMicrotask(() => onCloseTable?.())

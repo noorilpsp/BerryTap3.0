@@ -79,6 +79,9 @@ export async function POST(request: NextRequest) {
     );
 
     if (!result.ok) {
+      if (result.reason === "table_not_active") {
+        return posFailure("CONFLICT", "Table is not active", { status: 409, correlationId: idemKey });
+      }
       const isForbidden = result.reason === "You are not staff at this location";
       return posFailure(
         isForbidden ? "FORBIDDEN" : "BAD_REQUEST",
