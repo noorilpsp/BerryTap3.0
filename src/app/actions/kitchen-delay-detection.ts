@@ -1,29 +1,18 @@
-"use server";
+ "use server";
 
 import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/db";
 
-const DEV = process.env.NODE_ENV !== "production";
-
-function devLogOrderItems(label: string, orderIds: string[], rows: unknown[]): void {
-  if (!DEV) return;
-  const sql =
-    "SELECT * FROM order_items WHERE order_id = ANY($1::uuid[]) AND sent_to_kitchen_at IS NOT NULL AND ready_at IS NULL AND voided_at IS NULL";
-  // eslint-disable-next-line no-console
-  console.log(`[pos] ${label}`, { sql, params: [orderIds], rows: rows.length });
-}
 import {
   orderItems as orderItemsTable,
   orders as ordersTable,
   sessions as sessionsTable,
 } from "@/lib/db/schema/orders";
 import { recordSessionEventWithSource } from "@/app/actions/session-events";
-
-export type KitchenDelayItem = {
-  orderItemId: string;
-  minutesLate: number;
-  station: string | null;
-};
+import {
+  computeKitchenDelaysFromOrderItems,
+  type KitchenDelayItem,
+} from "@/lib/pos/computeKitchenDelays";
 
 export type DetectKitchenDelaysOptions = {
   /** Minutes before warning (default 10) */
@@ -32,11 +21,11 @@ export type DetectKitchenDelaysOptions = {
   criticalMinutes?: number;
   /** Whether to record session events for each delayed item (default true) */
   recordEvents?: boolean;
+  /** If true (and DEV), log a single per-request warning when any item has minutesLate > 240 (e.g. ?debug_delays=1) */
+  warnExtremeDelays?: boolean;
 };
 
 const DEFAULT_WARNING_MINUTES = 10;
-
-const MS_PER_MINUTE = 60 * 1000;
 
 /**
  * Find order items sent to kitchen but not yet ready, where the delay exceeds the threshold.
@@ -79,38 +68,27 @@ export async function detectKitchenDelays(
       stationOverride: true,
     },
   });
-  devLogOrderItems("checkKitchenDelays/order_items", orderIds, items);
+  const results = computeKitchenDelaysFromOrderItems(
+    items.map((item) => ({
+      id: item.id,
+      orderId: item.orderId,
+      sentToKitchenAt: item.sentToKitchenAt,
+      readyAt: null,
+      voidedAt: null,
+      stationOverride: item.stationOverride,
+    })),
+    orderIdToStation,
+    { warningMinutes }
+  );
 
-  const now = Date.now();
-  const results: KitchenDelayItem[] = [];
-
-  for (const item of items) {
-    const sentAt = item.sentToKitchenAt
-      ? (item.sentToKitchenAt instanceof Date
-          ? item.sentToKitchenAt.getTime()
-          : new Date(item.sentToKitchenAt as string).getTime())
-      : 0;
-    const elapsedMs = now - sentAt;
-    const minutesLate = Math.floor(elapsedMs / MS_PER_MINUTE);
-
-    if (minutesLate < warningMinutes) continue;
-
-    const orderStation = orderIdToStation.get(item.orderId) ?? null;
-    const station = item.stationOverride ?? orderStation;
-
-    results.push({
-      orderItemId: item.id,
-      minutesLate,
-      station,
-    });
-
-    if (recordEvents) {
+  if (recordEvents) {
+    for (const item of results) {
       await recordSessionEventWithSource(
         session.locationId,
         sessionId,
         "kitchen_delay",
         "system",
-        { orderItemId: item.id, minutesLate }
+        { orderItemId: item.orderItemId, minutesLate: item.minutesLate }
       );
     }
   }

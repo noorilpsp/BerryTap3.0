@@ -19,6 +19,8 @@
     "format": "prettier --write . --list-different",
     "db:push": "drizzle-kit push",
     "db:migrate:0003": "npx tsx scripts/run-migration-0003.ts",
+    "db:migrate:0004": "npx tsx scripts/run-migration-0004.ts",
+    "db:migrate:0005": "npx tsx scripts/run-migration-0005.ts",
     "db:studio": "drizzle-kit studio",
     "seed:menu": "npx tsx scripts/seed-menu.ts",
     "seed:menu-data": "npx tsx scripts/seed-menu-data.ts",

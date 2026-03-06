@@ -1,14 +1,16 @@
 import { NextRequest } from "next/server";
-import { and, asc, eq, inArray, ilike, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
-import { merchantLocations, merchantUsers } from "@/lib/db/schema";
 import { tables, sessions, seats, orders, orderItems } from "@/lib/db/schema/orders";
-import { getSessionOutstandingItems } from "@/app/actions/session-close-validation";
-import { checkKitchenDelays } from "@/domain";
+import type { OutstandingItemsResult } from "@/app/actions/session-close-validation";
+import { computeKitchenDelaysFromOrderItems } from "@/lib/pos/computeKitchenDelays";
+import { computeOutstanding } from "@/lib/pos/computeOutstanding";
 import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 import { isTableView, type TableView, type TableViewUiMode, type TableViewServiceStage } from "@/lib/pos/tableView";
 import { normalizeFurnitureStatus, type FurnitureStatus } from "@/lib/pos/tableStatus";
+import { getPosMerchantContext } from "@/lib/pos/posMerchantContext";
+import { getPosUserId } from "@/lib/pos/posAuth";
 
 export const runtime = "nodejs";
 
@@ -100,46 +102,50 @@ export async function GET(
     const explainMode = DEV && explainParam === "1"
     const explainOutstanding = DEV && explainParam === "outstanding"
     const explainDelays = DEV && explainParam === "delays"
+    const explainTables = DEV && explainParam === "tables"
+    const explainClose = DEV && explainParam === "close"
     const debugIndexes = DEV && request.nextUrl.searchParams.get("debug_indexes") === "1"
 
     const supabase = await supabaseServer()
     const t0 = DEV ? performance.now() : 0
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser()
-    if (DEV) devTimer("auth.getUser", t0)
-    if (userError || !user) {
+    const authResult = await getPosUserId(supabase)
+    if (DEV) {
+      devTimer("auth", t0)
+      // eslint-disable-next-line no-console
+      console.log("[pos][auth] mode=" + (authResult.ok ? authResult.mode : "none"))
+    }
+    if (!authResult.ok) {
       return posFailure("UNAUTHORIZED", "Unauthorized - Please log in", { status: 401 });
     }
 
-    const t1 = DEV ? performance.now() : 0
-    const memberships = await db.query.merchantUsers.findMany({
-      where: and(
-        eq(merchantUsers.userId, user.id),
-        eq(merchantUsers.isActive, true)
-      ),
-      columns: { merchantId: true },
-    })
-    if (DEV) devTimer("merchantUsers.findMany", t1, memberships.length)
-    const merchantIds = [...new Set(memberships.map((m) => m.merchantId))];
+    const tCtx = DEV ? performance.now() : 0
+    const ctx = await getPosMerchantContext(authResult.userId)
+    if (DEV) {
+      devTimer("ctx.total", tCtx)
+      // eslint-disable-next-line no-console
+      console.log("[pos] ctx rows", {
+        merchantUsers: ctx.merchantUserIds.length,
+        merchants: ctx.merchantIds.length,
+        locations: ctx.locationIds.length,
+      })
+    }
+    const { merchantIds, locationIds } = ctx
     if (merchantIds.length === 0) {
       return posFailure("FORBIDDEN", "Forbidden - You don't have access to any location", { status: 403 });
     }
-
-    const t2 = DEV ? performance.now() : 0
-    const locations = await db.query.merchantLocations.findMany({
-      where: inArray(merchantLocations.merchantId, merchantIds),
-      columns: { id: true },
-    })
-    if (DEV) devTimer("merchantLocations.findMany", t2, locations.length)
-    const locationIds = locations.map((l) => l.id);
     if (locationIds.length === 0) {
       return posFailure("FORBIDDEN", "Forbidden - No locations available", { status: 403 });
     }
 
     const t3 = DEV ? performance.now() : 0
-    const table = isValidUuid(id)
+    const tableLookupMode = isValidUuid(id) ? "uuid" : "displayId"
+    const displayIdForLookup =
+      tableLookupMode === "displayId" ? id.trim().toUpperCase() : ""
+    if (DEV) {
+      // eslint-disable-next-line no-console
+      console.log("[pos] table lookup", { mode: tableLookupMode, id })
+    }
+    const table = tableLookupMode === "uuid"
       ? await db.query.tables.findFirst({
           where: and(eq(tables.id, id), inArray(tables.locationId, locationIds)),
           columns: {
@@ -163,7 +169,7 @@ export async function GET(
       : await db.query.tables.findFirst({
           where: and(
             inArray(tables.locationId, locationIds),
-            ilike(tables.displayId, id)
+            eq(tables.displayId, displayIdForLookup)
           ),
           columns: {
             id: true,
@@ -184,6 +190,30 @@ export async function GET(
           },
         })
     if (DEV) devTimer("tables.findFirst", t3, table ? 1 : 0)
+
+    const runExplainQuery = async (baseSql: string, params: unknown[]) => {
+      const explainFullSql = `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) ${baseSql}`
+      const { neon } = await import("@neondatabase/serverless")
+      const client = neon(process.env.DATABASE_URL!)
+      const rows = (await client.query(explainFullSql, params)) as { "QUERY PLAN"?: string }[]
+      return Array.isArray(rows)
+        ? rows.map((r) => r["QUERY PLAN"] ?? String(r)).join("\n")
+        : String(rows)
+    }
+    let explainResult: string | undefined
+    if (explainTables) {
+      try {
+        const tablesSql =
+          tableLookupMode === "uuid"
+            ? "SELECT 1 FROM tables WHERE id = $1 AND location_id = ANY($2::uuid[])"
+            : "SELECT 1 FROM tables WHERE location_id = ANY($1::uuid[]) AND display_id = $2"
+        const tablesParams =
+          tableLookupMode === "uuid" ? [id, locationIds] : [locationIds, displayIdForLookup]
+        explainResult = await runExplainQuery(tablesSql, tablesParams)
+      } catch (err) {
+        explainResult = `EXPLAIN tables failed: ${err instanceof Error ? err.message : String(err)}`
+      }
+    }
 
     if (!table?.location) {
       return posFailure("NOT_FOUND", "Table not found", { status: 404 });
@@ -221,6 +251,7 @@ export async function GET(
             columns: {
               id: true,
               wave: true,
+              station: true,
               firedAt: true,
               status: true,
             },
@@ -233,6 +264,7 @@ export async function GET(
     if (DEV) devTimer("orders.findMany", t5, orderRows.length)
     const orderById = new Map(orderRows.map((o) => [o.id, o]));
     const waveOrderByNumber = new Map(orderRows.map((o) => [o.wave, o]));
+    const orderIdToStation = new Map(orderRows.map((o) => [o.id, o.station ?? null]));
 
     const orderIds = orderRows.map((o) => o.id)
     const t7 = DEV ? performance.now() : 0
@@ -270,17 +302,7 @@ export async function GET(
       })
     }
 
-    let explainResult: string | undefined
     if (orderIds.length > 0) {
-      const runExplainQuery = async (baseSql: string, params: unknown[]) => {
-        const explainFullSql = `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) ${baseSql}`
-        const { neon } = await import("@neondatabase/serverless")
-        const client = neon(process.env.DATABASE_URL!)
-        const rows = (await client.query(explainFullSql, params)) as { "QUERY PLAN"?: string }[]
-        return Array.isArray(rows)
-          ? rows.map((r) => r["QUERY PLAN"] ?? String(r)).join("\n")
-          : String(rows)
-      }
       if (explainMode) {
         try {
           explainResult = await runExplainQuery(orderItemsExplainSql, [orderIds])
@@ -374,30 +396,119 @@ export async function GET(
     });
 
     const t8 = DEV ? performance.now() : 0
-    const [billRow, outstanding, delays] = sessionId
+    const [moneyRow, delays] = sessionId
       ? await Promise.all([
           db
             .select({
-              subtotal: sql<string>`COALESCE(SUM(${orders.subtotal}), 0)::numeric`,
-              tax: sql<string>`COALESCE(SUM(${orders.taxAmount}), 0)::numeric`,
-              total: sql<string>`COALESCE(SUM(${orders.total}), 0)::numeric`,
+              pending_count: sql<number>`(SELECT count(*)::int FROM payments WHERE session_id = ${sessionId} AND status IN ('pending'))`.as("pending_count"),
+              orders_total: sql<string>`(SELECT COALESCE(SUM(total),0)::numeric FROM orders WHERE session_id = ${sessionId} AND status != 'cancelled')`.as("orders_total"),
+              payments_total: sql<string>`(SELECT COALESCE(SUM(amount),0)::numeric FROM payments WHERE session_id = ${sessionId} AND status = 'completed')`.as("payments_total"),
+              orders_subtotal: sql<string>`(SELECT COALESCE(SUM(subtotal),0)::numeric FROM orders WHERE session_id = ${sessionId} AND status != 'cancelled')`.as("orders_subtotal"),
+              orders_tax: sql<string>`(SELECT COALESCE(SUM(tax_amount),0)::numeric FROM orders WHERE session_id = ${sessionId} AND status != 'cancelled')`.as("orders_tax"),
             })
-            .from(orders)
-            .where(
-              and(
-                eq(orders.sessionId, sessionId),
-                ne(orders.status, "cancelled")
-              )
-            )
-            .then((rows) => rows[0] ?? { subtotal: "0", tax: "0", total: "0" }),
-          getSessionOutstandingItems(sessionId),
-          checkKitchenDelays(sessionId, { recordEvents: false }),
+            .from(sessions)
+            .where(eq(sessions.id, sessionId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null),
+          (async () =>
+            computeKitchenDelaysFromOrderItems(
+              itemRows.map((row) => ({
+                id: row.id,
+                orderId: row.orderId,
+                sentToKitchenAt: row.sentToKitchenAt,
+                readyAt: row.readyAt,
+                voidedAt: row.voidedAt,
+                stationOverride: row.stationOverride ?? null,
+              })),
+              orderIdToStation,
+              {
+                warningMinutes: 10,
+                warnExtremeDelays: DEV && request.nextUrl.searchParams.get("debug_delays") === "1",
+              },
+            ))(),
         ])
-      : [{ subtotal: "0", tax: "0", total: "0" }, null, null]
-    if (DEV) devTimer("[pos] parallel block 2 (bill+outstanding+delays)", t8)
-    if (DEV) devTimer("bill select", t8, billRow ? 1 : 0)
-    if (DEV) devTimer("getSessionOutstandingItems", t8, outstanding ? 1 : 0)
-    if (DEV) devTimer("checkKitchenDelays", t8, Array.isArray(delays) ? delays.length : 0)
+      : [null, null]
+    if (DEV) devTimer("[pos] parallel block 2 (moneyAgg+delays)", t8)
+    if (DEV && moneyRow) devTimer("moneyAgg select", t8, 1)
+
+    const billRow =
+      moneyRow != null
+        ? {
+            subtotal: moneyRow.orders_subtotal ?? "0",
+            tax: moneyRow.orders_tax ?? "0",
+            total: moneyRow.orders_total ?? "0",
+          }
+        : { subtotal: "0", tax: "0", total: "0" }
+
+    let outstanding: OutstandingItemsResult
+    if (sessionId && openSession && moneyRow != null) {
+      const tOut = DEV ? performance.now() : 0
+      const result = computeOutstanding(
+        openSession.status,
+        orderRows,
+        itemRows,
+        {
+          pendingCount: moneyRow.pending_count ?? 0,
+          ordersTotal: Number(moneyRow.orders_total ?? 0),
+          paymentsTotal: Number(moneyRow.payments_total ?? 0),
+        }
+      )
+      outstanding = result.canClose
+        ? { canClose: true }
+        : {
+            canClose: false,
+            reason: result.reason,
+            ...(result.reason === "unfinished_items" && { unfinishedItems: result.unfinishedItems }),
+            ...(result.reason === "unpaid_balance" && { remaining: result.remaining }),
+          }
+      if (DEV) devTimer("outstanding compute pure", tOut)
+    } else {
+      outstanding = { canClose: true }
+    }
+
+    let explainCloseResult: {
+      pendingPayments: string;
+      ordersTotal: string;
+      paymentsTotal: string;
+    } | undefined
+    if (explainClose && sessionId) {
+      const runExplain = async (baseSql: string, params: unknown[]) => {
+        const fullSql = `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) ${baseSql}`
+        const { neon } = await import("@neondatabase/serverless")
+        const client = neon(process.env.DATABASE_URL!)
+        const rows = (await client.query(fullSql, params)) as { "QUERY PLAN"?: string }[]
+        return Array.isArray(rows)
+          ? rows.map((r) => r["QUERY PLAN"] ?? String(r)).join("\n")
+          : String(rows)
+      }
+      try {
+        const [p, o, pay] = await Promise.all([
+          runExplain(
+            "SELECT count(*)::int FROM payments WHERE session_id = $1 AND status IN ('pending')",
+            [sessionId],
+          ),
+          runExplain(
+            "SELECT COALESCE(SUM(total),0)::numeric FROM orders WHERE session_id = $1 AND status != 'cancelled'",
+            [sessionId],
+          ),
+          runExplain(
+            "SELECT COALESCE(SUM(amount),0)::numeric FROM payments WHERE session_id = $1 AND status = 'completed'",
+            [sessionId],
+          ),
+        ])
+        explainCloseResult = {
+          pendingPayments: p,
+          ordersTotal: o,
+          paymentsTotal: pay,
+        }
+      } catch (err) {
+        explainCloseResult = {
+          pendingPayments: String(err),
+          ordersTotal: String(err),
+          paymentsTotal: String(err),
+        }
+      }
+    }
 
     const canSend = items.some((item) => item.status === "held");
     const canAddWave = sessionId != null;
@@ -466,8 +577,13 @@ export async function GET(
 
     if (DEV) devTimer("GET /pos total", totalStart)
 
-    let meta: { explain?: string; indexes?: { indexname: string; indexdef: string }[] } | undefined
-    if (explainResult !== undefined) meta = { explain: explainResult }
+    let meta: {
+      explain?: string;
+      explainClose?: { pendingPayments: string; ordersTotal: string; paymentsTotal: string };
+      indexes?: { indexname: string; indexdef: string }[];
+    } | undefined
+    if (explainResult !== undefined) meta = { ...meta, explain: explainResult }
+    if (explainCloseResult !== undefined) meta = { ...meta, explainClose: explainCloseResult }
     if (debugIndexes) {
       try {
         const { neon } = await import("@neondatabase/serverless")

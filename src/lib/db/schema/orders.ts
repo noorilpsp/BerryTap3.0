@@ -155,6 +155,10 @@ export const tables = pgTable(
   },
   (table) => ({
     locationIdIdx: index("tables_location_id_idx").on(table.locationId),
+    tablesLocationIdDisplayIdIdx: index("tables_location_id_display_id_idx").on(
+      table.locationId,
+      table.displayId,
+    ),
     floorPlanIdIdx: index("tables_floor_plan_id_idx").on(table.floorPlanId),
     locationTableNumberUnique: uniqueIndex("tables_location_table_number_unique").on(
       table.locationId,
@@ -495,6 +499,10 @@ export const orders = pgTable(
   },
   (table) => ({
     sessionIdIdx: index("orders_session_id_idx").on(table.sessionId),
+    ordersSessionIdStatusIdx: index("orders_session_id_status_idx").on(
+      table.sessionId,
+      table.status,
+    ),
     /** Hot path: getOpenWave WHERE session_id = ? AND fired_at IS NULL ORDER BY wave */
     sessionIdFiredAtIdx: index("orders_session_id_fired_at_idx").on(table.sessionId, table.firedAt),
     locationIdIdx: index("orders_location_id_idx").on(table.locationId),
@@ -645,6 +653,10 @@ export const payments = pgTable(
   },
   (table) => ({
     sessionIdIdx: index("payments_session_id_idx").on(table.sessionId),
+    paymentsSessionIdStatusIdx: index("payments_session_id_status_idx").on(
+      table.sessionId,
+      table.status,
+    ),
     orderIdIdx: index("payments_order_id_idx").on(table.orderId),
     statusIdx: index("payments_status_idx").on(table.status),
   }),

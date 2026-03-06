@@ -1,21 +1,14 @@
-"use server";
+ "use server";
 
-import { eq, and, inArray, sql, isNull, ne } from "drizzle-orm";
+import { eq, and, inArray, sql, isNull } from "drizzle-orm";
 import { db } from "@/db";
 
 const DEV = process.env.NODE_ENV !== "production";
 
-function devLogOrderItems(label: string, orderIds: string[], rows: unknown[]): void {
-  if (!DEV) return;
-  const sql = "SELECT * FROM order_items WHERE order_id = ANY($1::uuid[]) AND voided_at IS NULL";
-  // eslint-disable-next-line no-console
-  console.log(`[pos] ${label}`, { sql, params: [orderIds], rows: rows.length });
-}
 import {
   sessions as sessionsTable,
   orders as ordersTable,
   orderItems as orderItemsTable,
-  payments as paymentsTable,
 } from "@/lib/db/schema/orders";
 import { canCloseSession as canCloseSessionLogic } from "@/domain/serviceFlow";
 
@@ -44,17 +37,27 @@ export type CanCloseSessionOptions = {
   incomingPaymentAmount?: number;
 };
 
+type OrderItemRow = typeof orderItemsTable.$inferSelect;
+
 /** Check if a session can be closed. Returns structured result instead of throwing. */
 export async function canCloseSession(
   sessionId: string,
   options?: CanCloseSessionOptions,
-  dbOrTx: DbOrTx = db
+  dbOrTx: DbOrTx = db,
+  preloadedOrderItems?: OrderItemRow[]
 ): Promise<CanCloseSessionResult> {
   const incomingAmount = options?.incomingPaymentAmount ?? 0;
+
+  const tSession = DEV ? performance.now() : 0;
   const session = await dbOrTx.query.sessions.findFirst({
     where: eq(sessionsTable.id, sessionId),
     columns: { id: true, status: true },
   });
+  if (DEV) {
+    const ms = Math.round(performance.now() - tSession);
+    // eslint-disable-next-line no-console
+    console.log(`[pos][close] sessionById ${ms}ms rows=${session ? 1 : 0}`);
+  }
 
   if (!session) {
     return { ok: false, reason: "session_not_open" };
@@ -63,31 +66,45 @@ export async function canCloseSession(
     return { ok: false, reason: "session_not_open" };
   }
 
+  const tOrders = DEV ? performance.now() : 0;
   const orders = await dbOrTx.query.orders.findMany({
     where: eq(ordersTable.sessionId, sessionId),
     columns: { id: true },
   });
+  if (DEV) {
+    const ms = Math.round(performance.now() - tOrders);
+    // eslint-disable-next-line no-console
+    console.log(`[pos][close] ordersBySession ${ms}ms rows=${orders.length}`);
+  }
   const orderIds = orders.map((o) => o.id);
   if (orderIds.length === 0) {
     return { ok: true };
   }
 
-  const orderItems = await dbOrTx.query.orderItems.findMany({
-    where: and(
-      inArray(orderItemsTable.orderId, orderIds),
-      isNull(orderItemsTable.voidedAt)
-    ),
-    columns: {
-      id: true,
-      orderId: true,
-      itemName: true,
-      status: true,
-      quantity: true,
-      sentToKitchenAt: true,
-      startedAt: true,
-    },
-  });
-  devLogOrderItems("getSessionOutstandingItems/order_items", orderIds, orderItems);
+  const tItems = DEV ? performance.now() : 0;
+  const orderItems =
+    (preloadedOrderItems
+      ? preloadedOrderItems.filter((i) => i.voidedAt == null)
+      : await dbOrTx.query.orderItems.findMany({
+          where: and(
+            inArray(orderItemsTable.orderId, orderIds),
+            isNull(orderItemsTable.voidedAt)
+          ),
+          columns: {
+            id: true,
+            orderId: true,
+            itemName: true,
+            status: true,
+            quantity: true,
+            sentToKitchenAt: true,
+            startedAt: true,
+          },
+        }));
+  if (DEV) {
+    const ms = Math.round(performance.now() - tItems);
+    // eslint-disable-next-line no-console
+    console.log(`[pos][close] orderItems ${ms}ms rows=${orderItems.length}`);
+  }
 
   const unfinishedItems = orderItems.filter((i) =>
     UNFINISHED_STATUSES.includes(i.status as (typeof UNFINISHED_STATUSES)[number])
@@ -96,42 +113,31 @@ export async function canCloseSession(
     (i) => i.sentToKitchenAt != null && i.startedAt == null
   );
 
-  const [pendingPayment] = await dbOrTx
-    .select({ count: sql<number>`count(*)::int` })
-    .from(paymentsTable)
-    .where(
-      and(
-        eq(paymentsTable.sessionId, sessionId),
-        inArray(paymentsTable.status, ["pending"])
-      )
-    );
-  const hasPaymentInProgress = (pendingPayment?.count ?? 0) > 0;
-
-  const [sessionTotalRow] = await dbOrTx
+  const tMoney = DEV ? performance.now() : 0;
+  const [moneyRow] = await dbOrTx
     .select({
-      total: sql<string>`COALESCE(SUM(${ordersTable.total}), 0)::numeric`,
+      pending_count: sql<number>`(SELECT count(*)::int FROM payments WHERE session_id = ${sessionId} AND status IN ('pending'))`.as("pending_count"),
+      orders_total: sql<string>`(SELECT COALESCE(SUM(total),0)::numeric FROM orders WHERE session_id = ${sessionId} AND status != 'cancelled')`.as("orders_total"),
+      payments_total: sql<string>`(SELECT COALESCE(SUM(amount),0)::numeric FROM payments WHERE session_id = ${sessionId} AND status = 'completed')`.as("payments_total"),
     })
-    .from(ordersTable)
-    .where(
-      and(
-        eq(ordersTable.sessionId, sessionId),
-        ne(ordersTable.status, "cancelled")
-      )
+    .from(sessionsTable)
+    .where(eq(sessionsTable.id, sessionId))
+    .limit(1);
+  const pendingCount = moneyRow?.pending_count ?? 0;
+  const sessionTotal = Number(moneyRow?.orders_total ?? 0);
+  const paymentsTotal =
+    Number(moneyRow?.payments_total ?? 0) +
+    (Number.isFinite(incomingAmount) && incomingAmount >= 0
+      ? incomingAmount
+      : 0);
+  const hasPaymentInProgress = pendingCount > 0;
+  if (DEV) {
+    const ms = Math.round(performance.now() - tMoney);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[pos][close] moneyAgg ${ms}ms pending=${pendingCount} ordersTotal=${sessionTotal} paymentsTotal=${paymentsTotal}`
     );
-  const sessionTotal = Number(sessionTotalRow?.total ?? 0);
-
-  const [paymentsTotalRow] = await dbOrTx
-    .select({
-      total: sql<string>`COALESCE(SUM(${paymentsTable.amount}), 0)::numeric`,
-    })
-    .from(paymentsTable)
-    .where(
-      and(
-        eq(paymentsTable.sessionId, sessionId),
-        eq(paymentsTable.status, "completed")
-      )
-    );
-  const paymentsTotal = Number(paymentsTotalRow?.total ?? 0) + (Number.isFinite(incomingAmount) && incomingAmount >= 0 ? incomingAmount : 0);
+  }
 
   const remaining = sessionTotal - paymentsTotal;
   const tolerance = 0.01;
@@ -194,6 +200,22 @@ export async function getSessionOutstandingItems(
   sessionId: string
 ): Promise<OutstandingItemsResult> {
   const result = await canCloseSession(sessionId);
+  if (result.ok) {
+    return { canClose: true };
+  }
+  return {
+    canClose: false,
+    reason: result.reason,
+    ...(result.reason === "unfinished_items" && { unfinishedItems: result.items }),
+    ...(result.reason === "unpaid_balance" && { remaining: result.remaining }),
+  };
+}
+
+export async function getSessionOutstandingItemsFromOrderItems(
+  sessionId: string,
+  orderItems: OrderItemRow[]
+): Promise<OutstandingItemsResult> {
+  const result = await canCloseSession(sessionId, undefined, db, orderItems);
   if (result.ok) {
     return { canClose: true };
   }
