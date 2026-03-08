@@ -188,11 +188,15 @@ function getDraftItemWaveNumber(item: TakeOrderItem): number {
   return 1
 }
 
+/** Wave is ready only when all non-void items are ready or served (no partial station readiness). */
 function getMealWaveStatus(items: TableOrderItem[]): WaveStatus {
   const activeItems = items.filter((item) => item.status !== "void")
   if (activeItems.length === 0) return "held"
   if (activeItems.every((item) => item.status === "served")) return "served"
-  if (activeItems.some((item) => item.status === "ready")) return "ready"
+  const allReadyOrServed = activeItems.every(
+    (item) => item.status === "ready" || item.status === "served"
+  )
+  if (allReadyOrServed && activeItems.some((item) => item.status === "ready")) return "ready"
   if (activeItems.some((item) => item.status === "cooking")) return "preparing"
   if (activeItems.some((item) => item.status === "sent")) return "fired"
   return "held"
@@ -443,6 +447,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   const itemOrderIdsRef = useRef<Map<string, string>>(new Map())
   const seatIdByNumberRef = useRef<Map<number, string>>(new Map())
   const addItemsInFlightRef = useRef(false)
+  const sendRollbackWavesRef = useRef<TableView["waves"] | null>(null)
   const mutationInFlightRef = useRef(0)
   const refreshInFlightRef = useRef(false)
   const rollbackSnapshotRef = useRef<{ items?: TableView["items"]; waves?: TableView["waves"] } | null>(null)
@@ -781,28 +786,40 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
         seat.items.map((item) => ({ seatNumber: seat.number, item }))
       ),
       ...tableItems.map((item) => ({ seatNumber: 0, item })),
-    ].filter(({ item }) => item.status !== "void")
+    ]
+    const activeItemsWithSeat = allItemsWithSeat.filter(({ item }) => item.status !== "void")
+
+    const hasMealStarted = activeItemsWithSeat.some(({ item }) => item.status !== "held")
+    if (!hasMealStarted) {
+      return {
+        waves: [] as TableDetail["waves"],
+        waveItemsById: {} as Record<string, { seatNumber: number; item: TableOrderItem }[]>,
+        waveLabelsById: {} as Record<string, string>,
+        nextFireableWaveNumber: null as number | null,
+      }
+    }
 
     const waveItemsById: Record<string, { seatNumber: number; item: TableOrderItem }[]> = {}
     const waveLabelsById: Record<string, string> = {}
     const serverWaveByNumber = new Map(serverWaves.map((w) => [w.waveNumber, w]))
     const waves: TableDetail["waves"] = waveNumbers.map((waveNumber) => {
       const waveId = `mw-${waveNumber}`
-      const itemsForWave = allItemsWithSeat.filter(
+      const itemsForDisplay = allItemsWithSeat.filter(
         ({ item }) => getItemWaveNumber(item) === waveNumber
       )
-      waveItemsById[waveId] = itemsForWave
+      const activeItemsForWave = itemsForDisplay.filter(({ item }) => item.status !== "void")
+      waveItemsById[waveId] = itemsForDisplay
       waveLabelsById[waveId] = `W${waveNumber}`
       const server = serverWaveByNumber.get(waveNumber)
-      const onlyItems = itemsForWave.map(({ item }) => item)
+      const onlyActiveItems = activeItemsForWave.map(({ item }) => item)
       const status = server
         ? (server.status === "sent" ? "fired" : server.status)
-        : getMealWaveStatus(onlyItems)
+        : getMealWaveStatus(onlyActiveItems)
       return {
         id: waveId,
         type: waveNumberToType(waveNumber),
         status,
-        items: server?.itemCount ?? onlyItems.length,
+        items: server?.itemCount ?? onlyActiveItems.length,
       }
     })
 
@@ -1981,7 +1998,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     }
 
     const idempotencyKey = makeIdempotencyKey()
-    const addInputs: Array<{ itemId: string; quantity: number; seatId?: string; notes?: string }> = []
+    const addInputs: Array<{ itemId: string; quantity: number; seatId?: string; notes?: string; waveNumber: number }> = []
     for (const draft of newDrafts) {
       const waveNumber = getDraftItemWaveNumber(draft)
       const visibleNotes = (draft.notes ?? "")
@@ -2003,6 +2020,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
           quantity: 1,
           seatId,
           notes: notesStr || undefined,
+          waveNumber,
         })
       }
     }
@@ -2045,19 +2063,39 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       endpoint: "/api/orders",
       successLabel: "sendOrder",
       optimisticApply: () => {
-        patchTableView((prev) => ({
-          ...prev,
-          items: [...prev.items, ...tempItems],
-        }))
+        if (waveToSend !== 1) sendRollbackWavesRef.current = null
+        else if (tableView?.waves) sendRollbackWavesRef.current = tableView.waves.map((w) => ({ ...w }))
+        patchTableView((prev) => {
+          let next = { ...prev, items: [...prev.items, ...tempItems] }
+          if (waveToSend === 1) {
+            next = {
+              ...next,
+              items: next.items.map((item) =>
+                item.waveNumber === 1 && tempIds.includes(item.id)
+                  ? { ...item, status: "sent" as const }
+                  : item
+              ),
+              waves: next.waves.map((w) =>
+                w.waveNumber === 1 ? { ...w, status: "sent" as const } : w
+              ),
+            }
+          }
+          return next
+        })
         setOrderItems((prev) => prev.filter((d) => d.id && isDbOrderItemId(d.id)))
         handleExitOrderingView()
         if (process.env.NODE_ENV !== "production") console.log("[perf] optimistic UI applied", performance.now())
       },
       optimisticRollback: () => {
-        patchTableView((prev) => ({
-          ...prev,
-          items: prev.items.filter((i) => !tempIds.includes(i.id)),
-        }))
+        patchTableView((prev) => {
+          const withoutTemps = { ...prev, items: prev.items.filter((i) => !tempIds.includes(i.id)) }
+          const snap = sendRollbackWavesRef.current
+          if (snap?.length) {
+            sendRollbackWavesRef.current = null
+            return { ...withoutTemps, waves: snap }
+          }
+          return withoutTemps
+        })
         setOrderItems((prev) => {
           const withoutNew = prev.filter((d) => d.id && isDbOrderItemId(d.id))
           return [...withoutNew, ...draftsSnapshot]
@@ -2122,6 +2160,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
                 quantity: input.quantity,
                 seatId: input.seatId,
                 notes: input.notes ?? null,
+                waveNumber: input.waveNumber,
               })),
             }),
           }, { idempotencyKey }).catch(() => null)
@@ -2165,6 +2204,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     nextSendableWaveNumber,
     orderItems,
     table.guestCount,
+    tableView,
     fireAndReconcile,
     patchTableView,
   ])

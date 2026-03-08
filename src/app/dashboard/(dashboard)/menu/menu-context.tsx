@@ -230,6 +230,8 @@ function transformItem(dbItem: any): MenuItem {
         (ia.allergen.name || "").toLowerCase()
       ) || [],
     },
+    defaultStation: dbItem.defaultStation ?? undefined,
+    defaultSubstation: dbItem.defaultSubstation ?? undefined,
   }
 }
 
@@ -554,21 +556,47 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
       if (!tagsRes.ok) throw new Error('Failed to fetch tags')
       if (!allergensRes.ok) throw new Error('Failed to fetch allergens')
 
-      const [itemsData, categoriesData, customizationsData, menusData, tagsData, allergensData] = await Promise.all([
-        itemsRes.json(),
-        categoriesRes.json(),
-        customizationsRes.json(),
-        menusRes.json(),
-        tagsRes.json(),
-        allergensRes.json(),
-      ])
+      const [itemsJson, categoriesJson, customizationsJson, menusJson, tagsJson, allergensJson] =
+        await Promise.all([
+          itemsRes.json(),
+          categoriesRes.json(),
+          customizationsRes.json(),
+          menusRes.json(),
+          tagsRes.json(),
+          allergensRes.json(),
+        ])
 
-      setItems(itemsData.map(transformItem))
-      setCategories(categoriesData.map(transformCategory))
-      setCustomizationGroups(customizationsData.map(transformCustomizationGroup))
-      setMenus(menusData.map(transformMenu))
-      setTags(tagsData.map((t: any) => ({ id: t.id, name: t.name })))
-      setAllergens(allergensData.map((a: any) => ({ id: a.id, name: a.name })))
+      // Unwrap POS envelope { ok, data } — all list APIs return posSuccess
+      const unwrap = <T>(json: unknown, label: string): T[] => {
+        if (process.env.NODE_ENV === "development") {
+          const ok = json && typeof json === "object" && "ok" in (json as object)
+          const hasData = json && typeof json === "object" && "data" in (json as object)
+          if (!ok || !hasData) {
+            console.warn(
+              `[MenuContext] ${label}: expected POS envelope { ok, data }, got:`,
+              json && typeof json === "object" ? Object.keys(json as object) : typeof json
+            )
+          }
+        }
+        const data = json && typeof json === "object" && "data" in (json as object)
+          ? (json as { data: unknown }).data
+          : null
+        return Array.isArray(data) ? (data as T[]) : []
+      }
+
+      setItems(unwrap<unknown>(itemsJson, "items").map(transformItem))
+      setCategories(unwrap<unknown>(categoriesJson, "categories").map(transformCategory))
+      setCustomizationGroups(
+        unwrap<unknown>(customizationsJson, "customizations").map(transformCustomizationGroup)
+      )
+      setMenus(unwrap<unknown>(menusJson, "menus").map(transformMenu))
+      setTags(unwrap<unknown>(tagsJson, "tags").map((t: { id: string; name: string }) => ({ id: t.id, name: t.name })))
+      setAllergens(
+        unwrap<unknown>(allergensJson, "allergens").map((a: { id: string; name: string }) => ({
+          id: a.id,
+          name: a.name,
+        }))
+      )
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch menu data'
       setError(errorMessage)
@@ -606,6 +634,8 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
       customizationGroups: item.customizationGroups || [],
       availabilityMode: item.availabilityMode || "menu-hours",
       nutrition: item.nutrition,
+      defaultStation: item.defaultStation ?? undefined,
+      defaultSubstation: item.defaultSubstation ?? undefined,
     }
     setItems((prev) => [...prev, optimisticItem])
 
@@ -635,6 +665,8 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
           tagIds,
           allergenIds,
           customizationGroupIds: item.customizationGroups || [],
+          defaultStation: item.defaultStation ?? null,
+          defaultSubstation: item.defaultSubstation ?? null,
         }),
       })
 
@@ -691,6 +723,8 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
           tagIds,
           allergenIds,
           customizationGroupIds: updates.customizationGroups,
+          defaultStation: updates.defaultStation !== undefined ? updates.defaultStation : undefined,
+          defaultSubstation: updates.defaultSubstation !== undefined ? updates.defaultSubstation : undefined,
         }),
       })
 

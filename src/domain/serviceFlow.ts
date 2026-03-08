@@ -58,6 +58,12 @@ export function canServeItem(item: OrderItemInput): ValidationResult {
   return { ok: true };
 }
 
+/** Item can be un-served (recall) only when served. Puts it back to ready. */
+export function canUnserveItem(item: OrderItemInput): ValidationResult {
+  if (item.status !== "served") return { ok: false, reason: "item_not_served" };
+  return { ok: true };
+}
+
 /** Item can be marked preparing only from pending. */
 export function canMarkItemPreparing(item: OrderItemInput): ValidationResult {
   if (item.status !== "pending") return { ok: false, reason: "item_not_pending" };

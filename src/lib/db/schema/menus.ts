@@ -166,6 +166,8 @@ import {
       useCustomHours: boolean("use_custom_hours").notNull().default(false),
       customSchedule: jsonb("custom_schedule"),
       displayOrder: integer("display_order").notNull().default(0),
+      defaultStation: varchar("default_station", { length: 50 }),
+      defaultSubstation: varchar("default_substation", { length: 50 }),
       createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
       updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     },

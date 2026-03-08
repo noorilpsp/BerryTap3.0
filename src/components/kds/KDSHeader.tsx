@@ -1,6 +1,7 @@
 "use client";
 
-import { ChefHat, MessageCircle, RotateCcw } from "lucide-react";
+import Link from "next/link";
+import { ChefHat, MessageCircle, RotateCcw, Settings } from "lucide-react";
 import { Button } from "@/components/kds/ui/button";
 import {
   DropdownMenu,
@@ -22,6 +23,8 @@ export interface RecallOrderShape {
   customerName: string | null;
   orderType: "dine_in" | "pickup";
   bumpedAt: string;
+  /** Station this order was bumped from (for display). */
+  bumpedFromStationId?: string;
   createdAt: string;
   items: ReadonlyArray<{ name: string; quantity: number }>;
 }
@@ -41,6 +44,7 @@ interface KDSHeaderProps {
   onOpenMessageHistory?: () => void;
   completedOrders?: RecallOrderShape[];
   onRecall?: (order: RecallOrderShape) => void;
+  settingsHref?: string;
 }
 
 function formatBumpedAgo(bumpedAt: string): string {
@@ -69,6 +73,7 @@ export function KDSHeader({
   onOpenMessageHistory,
   completedOrders = [],
   onRecall,
+  settingsHref,
 }: KDSHeaderProps) {
   const { theme } = useDisplayMode();
   return (
@@ -156,26 +161,37 @@ export function KDSHeader({
             )}
           </Button>
         )}
+        {settingsHref && (
+          <Button variant="ghost" size="icon" asChild className={cn("theme-transition", theme.textMuted, "hover:opacity-80")}>
+            <Link href={settingsHref} aria-label="Station settings">
+              <Settings className="h-5 w-5" />
+            </Link>
+          </Button>
+        )}
         <DisplayModePicker />
         {onRecall && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className={cn("gap-2 theme-transition", theme.headerOutlineButton || theme.border, !theme.headerOutlineButton && theme.text)}>
                 <RotateCcw className="h-4 w-4" />
-                Recall
+                Completed
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className={cn("w-[320px] max-h-[70vh] overflow-y-auto theme-transition", theme.cardBg, theme.text, theme.border)}>
-              <DropdownMenuLabel className={theme.text}>Recall Order</DropdownMenuLabel>
+              <DropdownMenuLabel className={theme.text}>Completed Orders</DropdownMenuLabel>
               <DropdownMenuSeparator className={theme.border} />
               {completedOrders.length === 0 ? (
                 <div className={cn("py-4 text-center text-sm theme-transition", theme.textMuted)}>
-                  No completed orders to recall
+                  No completed orders yet
                 </div>
               ) : (
-                completedOrders.map((order) => (
+                completedOrders.map((order) => {
+                  const stationName = order.bumpedFromStationId
+                    ? stations.find((s) => s.id === order.bumpedFromStationId)?.name ?? order.bumpedFromStationId
+                    : null;
+                  return (
                   <div
-                    key={order.id}
+                    key={`${order.id}-${order.bumpedFromStationId ?? ""}`}
                     className={cn("flex flex-col gap-1.5 px-2 py-2 rounded-md border mb-1 last:mb-0 theme-transition", theme.border, theme.metadataBg)}
                   >
                     <div className="flex items-center justify-between gap-2 text-sm">
@@ -191,6 +207,11 @@ export function KDSHeader({
                         {formatBumpedAgo(order.bumpedAt)}
                       </span>
                     </div>
+                    {stationName && (
+                      <span className={cn("text-xs capitalize", theme.textMuted)}>
+                        From {stationName}
+                      </span>
+                    )}
                     <p className={cn("text-xs line-clamp-2", theme.textMuted)}>
                       {itemsSummary(order.items)}
                     </p>
@@ -203,13 +224,14 @@ export function KDSHeader({
                       Recall
                     </Button>
                   </div>
-                ))
+                  );
+                })
               )}
               <DropdownMenuSeparator className={theme.border} />
               <div className={cn("px-2 py-1.5 text-xs text-center theme-transition", theme.textMuted)}>
                 {completedOrders.length > 0
-                  ? `Showing last ${Math.min(completedOrders.length, 10)} completed orders`
-                  : "Bump orders to see them here for recall"}
+                  ? `${completedOrders.length} completed · Recall returns to READY`
+                  : "Bump orders to add them here"}
               </div>
             </DropdownMenuContent>
           </DropdownMenu>

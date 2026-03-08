@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { posSuccess } from "@/app/api/_lib/pos-envelope";
 import { eq, and, desc } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
@@ -100,11 +101,9 @@ export async function GET(request: NextRequest) {
 
     const menusList = await getCachedMenus();
 
-    return NextResponse.json(menusList, {
-      headers: {
-        "Cache-Control": "no-store, must-revalidate",
-      },
-    });
+    const res = posSuccess(menusList);
+    res.headers.set("Cache-Control", "no-store, must-revalidate");
+    return res;
   } catch (error) {
     console.error("[GET /api/menus] Error:", error);
     return NextResponse.json(

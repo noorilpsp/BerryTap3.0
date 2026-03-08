@@ -7,6 +7,10 @@ import { KDSEmptyState } from "./KDSEmptyState";
 import { useDisplayMode } from "./DisplayModeContext";
 import type { Station } from "./StationSwitcher";
 import { cn } from "@/lib/utils";
+import {
+  getArrivalTimestamp,
+  getAgeTimestampForColumn,
+} from "@/lib/kds/agingHelpers";
 
 type OrderStatus = "pending" | "preparing" | "ready";
 
@@ -17,6 +21,9 @@ interface OrderItem {
   quantity: number;
   customizations: string[];
   stationId?: string;
+  sentToKitchenAt?: string | null;
+  startedAt?: string | null;
+  readyAt?: string | null;
 }
 
 interface Order {
@@ -27,6 +34,7 @@ interface Order {
   customerName: string | null;
   status: OrderStatus;
   createdAt: string;
+  firedAt?: string | null;
   items: OrderItem[];
   specialInstructions?: string;
   stationStatuses?: Record<string, OrderStatus>;
@@ -43,8 +51,9 @@ interface KDSColumnProps {
   titleIcon?: string;
   status: OrderStatus;
   orders: Order[];
-  onAction: (orderId: string, newStatus: OrderStatus) => void;
+  onAction: (orderId: string, newStatus: OrderStatus | "served", itemIds?: string[]) => void;
   onRefire?: (orderId: string, item: import("./KDSTicket").OrderItem, reason: string) => void;
+  onVoidItem?: (orderId: string, itemId: string) => void;
   onClearModified?: (orderId: string) => void;
   onSnooze?: (orderId: string, durationSeconds: number) => void;
   onWakeUp?: (orderId: string) => void;
@@ -55,46 +64,62 @@ interface KDSColumnProps {
   isReady?: boolean;
   transitioningTickets?: Map<string, { from: OrderStatus; to: OrderStatus }>;
   highlightedBatch?: import("./KDSColumns").HighlightedBatch | null;
+  /** When true, do not filter orders by status (parent passes pre-filtered list, e.g. READY). */
+  disableStatusFilter?: boolean;
+  /** For READY + kitchen: derive substation summary per order. */
+  getReadySubstationSummary?: (
+    order: Order
+  ) => import("@/lib/kds/derivePreparingLaneEntries").ReadySubstationSummary | null;
+  /** When true, hide the column header (parent provides it, e.g. PREPARING fallback). */
+  hideHeader?: boolean;
+  /** Full station-visible orders for queue numbering. Uses firedAt ?? createdAt for arrival order. */
+  allOrdersForQueue?: Order[];
+  /** Optional message for empty state. Default derived from status if not provided. */
+  emptyStateMessage?: string;
 }
 
-function getElapsedMinutes(createdAt: string): number {
-  return Math.floor((Date.now() - new Date(createdAt).getTime()) / 60000);
+function getElapsedMinutes(ts: string): number {
+  return Math.floor((Date.now() - new Date(ts).getTime()) / 60000);
 }
 
 function sortByUrgency(orders: Order[]): Order[] {
   return orders.sort((a, b) => {
+    const aTs = getArrivalTimestamp(a);
+    const bTs = getArrivalTimestamp(b);
     // Remake tickets at top (highest priority)
     if (a.isRemake && !b.isRemake) return -1;
     if (!a.isRemake && b.isRemake) return 1;
     if (a.isRemake && b.isRemake) {
-      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      return new Date(aTs).getTime() - new Date(bTs).getTime();
     }
 
-    const aMinutes = getElapsedMinutes(a.createdAt);
-    const bMinutes = getElapsedMinutes(b.createdAt);
-    
+    const aMinutes = getElapsedMinutes(aTs);
+    const bMinutes = getElapsedMinutes(bTs);
+
     const aUrgency = aMinutes >= 10 ? 2 : aMinutes >= 5 ? 1 : 0;
     const bUrgency = bMinutes >= 10 ? 2 : bMinutes >= 5 ? 1 : 0;
-    
+
     // Sort by urgency tier first
     if (aUrgency !== bUrgency) return bUrgency - aUrgency;
-    
+
     // Within same tier, snoozed tickets at bottom
     if (a.isSnoozed && !b.isSnoozed) return 1;
     if (!a.isSnoozed && b.isSnoozed) return -1;
     if (a.isSnoozed && b.isSnoozed) {
-      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      return new Date(aTs).getTime() - new Date(bTs).getTime();
     }
-    
+
     // Within same tier, oldest first
-    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    return new Date(aTs).getTime() - new Date(bTs).getTime();
   });
 }
 
-/** 1-based queue position across all orders (oldest first). Shown on every ticket so chefs can track order. */
+/** 1-based queue position using firedAt ?? createdAt (global arrival order). */
 function getQueuePosition(order: Order, allOrders: Order[]): number {
   const sorted = [...allOrders].sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    (a, b) =>
+      new Date(getArrivalTimestamp(a)).getTime() -
+      new Date(getArrivalTimestamp(b)).getTime()
   );
   const index = sorted.findIndex((o) => o.id === order.id);
   return index !== -1 ? index + 1 : 0;
@@ -106,6 +131,7 @@ export function KDSColumn({
   orders, 
   onAction, 
   onRefire,
+  onVoidItem,
   onClearModified,
   onSnooze,
   onWakeUp,
@@ -116,7 +142,13 @@ export function KDSColumn({
   isReady = false,
   transitioningTickets = new Map(),
   highlightedBatch = null,
+  disableStatusFilter = false,
+  getReadySubstationSummary,
+  hideHeader = false,
+  allOrdersForQueue,
+  emptyStateMessage,
 }: KDSColumnProps) {
+  const ordersForQueue = allOrdersForQueue ?? orders;
   const { theme } = useDisplayMode();
   // Track tickets that are in "staged" position (at top, before sliding to final position)
   const [stagedTickets, setStagedTickets] = useState<Set<string>>(new Set());
@@ -134,13 +166,15 @@ export function KDSColumn({
     return () => cancelAnimationFrame(id);
   }, []);
 
-  // Filter by station-specific status if currentStationId is provided, otherwise use overall status
-  const filteredOrders = orders.filter((order) => {
-    if (currentStationId && order.stationStatuses) {
-      return order.stationStatuses[currentStationId] === status;
-    }
-    return order.status === status;
-  });
+  // Filter by station-specific status unless parent passes pre-filtered list (e.g. READY for kitchen)
+  const filteredOrders = disableStatusFilter
+    ? orders
+    : orders.filter((order) => {
+        if (currentStationId && order.stationStatuses) {
+          return order.stationStatuses[currentStationId] === status;
+        }
+        return order.status === status;
+      });
 
   // Detect newly arrived tickets and stage them at top (for READY column)
   useEffect(() => {
@@ -198,17 +232,25 @@ export function KDSColumn({
   }, []);
 
   // Delay empty state when last ticket leaves so exit animation runs (NEW → preparing, READY → complete)
-  const columnOrders = status === "pending"
-    ? sortByUrgency([...filteredOrders])
-    : status === "ready"
-    ? [...filteredOrders].sort((a, b) => {
-        const aIsStaged = stagedTickets.has(a.id);
-        const bIsStaged = stagedTickets.has(b.id);
-        if (aIsStaged && !bIsStaged) return -1;
-        if (!aIsStaged && bIsStaged) return 1;
-        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-      })
-    : [...filteredOrders].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const getSortTs = (o: Order) =>
+    getAgeTimestampForColumn(o, status, currentStationId ?? "");
+  const columnOrders =
+    status === "pending"
+      ? sortByUrgency([...filteredOrders])
+      : [...filteredOrders].sort((a, b) => {
+          const aIsStaged = stagedTickets.has(a.id);
+          const bIsStaged = stagedTickets.has(b.id);
+          if (aIsStaged && !bIsStaged) return -1;
+          if (!aIsStaged && bIsStaged) return 1;
+          if (a.isSnoozed && !b.isSnoozed) return 1;
+          if (!a.isSnoozed && b.isSnoozed) return -1;
+          if (a.isSnoozed && b.isSnoozed) {
+            return new Date(getSortTs(a)).getTime() - new Date(getSortTs(b)).getTime();
+          }
+          return (
+            new Date(getSortTs(a)).getTime() - new Date(getSortTs(b)).getTime()
+          );
+        });
 
   useEffect(() => {
     const count = columnOrders.length;
@@ -239,8 +281,8 @@ export function KDSColumn({
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Hide header on mobile since we have tabs */}
-      {!isMobile && (
+      {/* Hide header on mobile since we have tabs, or when parent provides it (hideHeader) */}
+      {!isMobile && !hideHeader && (
         <div className={cn("px-1.5 py-1 2xl:px-2 2xl:py-1.5 border-b shrink-0 theme-transition", theme.cardBg, theme.border, theme.text, theme.columnTitleSeparator, headerUnderlineClass)}>
           <h2 className="font-semibold text-sm 2xl:text-base text-center uppercase tracking-wide">
             {title} ({columnOrders.length})
@@ -249,12 +291,26 @@ export function KDSColumn({
       )}
       <div className={cn("flex-1 overflow-y-auto overflow-x-hidden p-4 2xl:p-5 min-h-0 relative theme-transition", theme.text)}>
         {columnOrders.length === 0 && showEmptyState && (
-          <KDSEmptyState />
+          <KDSEmptyState
+            message={
+              emptyStateMessage ??
+              (status === "pending"
+                ? "No new orders"
+                : status === "preparing"
+                  ? "No orders in prep"
+                  : "Nothing ready")
+            }
+          />
         )}
         <div className={isMobile ? "flex flex-col gap-4" : "flex flex-col gap-4 2xl:gap-5"}>
           <AnimatePresence mode="popLayout">
             {visibleOrders.map((order) => {
-                const queuePosition = getQueuePosition(order, orders);
+                const queuePosition = getQueuePosition(order, ordersForQueue);
+                const ageTimestamp = getAgeTimestampForColumn(
+                  order,
+                  status,
+                  currentStationId ?? ""
+                );
                 
                 // Check if this station is complete
                 const stationStatus = currentStationId && order.stationStatuses 
@@ -277,12 +333,19 @@ export function KDSColumn({
                 const isStaged = stagedTickets.has(order.id);
                 
                 const isInBatch = highlightedBatch?.orderIds.includes(order.id) ?? false;
+                const readySubstationSummary =
+                  status === "ready" && getReadySubstationSummary
+                    ? getReadySubstationSummary(order)
+                    : undefined;
+
                 return (
                   <KDSTicket
                     key={order.id}
                     order={order}
+                    ageTimestamp={ageTimestamp}
                     onAction={onAction}
                     onRefire={onRefire}
+                    onVoidItem={onVoidItem}
                     onClearModified={onClearModified}
                     priority={queuePosition > 0 ? queuePosition : undefined}
                     isHighlighted={order.id === highlightedTicketId}
@@ -299,6 +362,7 @@ export function KDSColumn({
                     isBatchHighlighted={isInBatch}
                     onSnooze={onSnooze}
                     onWakeUp={onWakeUp}
+                    readySubstationSummary={readySubstationSummary ?? undefined}
                   />
                 );
               })}

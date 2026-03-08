@@ -833,6 +833,8 @@ export type PickupDeliveryLineItemInput = {
   customizationsTotal: string;
   lineTotal: string;
   notes: string | null;
+  /** Resolved station for KDS (e.g. kitchen, bar). */
+  stationOverride?: string | null;
   customizations: Array<{
     groupId: string;
     optionId: string;

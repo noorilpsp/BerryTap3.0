@@ -4,7 +4,7 @@ import { Button } from "@/components/kds/ui/button";
 import { Card } from "@/components/ui/card";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion } from "framer-motion";
-import { RotateCcw, AlertTriangle } from "lucide-react";
+import { RotateCcw, AlertTriangle, Ban } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -22,7 +22,9 @@ import { useDisplayMode } from "./DisplayModeContext";
 import { WaitingForStationsBadge } from "./WaitingForStationsBadge";
 import type { Station } from "./StationSwitcher";
 
+/** Display/station status. Action callback also uses "served" for BUMP. */
 type OrderStatus = "pending" | "preparing" | "ready";
+type ActionStatus = OrderStatus | "served";
 
 export interface OrderItem {
   id: string;
@@ -31,6 +33,8 @@ export interface OrderItem {
   quantity: number;
   customizations: string[];
   stationId?: string;
+  voidedAt?: string | null;
+  refiredAt?: string | null;
   isNew?: boolean;
   isModified?: boolean;
   changeDetails?: string;
@@ -48,6 +52,8 @@ interface Order {
   specialInstructions?: string;
   stationStatuses?: Record<string, OrderStatus>;
   isRemake?: boolean;
+  /** True when all items remade; ticket-level REMAKE badge uses this. */
+  isFullRemake?: boolean;
   remakeReason?: string;
   originalOrderId?: string;
   isRecalled?: boolean;
@@ -62,6 +68,19 @@ interface Order {
 }
 
 const REFIRE_REASONS = ["Burned", "Dropped", "Wrong", "Other"] as const;
+
+const LANE_DISPLAY_NAMES: Record<string, string> = {
+  grill: "Grill",
+  fryer: "Fryer",
+  cold_prep: "Cold Prep",
+  unassigned: "Unassigned",
+};
+
+function formatLaneNames(laneIds: string[]): string {
+  return laneIds
+    .map((id) => LANE_DISPLAY_NAMES[id] ?? id)
+    .join(", ");
+}
 
 // Allergen detection: keywords to scan in specialInstructions and item customizations
 const ALLERGEN_KEYWORDS: { keywords: string[]; label: string }[] = [
@@ -110,8 +129,11 @@ function getItemAllergenLabel(item: OrderItem, orderSpecialInstructions?: string
 
 interface KDSTicketProps {
   order: Order;
-  onAction: (orderId: string, newStatus: OrderStatus) => void;
+  /** Stage-appropriate timestamp for timer/urgency. When omitted, uses order.createdAt. */
+  ageTimestamp?: string;
+  onAction: (orderId: string, newStatus: ActionStatus, itemIds?: string[]) => void;
   onRefire?: (orderId: string, item: OrderItem, reason: string) => void;
+  onVoidItem?: (orderId: string, itemId: string) => void;
   onClearModified?: (orderId: string) => void;
   priority?: number | null;
   isHighlighted?: boolean;
@@ -130,6 +152,12 @@ interface KDSTicketProps {
   isBatchHighlighted?: boolean;
   onSnooze?: (orderId: string, durationSeconds: number) => void;
   onWakeUp?: (orderId: string) => void;
+  /** READY column + kitchen: substation progress summary */
+  readySubstationSummary?: {
+    readyLanes: string[];
+    waitingLanes: string[];
+    allReady: boolean;
+  };
 }
 
 function getElapsedTime(createdAt: string): string {
@@ -150,10 +178,11 @@ const SNOOZE_DURATIONS = [
   { label: "5m", seconds: 300 },
 ] as const;
 
-function canSnoozeOrder(order: Order): boolean {
+function canSnoozeOrder(order: Order, ageTs?: string): boolean {
   if (order.isSnoozed) return false;
   if (order.wasSnoozed) return false;
-  const waitMinutes = getElapsedMinutes(order.createdAt);
+  const ts = ageTs ?? order.createdAt;
+  const waitMinutes = getElapsedMinutes(ts);
   if (waitMinutes >= 10) return false; // Cannot snooze urgent
   return true;
 }
@@ -179,7 +208,7 @@ function getUrgencyLevel(createdAt: string): UrgencyLevel {
 
 function getActionButton(status: OrderStatus): {
   label: string;
-  nextStatus: OrderStatus;
+  nextStatus: ActionStatus;
 } {
   switch (status) {
     case "pending":
@@ -187,7 +216,7 @@ function getActionButton(status: OrderStatus): {
     case "preparing":
       return { label: "READY", nextStatus: "ready" };
     case "ready":
-      return { label: "BUMP", nextStatus: "ready" };
+      return { label: "BUMP", nextStatus: "served" };
   }
 }
 
@@ -197,12 +226,14 @@ const ORDER_TYPE_BADGE: Record<Order["orderType"], { icon: string; label: string
   delivery: { icon: "🚚", label: "DELIVERY" },
 };
 
-export function KDSTicket({ 
-  order, 
-  onAction, 
+export function KDSTicket({
+  order,
+  ageTimestamp,
+  onAction,
   onRefire,
+  onVoidItem,
   onClearModified,
-  priority, 
+  priority,
   isHighlighted,
   currentStationId,
   waitingStations = [],
@@ -218,11 +249,23 @@ export function KDSTicket({
   isBatchHighlighted = false,
   onSnooze,
   onWakeUp,
+  readySubstationSummary,
 }: KDSTicketProps) {
-  const { label, nextStatus } = getActionButton(order.status);
+  const statusForButton =
+    currentStationId && order.stationStatuses?.[currentStationId] != null
+      ? order.stationStatuses[currentStationId]
+      : order.status;
+  const { label, nextStatus } = getActionButton(statusForButton);
+  const actionLabel =
+    readySubstationSummary && !readySubstationSummary.allReady
+      ? "Complete remaining"
+      : readySubstationSummary?.allReady && nextStatus === "served"
+        ? "BUMP"
+        : label;
   const orderTypeBadge = ORDER_TYPE_BADGE[order.orderType] ?? ORDER_TYPE_BADGE.pickup;
-  const [elapsedTime, setElapsedTime] = useState(getElapsedTime(order.createdAt));
-  const [urgencyLevel, setUrgencyLevel] = useState(getUrgencyLevel(order.createdAt));
+  const ts = ageTimestamp ?? order.createdAt;
+  const [elapsedTime, setElapsedTime] = useState(getElapsedTime(ts));
+  const [urgencyLevel, setUrgencyLevel] = useState(getUrgencyLevel(ts));
   const [refireItem, setRefireItem] = useState<OrderItem | null>(null);
   const [refireReason, setRefireReason] = useState<string>("");
   const [snoozePickerOpen, setSnoozePickerOpen] = useState(false);
@@ -269,15 +312,15 @@ export function KDSTicket({
     }
   }, []);
 
-  // Depend only on createdAt so the interval isn't recreated on every parent re-render (which would delay the next tick by up to 1s).
+  // Depend on age timestamp so the interval isn't recreated on every parent re-render.
   useEffect(() => {
     const interval = setInterval(() => {
-      setElapsedTime(getElapsedTime(order.createdAt));
-      setUrgencyLevel(getUrgencyLevel(order.createdAt));
+      setElapsedTime(getElapsedTime(ts));
+      setUrgencyLevel(getUrgencyLevel(ts));
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [order.createdAt]);
+  }, [ts]);
 
   const urgencyDot = urgencyLevel === "urgent" 
     ? "🔴" 
@@ -432,14 +475,14 @@ export function KDSTicket({
         onMouseUp={canShowTicketContextMenu ? cancelTicketLongPress : undefined}
         onMouseLeave={canShowTicketContextMenu ? cancelTicketLongPress : undefined}
       >
-        {/* REMAKE / RECALLED badge */}
-        {(order.isRemake || order.isRecalled) && (
-          <div className={cn("px-2 pt-1.5 pb-0 2xl:px-3 2xl:pt-2 2xl:pb-0 border-b flex items-center justify-between theme-transition", theme.border, order.isRemake ? theme.remakeBadge : theme.recalledBadge)}>
+        {/* REMAKE / RECALLED badge - ticket-level only when entire ticket is remake */}
+        {((order.isFullRemake ?? order.isRemake) || order.isRecalled) && (
+          <div className={cn("px-2 pt-1.5 pb-0 2xl:px-3 2xl:pt-2 2xl:pb-0 border-b flex items-center justify-between theme-transition", theme.border, (order.isFullRemake ?? order.isRemake) ? theme.remakeBadge : theme.recalledBadge)}>
             <span className="font-semibold text-sm 2xl:text-base flex items-center gap-0.5">
               <span className="inline-block translate-y-0.5 leading-none shrink-0" aria-hidden>
-                {order.isRemake ? "🔄" : "↩"}
+                {(order.isFullRemake ?? order.isRemake) ? "🔄" : "↩"}
               </span>
-              {order.isRemake ? "REMAKE" : "RECALLED"}
+              {(order.isFullRemake ?? order.isRemake) ? "REMAKE" : "RECALLED"}
             </span>
             <span className="text-xs 2xl:text-sm font-medium opacity-90">#{order.orderNumber}</span>
           </div>
@@ -463,17 +506,19 @@ export function KDSTicket({
             </span>
           </div>
         )}
-        {/* COMPACT METADATA ROW - reduced dominance, item-focused hierarchy */}
-        <div className={cn("px-2 pb-0 2xl:px-3 2xl:pb-0 border-b theme-transition", theme.metadataBg, theme.border, theme.textMuted, order.isRemake || order.isRecalled || order.isModified ? "-mt-4 pt-0 2xl:-mt-5 2xl:pt-0" : "pt-1.5 2xl:pt-2")}>
+        {/* COMPACT METADATA ROW - table/order prominent for expo scanning */}
+        <div className={cn("px-2 pb-0 2xl:px-3 2xl:pb-0 border-b theme-transition", theme.metadataBg, theme.border, theme.textMuted, ((order.isFullRemake ?? order.isRemake) || order.isRecalled || order.isModified) ? "-mt-4 pt-0 2xl:-mt-5 2xl:pt-0" : "pt-1.5 2xl:pt-2")}>
           <div className={cn("grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-sm 2xl:text-base leading-snug -translate-y-0.5", theme.textMuted)}>
             <span className="min-w-0 flex items-center gap-1.5 shrink-0">
               <span className={cn("shrink-0 opacity-80", theme.textMuted)} aria-label={orderTypeBadge.label} title={orderTypeBadge.label}>{orderTypeBadge.icon}</span>
-              <span className={cn("truncate font-medium", theme.text)}>
-                {order.isRemake && order.originalOrderId
+              <span className={cn("truncate font-semibold text-base 2xl:text-lg tabular-nums", theme.text)}>
+                {(order.isFullRemake ?? order.isRemake) && order.originalOrderId
                   ? `T-${order.tableNumber}`
                   : order.orderType === "dine_in" && order.tableNumber
-                  ? `Table ${order.tableNumber}`
-                  : order.customerName}
+                  ? `T-${order.tableNumber} · #${order.orderNumber}`
+                  : order.customerName
+                    ? `${order.customerName} · #${order.orderNumber}`
+                    : `#${order.orderNumber}`}
               </span>
             </span>
             {priority != null && priority > 0 ? (
@@ -534,7 +579,8 @@ export function KDSTicket({
         {/* ITEMS - tight spacing above = below */}
         <div className="-mt-1.5 pt-0 px-2 pb-0 2xl:-mt-2 2xl:px-3 2xl:pb-0 space-y-0 2xl:space-y-0.5">
           {order.items.map((item) => {
-            const canRefire = Boolean(onRefire && !order.isRemake);
+            const isVoided = Boolean(item.voidedAt);
+            const canRefire = Boolean(onRefire && !item.refiredAt && !isVoided);
             const itemAllergenLabel = getItemAllergenLabel(item, order.specialInstructions);
             const itemKey = `${item.name}|${item.variant ?? ""}`;
             const isBatchItem = Boolean(batchItemKey && batchItemKey === itemKey);
@@ -571,36 +617,54 @@ export function KDSTicket({
               longPressTargetRef.current = null;
             };
             return (
-              <Popover open={refireContextItem?.id === item.id} onOpenChange={(open) => !open && setRefireContextItem(null)} key={item.id}>
+              <Popover open={refireContextItem?.id === item.id && !isVoided} onOpenChange={(open) => !open && setRefireContextItem(null)} key={item.id}>
                 <PopoverAnchor asChild>
               <div
-                className="group/item space-y-0.5 relative touch-manipulation"
-                onTouchStart={onTouchStart}
-                onTouchEnd={onTouchEnd}
-                onTouchCancel={onTouchEnd}
-                onMouseDown={onMouseDown}
-                onMouseUp={onMouseUpOrLeave}
-                onMouseLeave={onMouseUpOrLeave}
+                className={cn(
+                  "group/item space-y-0.5 relative",
+                  isVoided ? "" : "touch-manipulation"
+                )}
+                onTouchStart={isVoided ? undefined : onTouchStart}
+                onTouchEnd={isVoided ? undefined : onTouchEnd}
+                onTouchCancel={isVoided ? undefined : onTouchEnd}
+                onMouseDown={isVoided ? undefined : onMouseDown}
+                onMouseUp={isVoided ? undefined : onMouseUpOrLeave}
+                onMouseLeave={isVoided ? undefined : onMouseUpOrLeave}
               >
-                <div className={cn("flex items-baseline gap-2 text-lg 2xl:text-xl leading-snug flex-wrap", theme.text)}>
-                  {isBatchItem && (
+                <div className={cn(
+                  "flex items-baseline gap-2 text-lg 2xl:text-xl leading-snug flex-wrap",
+                  theme.text,
+                  isVoided && "opacity-60"
+                )}>
+                  {isBatchItem && !isVoided && (
                     <span className={cn("font-bold shrink-0", theme.batchDot)} aria-label="Batch item">●</span>
                   )}
-                  <span className={cn("font-bold tabular-nums", theme.text)}>{item.quantity}x</span>
+                  <span className={cn("font-bold tabular-nums", isVoided && "line-through")}>{item.quantity}x</span>
                   <span className={cn(
                     "font-bold",
-                    item.isNew && theme.itemNewText,
-                    item.isModified && !item.isNew && theme.itemModifiedText
+                    isVoided && "line-through",
+                    !isVoided && item.isNew && theme.itemNewText,
+                    !isVoided && item.isModified && !item.isNew && theme.itemModifiedText
                   )}>
                     {item.name}
                   </span>
                   {item.variant && (
-                    <span className={cn("text-base 2xl:text-lg font-medium", theme.textMuted)}>({item.variant})</span>
+                    <span className={cn("text-base 2xl:text-lg font-medium", theme.textMuted, isVoided && "line-through")}>({item.variant})</span>
                   )}
-                  {item.isNew && (
+                  {isVoided && (
+                    <span className="inline-flex items-center rounded border border-red-500/50 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-red-600 dark:text-red-400 shrink-0">
+                      VOIDED
+                    </span>
+                  )}
+                  {!isVoided && item.refiredAt && (
+                    <span className={cn(theme.remakeBadge, "inline-flex items-center gap-0.5 rounded border px-1.5 py-0.5 text-[10px] 2xl:text-xs font-bold uppercase shrink-0 border-current/30")}>
+                      <span aria-hidden>🔄</span> REMAKE
+                    </span>
+                  )}
+                  {!isVoided && item.isNew && !item.refiredAt && (
                     <span className={cn(theme.itemNewText, "text-sm 2xl:text-base font-semibold shrink-0")}>← NEW</span>
                   )}
-                  {item.isModified && !item.isNew && (
+                  {!isVoided && item.isModified && !item.isNew && (
                     <span className={cn(theme.itemModifiedText, "text-sm 2xl:text-base font-semibold shrink-0")}>
                       ← CHANGED{item.changeDetails ? ` (${item.changeDetails})` : ""}
                     </span>
@@ -684,6 +748,18 @@ export function KDSTicket({
                       <RotateCcw className="h-4 w-4 mr-2 inline-block" aria-hidden />
                       Re-fire
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="justify-start font-medium w-full text-destructive hover:text-destructive"
+                      onClick={() => {
+                        setRefireContextItem(null);
+                        onVoidItem?.(order.id, item.id);
+                      }}
+                    >
+                      <Ban className="h-4 w-4 mr-2 inline-block" aria-hidden />
+                      Void
+                    </Button>
                     <Button variant="ghost" size="sm" className="justify-start w-full" onClick={() => setRefireContextItem(null)}>
                       Cancel
                     </Button>
@@ -703,7 +779,65 @@ export function KDSTicket({
           </div>
         )}
 
-        {/* Waiting stations badge */}
+        {/* READY substation summary (kitchen): lane chips for expo clarity */}
+        {readySubstationSummary &&
+          (readySubstationSummary.readyLanes.length > 0 ||
+            readySubstationSummary.waitingLanes.length > 0) && (
+          <div className="-mt-1 px-2 pb-2 2xl:-mt-1.5 2xl:px-3 2xl:pb-3">
+            {readySubstationSummary.allReady ? (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs 2xl:text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+                  ✓ All Ready:
+                </span>
+                <div className="flex gap-1.5 flex-wrap">
+                  {readySubstationSummary.readyLanes.map((lane) => (
+                    <span
+                      key={lane}
+                      className="inline-flex items-center px-2 py-0.5 rounded-md text-xs 2xl:text-sm font-medium bg-emerald-500/20 text-emerald-700 dark:bg-emerald-400/20 dark:text-emerald-300"
+                    >
+                      {LANE_DISPLAY_NAMES[lane] ?? lane}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs 2xl:text-sm font-semibold text-emerald-600 dark:text-emerald-400 shrink-0">
+                    Ready:
+                  </span>
+                  <div className="flex gap-1.5 flex-wrap">
+                    {readySubstationSummary.readyLanes.map((lane) => (
+                      <span
+                        key={lane}
+                        className="inline-flex items-center px-2 py-0.5 rounded-md text-xs 2xl:text-sm font-medium bg-emerald-500/20 text-emerald-700 dark:bg-emerald-400/20 dark:text-emerald-300"
+                      >
+                        {LANE_DISPLAY_NAMES[lane] ?? lane}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs 2xl:text-sm font-semibold text-amber-600 dark:text-amber-400 shrink-0">
+                    Waiting:
+                  </span>
+                  <div className="flex gap-1.5 flex-wrap">
+                    {readySubstationSummary.waitingLanes.map((lane) => (
+                      <span
+                        key={lane}
+                        className="inline-flex items-center px-2 py-0.5 rounded-md text-xs 2xl:text-sm font-medium bg-amber-500/20 text-amber-700 dark:bg-amber-400/20 dark:text-amber-300"
+                      >
+                        {LANE_DISPLAY_NAMES[lane] ?? lane}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Waiting stations badge (other stations: bar, dessert, etc.) */}
         {isStationComplete && waitingStations.length > 0 && (
           <div className="-mt-1 px-2 pb-2 2xl:-mt-1.5 2xl:px-3 2xl:pb-3">
             <WaitingForStationsBadge waitingStations={waitingStations} />
@@ -749,7 +883,7 @@ export function KDSTicket({
               className="w-full font-semibold text-base 2xl:text-lg h-11 2xl:h-12"
               onClick={() => onAction(order.id, nextStatus)}
             >
-              {label}
+              {actionLabel}
             </Button>
           )}
         </div>
@@ -768,8 +902,8 @@ export function KDSTicket({
               variant="outline"
               size="sm"
               className="justify-start font-medium w-full"
-              disabled={!canSnoozeOrder(order)}
-              title={!canSnoozeOrder(order) ? "Cannot snooze urgent or already snoozed orders" : undefined}
+              disabled={!canSnoozeOrder(order, ts)}
+              title={!canSnoozeOrder(order, ts) ? "Cannot snooze urgent or already snoozed orders" : undefined}
               onClick={() => {
                 setShowSnoozeContextMenu(false);
                 setSnoozePickerOpen(true);

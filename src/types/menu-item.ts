@@ -21,6 +21,10 @@ export interface MenuItem {
     calories?: number
     allergens?: string[]
   }
+  /** KDS prep station key from active location_stations. Used for routing order items to KDS tabs. */
+  defaultStation?: string | null
+  /** Kitchen lane/substation (grill, fryer, cold_prep). Only used when defaultStation is kitchen. */
+  defaultSubstation?: string | null
   // Legacy fields for backward compatibility
   category?: string
   categoryId?: string

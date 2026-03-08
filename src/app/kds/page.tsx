@@ -27,10 +27,58 @@ import {
   type StationMessage,
 } from "@/components/kds/KDSStationMessage";
 import { Button } from "@/components/kds/ui/button";
+import Link from "next/link";
 import { cn } from "@/lib/utils";
-import { fetchPos } from "@/lib/pos/fetchPos";
-import { toast } from "sonner";
 import type { ReactNode } from "react";
+import { useKdsView } from "@/lib/hooks/useKdsView";
+import { useKdsMutations } from "@/lib/hooks/useKdsMutations";
+import type { KdsView } from "@/lib/kds/kdsView";
+import { resolveItemStation as resolveItemStationShared } from "@/lib/kds/resolveItemStation";
+
+function KDSNoLocationState() {
+  const { theme } = useDisplayMode();
+  return (
+    <div className={cn("flex flex-col items-center justify-center flex-1 gap-1 theme-transition", theme.textMuted)}>
+      <p className="text-base font-medium">No location selected</p>
+      <p className="text-sm">Select a store in POS or KDS settings.</p>
+    </div>
+  );
+}
+
+function KDSErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+  const { theme } = useDisplayMode();
+  return (
+    <div className={cn("flex flex-col items-center justify-center flex-1 gap-4 theme-transition", theme.textMuted)}>
+      <p className="text-base font-medium text-center max-w-md">{message}</p>
+      <Button onClick={onRetry} variant="outline" className={cn(theme.headerOutlineButton || theme.border, theme.text)}>
+        Retry
+      </Button>
+    </div>
+  );
+}
+
+function KDSStaleBanner({ onRetry }: { onRetry: () => void }) {
+  const { theme } = useDisplayMode();
+  return (
+    <div
+      className={cn(
+        "shrink-0 px-4 py-2 flex items-center justify-center gap-3 text-sm theme-transition",
+        "bg-amber-500/20 text-amber-800 dark:bg-amber-500/25 dark:text-amber-200"
+      )}
+      role="alert"
+    >
+      <span>Couldn&apos;t refresh KDS. Showing last known data.</span>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={onRetry}
+        className={cn("shrink-0", theme.headerOutlineButton || "border-current")}
+      >
+        Retry
+      </Button>
+    </div>
+  );
+}
 
 function KDSPageLayout({ children }: { children: ReactNode }) {
   const { theme } = useDisplayMode();
@@ -41,7 +89,7 @@ function KDSPageLayout({ children }: { children: ReactNode }) {
   );
 }
 
-type OrderStatus = "pending" | "preparing" | "ready";
+type OrderStatus = "pending" | "preparing" | "ready" | "served";
 
 interface OrderItem {
   id: string;
@@ -50,6 +98,13 @@ interface OrderItem {
   quantity: number;
   customizations: string[];
   stationId?: string;
+  substation?: string | null;
+  status?: "pending" | "preparing" | "ready" | "served";
+  sentToKitchenAt?: string | null;
+  startedAt?: string | null;
+  readyAt?: string | null;
+  voidedAt?: string | null;
+  refiredAt?: string | null;
   isNew?: boolean;
   isModified?: boolean;
   changeDetails?: string;
@@ -63,11 +118,14 @@ interface Order {
   customerName: string | null;
   status: OrderStatus;
   createdAt: string;
+  firedAt?: string | null;
   items: OrderItem[];
   isPriority?: boolean;
   specialInstructions?: string;
   stationStatuses?: Record<string, OrderStatus>;
   isRemake?: boolean;
+  /** True when all non-voided items are remade; used for ticket-level REMAKE badge. */
+  isFullRemake?: boolean;
   remakeReason?: string;
   originalOrderId?: string;
   isRecalled?: boolean;
@@ -79,54 +137,136 @@ interface Order {
   snoozeUntil?: string;
   snoozeDurationSeconds?: number;
   wasSnoozed?: boolean;
+  /** Kitchen lane for preparing view (grill, fryer, cold_prep, unassigned). */
+  subStation?: string;
 }
 
-/** Response from GET /api/kds/orders (orders + order_items only). */
-interface KdsOrderResponse {
-  id: string;
-  orderNumber: string;
-  orderType: "dine_in" | "pickup";
-  tableNumber: string | null;
-  customerName: string | null;
-  status: OrderStatus;
-  station: string | null;
-  firedAt: string | null;
-  createdAt: string;
-  wave: number;
-  sessionId: string | null;
-  items: Array<{
-    id: string;
-    name: string;
-    quantity: number;
-    notes: string | null;
-    status: string;
-    sentToKitchenAt: string | null;
-    startedAt: string | null;
-    readyAt: string | null;
-    servedAt: string | null;
-  }>;
+/**
+ * Derive status from item statuses.
+ * Mixed state (pending + ready/preparing, e.g. one refired item) -> "preparing".
+ */
+function statusFromItems(items: { status: string }[]): OrderStatus {
+  if (items.length === 0) return "pending";
+  const hasPending = items.some((i) => i.status === "pending");
+  const hasPreparing = items.some((i) => i.status === "preparing");
+  const hasReady = items.some((i) => i.status === "ready");
+  if (hasPending && !hasPreparing && !hasReady) return "pending";
+  if (hasPending && (hasReady || hasPreparing)) return "preparing";
+  if (hasPreparing) return "preparing";
+  if (hasReady) return "ready";
+  return "served";
 }
 
-function mapKdsOrderToOrder(r: KdsOrderResponse): Order {
-  const stationId = r.station ?? "kitchen";
-  return {
-    id: r.id,
-    orderNumber: r.orderNumber,
-    orderType: r.orderType,
-    tableNumber: r.tableNumber,
-    customerName: r.customerName,
-    status: r.status as OrderStatus,
-    createdAt: r.createdAt,
-    items: r.items.map((it) => ({
-      id: it.id,
-      name: it.name,
-      variant: null,
-      quantity: it.quantity,
-      customizations: it.notes ? [it.notes] : [],
-      stationId,
-    })),
-    stationStatuses: { [stationId]: r.status as OrderStatus },
-  };
+/** Use shared station resolution for consistency with useKdsMutations. */
+const resolveItemStation = resolveItemStationShared;
+
+const LANE_CAPABLE_STATION = "kitchen";
+
+/**
+ * Lane assignment rule: subStation = first item that routes to the current tab's station.
+ * Only kitchen supports lanes; other stations return "unassigned".
+ */
+function resolveOrderSubStation(
+  rawItems: Array<{ stationOverride?: string | null; substation?: string | null }>,
+  order: { station?: string | null },
+  activeStationId: string,
+  fallbackStationId: string
+): string {
+  if (activeStationId !== LANE_CAPABLE_STATION) {
+    const first = rawItems.find(
+      (i) => resolveItemStation(i, order, fallbackStationId) === activeStationId
+    );
+    if (first?.substation && process.env.NODE_ENV === "development") {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[KDS] Item has defaultSubstation but station is not lane-capable (kitchen); ignoring substation",
+        { station: activeStationId, substation: first.substation }
+      );
+    }
+    return "unassigned";
+  }
+  const first = rawItems.find(
+    (i) => resolveItemStation(i, order, fallbackStationId) === activeStationId
+  );
+  return first?.substation ?? "unassigned";
+}
+
+/** Adapter: KdsView -> Order[] for KDSColumns. Derives order status from item statuses. */
+function kdsViewToOrders(
+  view: KdsView | null,
+  activeStationId: string
+): Order[] {
+  if (!view) return [];
+  const fallbackStationId = view.stations[0]?.id ?? "kitchen";
+
+  return view.orders
+    .map((o) => {
+      const allItems = view.orderItems.filter((i) => i.orderId === o.id);
+      const rawItems = allItems.filter((i) => i.voidedAt == null);
+      const items: OrderItem[] = allItems.map((i) => ({
+        id: i.id,
+        name: i.itemName,
+        variant: null,
+        quantity: i.quantity,
+        customizations: i.notes ? [i.notes] : [],
+        stationId: resolveItemStation(i, o, fallbackStationId),
+        substation: i.substation ?? null,
+        status: i.status,
+        sentToKitchenAt: i.sentToKitchenAt ?? null,
+        startedAt: i.startedAt ?? null,
+        readyAt: i.readyAt ?? null,
+        voidedAt: i.voidedAt ?? null,
+        refiredAt: i.refiredAt ?? null,
+      }));
+      if (items.length === 0) return null;
+      if (rawItems.length === 0) return null;
+      const status = statusFromItems(rawItems);
+
+      // Compute stationStatuses per station from non-voided items only
+      const stationStatuses: Record<string, OrderStatus> = {};
+      const byStation = new Map<string, typeof rawItems>();
+      for (const item of rawItems) {
+        const sid = resolveItemStation(item, o, fallbackStationId);
+        const list = byStation.get(sid) ?? [];
+        list.push(item);
+        byStation.set(sid, list);
+      }
+      for (const [sid, stationItems] of byStation) {
+        stationStatuses[sid] = statusFromItems(stationItems);
+      }
+
+      const subStation = resolveOrderSubStation(
+        rawItems,
+        o,
+        activeStationId,
+        fallbackStationId
+      );
+
+      const isRemake = rawItems.some((i) => i.refiredAt != null);
+      const isFullRemake =
+        rawItems.length > 0 && rawItems.every((i) => i.refiredAt != null);
+
+      return {
+        id: o.id,
+        orderNumber: o.orderNumber,
+        orderType: o.orderType as "dine_in" | "pickup",
+        tableNumber: o.tableNumber,
+        customerName: o.customerName,
+        status,
+        createdAt: o.createdAt,
+        firedAt: o.firedAt ?? null,
+        items,
+        stationStatuses,
+        subStation,
+        isRemake,
+        isFullRemake,
+        isSnoozed: o.isSnoozed ?? false,
+        snoozedAt: o.snoozedAt ?? undefined,
+        snoozeUntil: o.snoozeUntil ?? undefined,
+        wasSnoozed: o.wasSnoozed ?? false,
+      };
+    })
+    .filter((o): o is NonNullable<typeof o> => o != null);
 }
 
 /** Snapshot of an order when it was bumped (for Recall list). */
@@ -137,6 +277,7 @@ interface CompletedOrder {
   customerName: string | null;
   orderType: "dine_in" | "pickup";
   bumpedAt: string;
+  bumpedFromStationId: string;
   createdAt: string;
   items: OrderItem[];
   stationStatuses?: Record<string, OrderStatus>;
@@ -152,464 +293,139 @@ interface NewOrderToast {
   isPriority?: boolean;
 }
 
-// Define stations
-const STATIONS: Station[] = [
+/** Display metadata for known stations. Used when view.stations has real data. */
+const KNOWN_STATION_DISPLAY: Record<string, { icon: string; color: string }> = {
+  kitchen: { icon: "🍳", color: "#f97316" },
+  bar: { icon: "🍺", color: "#3b82f6" },
+  dessert: { icon: "🍰", color: "#ec4899" },
+};
+
+/** Fallback stations only before real view data exists (loading). Never override real API stations. */
+const DEFAULT_STATIONS: Station[] = [
   { id: "kitchen", name: "Kitchen", icon: "🍳", color: "#f97316" },
   { id: "bar", name: "Bar", icon: "🍺", color: "#3b82f6" },
   { id: "dessert", name: "Dessert", icon: "🍰", color: "#ec4899" },
 ];
 
-// Generate times relative to now for demo purposes
-const now = new Date();
-const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60000).toISOString();
+function stationsFromView(view: KdsView | null): Station[] {
+  // Only use DEFAULT_STATIONS when view has not loaded. Once we have view data, use it (may be empty).
+  if (view === null || view === undefined) return DEFAULT_STATIONS;
+  return view.stations.map((s) => {
+    const known = KNOWN_STATION_DISPLAY[s.id];
+    return {
+      id: s.id,
+      name: s.name.charAt(0).toUpperCase() + s.name.slice(1),
+      icon: known?.icon ?? "📋",
+      color: known?.color ?? "#64748b",
+    };
+  });
+}
 
-const initialOrders: Order[] = [
-  {
-    id: "1",
-    orderNumber: "1234",
-    orderType: "dine_in",
-    tableNumber: "5",
-    customerName: null,
-    status: "pending",
-    createdAt: minutesAgo(12), // Urgent - 12 minutes ago
-    specialInstructions: "Extra crispy, birthday celebration",
-    stationStatuses: {
-      kitchen: "pending",
-      bar: "pending",
-      dessert: "pending",
-    },
-    items: [
-      {
-        id: "1",
-        name: "Margherita",
-        variant: "Large",
-        quantity: 2,
-        customizations: ["Extra cheese", "Mushrooms"],
-        stationId: "kitchen",
-      },
-      {
-        id: "2",
-        name: "Pepperoni",
-        variant: "Medium",
-        quantity: 1,
-        customizations: [],
-        stationId: "kitchen",
-      },
-      {
-        id: "2a",
-        name: "Coca-Cola",
-        variant: null,
-        quantity: 2,
-        customizations: [],
-        stationId: "bar",
-      },
-      {
-        id: "2b",
-        name: "Tiramisu",
-        variant: null,
-        quantity: 1,
-        customizations: [],
-        stationId: "dessert",
-      },
-    ],
-  },
-  {
-    id: "1a",
-    orderNumber: "1234a",
-    orderType: "dine_in",
-    tableNumber: "5",
-    customerName: null,
-    status: "pending",
-    createdAt: minutesAgo(3),
-    specialInstructions: "Severe peanut allergy - please be very careful",
-    stationStatuses: {
-      kitchen: "pending",
-      bar: "pending",
-    },
-    items: [
-      {
-        id: "1a-1",
-        name: "Pad Thai",
-        variant: null,
-        quantity: 1,
-        customizations: ["NO peanuts - ALLERGY"],
-        stationId: "kitchen",
-      },
-      {
-        id: "1a-2",
-        name: "Spring Rolls",
-        variant: null,
-        quantity: 1,
-        customizations: [],
-        stationId: "kitchen",
-      },
-    ],
-  },
-  {
-    id: "2",
-    orderNumber: "1235",
-    orderType: "pickup",
-    tableNumber: null,
-    customerName: "John",
-    status: "preparing",
-    createdAt: minutesAgo(8),
-    stationStatuses: {
-      kitchen: "preparing",
-    },
-    items: [
-      {
-        id: "3",
-        name: "Caesar Salad",
-        variant: null,
-        quantity: 1,
-        customizations: [],
-        stationId: "kitchen",
-      },
-    ],
-  },
-  {
-    id: "3",
-    orderNumber: "1236",
-    orderType: "dine_in",
-    tableNumber: "9",
-    customerName: null,
-    status: "ready",
-    createdAt: minutesAgo(5),
-    stationStatuses: {
-      kitchen: "ready",
-    },
-    items: [
-      {
-        id: "4",
-        name: "Carbonara",
-        variant: "Large",
-        quantity: 1,
-        customizations: ["Extra parmesan"],
-        stationId: "kitchen",
-      },
-    ],
-  },
-  {
-    id: "4",
-    orderNumber: "1237",
-    orderType: "dine_in",
-    tableNumber: "3",
-    customerName: null,
-    status: "pending",
-    createdAt: minutesAgo(7), // Warning - 7 minutes ago
-    stationStatuses: {
-      kitchen: "pending",
-    },
-    items: [
-      {
-        id: "5",
-        name: "Hawaiian",
-        variant: "Large",
-        quantity: 1,
-        customizations: ["Extra pineapple", "Light sauce", "Well done"],
-        stationId: "kitchen",
-      },
-    ],
-  },
-  {
-    id: "5",
-    orderNumber: "1238",
-    orderType: "pickup",
-    tableNumber: null,
-    customerName: "Sarah",
-    status: "pending",
-    createdAt: minutesAgo(3), // Normal - 3 minutes ago
-    stationStatuses: {
-      kitchen: "pending",
-      bar: "pending",
-      dessert: "ready",
-    },
-    items: [
-      {
-        id: "6",
-        name: "Veggie Supreme",
-        variant: "Medium",
-        quantity: 2,
-        customizations: ["No olives", "Extra mushrooms"],
-        stationId: "kitchen",
-      },
-      {
-        id: "6b",
-        name: "Caesar Salad",
-        variant: null,
-        quantity: 1,
-        customizations: [],
-        stationId: "kitchen",
-      },
-      {
-        id: "6c",
-        name: "Garlic Bread",
-        variant: null,
-        quantity: 1,
-        customizations: [],
-        stationId: "kitchen",
-      },
-      {
-        id: "6d",
-        name: "Coca-Cola",
-        variant: null,
-        quantity: 2,
-        customizations: [],
-        stationId: "bar",
-      },
-    ],
-  },
-  {
-    id: "6",
-    orderNumber: "1239",
-    orderType: "dine_in",
-    tableNumber: "7",
-    customerName: null,
-    status: "preparing",
-    createdAt: minutesAgo(6),
-    stationStatuses: {
-      kitchen: "preparing",
-    },
-    items: [
-      {
-        id: "7",
-        name: "BBQ Chicken",
-        variant: "Large",
-        quantity: 1,
-        customizations: [],
-        stationId: "kitchen",
-      },
-      {
-        id: "8",
-        name: "Garlic Bread",
-        variant: null,
-        quantity: 2,
-        customizations: [],
-        stationId: "kitchen",
-      },
-    ],
-  },
-  {
-    id: "7",
-    orderNumber: "1240",
-    orderType: "pickup",
-    tableNumber: null,
-    customerName: "Mike",
-    status: "pending",
-    createdAt: minutesAgo(15), // Urgent - 15 minutes ago
-    specialInstructions: "Gluten-free crust, no contact with regular flour",
-    stationStatuses: {
-      kitchen: "pending",
-    },
-    items: [
-      {
-        id: "9",
-        name: "Four Cheese",
-        variant: "Small",
-        quantity: 1,
-        customizations: ["Extra mozzarella"],
-        stationId: "kitchen",
-      },
-    ],
-  },
-  {
-    id: "8",
-    orderNumber: "1241",
-    orderType: "dine_in",
-    tableNumber: "12",
-    customerName: null,
-    status: "pending",
-    createdAt: minutesAgo(2), // Normal - 2 minutes ago
-    stationStatuses: {
-      kitchen: "pending",
-    },
-    items: [
-      {
-        id: "10",
-        name: "Meat Lovers",
-        variant: "Large",
-        quantity: 1,
-        customizations: ["Extra bacon"],
-        stationId: "kitchen",
-      },
-    ],
-  },
-  {
-    id: "9",
-    orderNumber: "1242",
-    orderType: "dine_in",
-    tableNumber: "8",
-    customerName: null,
-    status: "preparing",
-    createdAt: minutesAgo(4),
-    stationStatuses: {
-      kitchen: "preparing",
-    },
-    items: [
-      {
-        id: "11",
-        name: "Mediterranean",
-        variant: "Medium",
-        quantity: 1,
-        customizations: ["No feta"],
-        stationId: "kitchen",
-      },
-    ],
-  },
-  {
-    id: "10",
-    orderNumber: "1243",
-    orderType: "dine_in",
-    tableNumber: "15",
-    customerName: null,
-    status: "pending",
-    createdAt: minutesAgo(6), // Warning - 6 minutes ago
-    stationStatuses: {
-      kitchen: "pending",
-      bar: "pending",
-      dessert: "pending",
-    },
-    items: [
-      {
-        id: "12",
-        name: "Pepperoni",
-        variant: "Large",
-        quantity: 2,
-        customizations: [],
-        stationId: "kitchen",
-      },
-      {
-        id: "13",
-        name: "Chicken Wings",
-        variant: "Spicy",
-        quantity: 1,
-        customizations: [],
-        stationId: "kitchen",
-      },
-      {
-        id: "13a",
-        name: "Beer",
-        variant: "Draft",
-        quantity: 2,
-        customizations: [],
-        stationId: "bar",
-      },
-      {
-        id: "13b",
-        name: "Cheesecake",
-        variant: null,
-        quantity: 1,
-        customizations: [],
-        stationId: "dessert",
-      },
-    ],
-  },
-  {
-    id: "11",
-    orderNumber: "1244",
-    orderType: "pickup",
-    tableNumber: null,
-    customerName: "Lisa",
-    status: "pending",
-    createdAt: minutesAgo(1), // Normal - 1 minute ago
-    stationStatuses: {
-      bar: "pending",
-    },
-    items: [
-      {
-        id: "14",
-        name: "Lemonade",
-        variant: "Large",
-        quantity: 2,
-        customizations: ["No ice"],
-        stationId: "bar",
-      },
-    ],
-  },
-  {
-    id: "12",
-    orderNumber: "1245",
-    orderType: "dine_in",
-    tableNumber: "2",
-    customerName: null,
-    status: "ready",
-    createdAt: minutesAgo(3),
-    stationStatuses: {
-      dessert: "ready",
-    },
-    items: [
-      {
-        id: "15",
-        name: "Chocolate Cake",
-        variant: "Slice",
-        quantity: 2,
-        customizations: ["Extra whipped cream"],
-        stationId: "dessert",
-      },
-    ],
-  },
-  {
-    id: "13",
-    orderNumber: "1246",
-    orderType: "dine_in",
-    tableNumber: "11",
-    customerName: null,
-    status: "preparing",
-    createdAt: minutesAgo(5),
-    stationStatuses: {
-      bar: "preparing",
-    },
-    items: [
-      {
-        id: "16",
-        name: "Mojito",
-        variant: null,
-        quantity: 2,
-        customizations: [],
-        stationId: "bar",
-      },
-    ],
-  },
-  {
-    id: "14",
-    orderNumber: "1247",
-    orderType: "dine_in",
-    tableNumber: "6",
-    customerName: null,
-    status: "pending",
-    createdAt: minutesAgo(11), // Urgent - 11 minutes ago
-    stationStatuses: {
-      kitchen: "pending",
-    },
-    items: [
-      {
-        id: "17",
-        name: "Seafood Deluxe",
-        variant: "Large",
-        quantity: 1,
-        customizations: ["No anchovies"],
-        stationId: "kitchen",
-      },
-    ],
-  },
-];
+const RECALL_MAX_AGE_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * Derive completed orders from KDS view. An order is completed for a station when all
+ * non-voided items for that order/station are status "served". bumpedAt = max(servedAt)
+ * of those items. Survives refresh since view comes from the API.
+ */
+function deriveCompletedOrdersFromView(view: KdsView | null): CompletedOrder[] {
+  if (!view) return [];
+  const fallbackStationId = view.stations[0]?.id ?? "kitchen";
+  const cutoff = Date.now() - RECALL_MAX_AGE_MS;
+  const result: CompletedOrder[] = [];
+
+  for (const order of view.orders) {
+    const items = view.orderItems.filter(
+      (i) => i.orderId === order.id && i.voidedAt == null
+    );
+    if (items.length === 0) continue;
+
+    const byStation = new Map<string, typeof items>();
+    for (const item of items) {
+      const sid = resolveItemStation(item, order, fallbackStationId);
+      const list = byStation.get(sid) ?? [];
+      list.push(item);
+      byStation.set(sid, list);
+    }
+
+    for (const [stationId, stationItems] of byStation) {
+      if (!stationItems.every((i) => i.status === "served")) continue;
+
+      const servedAts = stationItems
+        .map((i) => (i.servedAt ? new Date(i.servedAt).getTime() : 0))
+        .filter((t) => t > 0);
+      const bumpedAt =
+        servedAts.length > 0
+          ? new Date(Math.max(...servedAts)).toISOString()
+          : new Date().toISOString();
+
+      if (new Date(bumpedAt).getTime() < cutoff) continue;
+
+      result.push({
+        id: order.id,
+        orderNumber: order.orderNumber,
+        tableNumber: order.tableNumber,
+        customerName: order.customerName,
+        orderType: order.orderType as "dine_in" | "pickup",
+        bumpedAt,
+        bumpedFromStationId: stationId,
+        createdAt: order.createdAt,
+        items: stationItems.map((i) => ({
+          id: i.id,
+          name: i.itemName,
+          variant: null,
+          quantity: i.quantity,
+          customizations: i.notes ? [i.notes] : [],
+          stationId,
+        })),
+      });
+    }
+  }
+
+  return result
+    .sort((a, b) => new Date(b.bumpedAt).getTime() - new Date(a.bumpedAt).getTime())
+    .slice(0, 20);
+}
 
 export default function KDSPage() {
-  const [orders, setOrders] = useState<Order[]>(initialOrders);
-  const [completedOrders, setCompletedOrders] = useState<CompletedOrder[]>([]);
+  const [locationId, setLocationId] = useState<string | null>(null);
+  useEffect(() => {
+    getCurrentLocationId().then(setLocationId);
+  }, []);
+
+  const { view, loading: kdsLoading, error: kdsError, staleError: kdsStaleError, refresh, patch } = useKdsView(locationId);
+  const [activeStationId, setActiveStationId] = useState<string>("");
+
+  const orders = useMemo(
+    () => kdsViewToOrders(view, activeStationId),
+    [view, activeStationId]
+  );
+  const STATIONS = useMemo(() => stationsFromView(view), [view]);
+
+  // Sync activeStationId when stations change: if current selection invalid, switch to first active
+  const stationIds = useMemo(() => new Set(STATIONS.map((s) => s.id)), [STATIONS]);
+  useEffect(() => {
+    setActiveStationId((prev) => {
+      if (stationIds.has(prev)) return prev;
+      const first = STATIONS[0]?.id;
+      return first ?? "";
+    });
+  }, [stationIds, STATIONS]);
+
   const [toasts, setToasts] = useState<NewOrderToast[]>([]);
   const [modificationToasts, setModificationToasts] = useState<ModificationToastData[]>([]);
   const [highlightedTicketId, setHighlightedTicketId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("tickets");
-  const [activeStationId, setActiveStationId] = useState<string>(STATIONS[0].id);
-  const [kdsLoading, setKdsLoading] = useState(true);
-  const [kdsLiveOrderIds, setKdsLiveOrderIds] = useState<Set<string>>(new Set());
   // Track tickets that just transitioned for animation purposes
   const [transitioningTickets, setTransitioningTickets] = useState<Map<string, { from: OrderStatus; to: OrderStatus }>>(new Map());
   const toastTimeoutRefs = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const modificationClearTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const nextOrderNumber = useRef(1248);
   const nextModificationToastId = useRef(0);
+  const prevOrderIdsRef = useRef<Set<string>>(new Set());
+  const recentModToastKeysRef = useRef<Map<string, number>>(new Map());
+  const prevViewSnapshotRef = useRef<string>("");
+  const hasInitializedNotificationsRef = useRef(false);
   const nextMessageId = useRef(1);
 
   const [stationMessages, setStationMessages] = useState<StationMessage[]>([]);
@@ -617,37 +433,7 @@ export default function KDSPage() {
   const [messageHistoryOpen, setMessageHistoryOpen] = useState(false);
   const [replyToStationId, setReplyToStationId] = useState<string | null>(null);
 
-  // Load KDS orders from API (orders + order_items only; no table-based lookup)
-  useEffect(() => {
-    let cancelled = false;
-    getCurrentLocationId()
-      .then((locationId) => {
-        if (cancelled || !locationId) {
-          setKdsLoading(false);
-          return;
-        }
-        return fetch(`/api/kds/orders?locationId=${encodeURIComponent(locationId)}`)
-          .then((res) => res.json())
-          .then((payload: { ok?: boolean; data?: { orders?: KdsOrderResponse[] }; error?: { message?: string } }) => {
-            if (cancelled) return;
-            const list = payload.ok && payload.data?.orders
-              ? payload.data.orders
-              : [];
-            setOrders(list.map(mapKdsOrderToOrder));
-            setKdsLiveOrderIds(new Set(list.map((o) => o.id)));
-          })
-          .catch(() => {
-            if (!cancelled) setOrders([]);
-          })
-          .finally(() => {
-            if (!cancelled) setKdsLoading(false);
-          });
-      })
-      .catch(() => setKdsLoading(false));
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // KDS data comes from useKdsView (GET /api/kds/view). No separate fetch.
 
   const addToast = useCallback((order: Order) => {
     const toast: NewOrderToast = {
@@ -705,294 +491,88 @@ export default function KDSPage() {
     }
   }, []);
 
-  const simulateNewOrder = useCallback(() => {
-    const orderTypes: Array<"dine_in" | "pickup"> = ["dine_in", "pickup"];
-    const orderType = orderTypes[Math.floor(Math.random() * orderTypes.length)];
-    const isPriority = Math.random() > 0.7; // 30% chance of priority
-    
-    // Random menu items with their stations
-    const menuItems = [
-      { name: "Margherita", variant: "Large", stationId: "kitchen" },
-      { name: "Pepperoni", variant: "Medium", stationId: "kitchen" },
-      { name: "Hawaiian", variant: "Large", stationId: "kitchen" },
-      { name: "BBQ Chicken", variant: "Large", stationId: "kitchen" },
-      { name: "Caesar Salad", variant: null, stationId: "kitchen" },
-      { name: "Garlic Bread", variant: null, stationId: "kitchen" },
-      { name: "Coca-Cola", variant: null, stationId: "bar" },
-      { name: "Lemonade", variant: "Large", stationId: "bar" },
-      { name: "Mojito", variant: null, stationId: "bar" },
-      { name: "Beer", variant: "Draft", stationId: "bar" },
-      { name: "Tiramisu", variant: null, stationId: "dessert" },
-      { name: "Chocolate Cake", variant: "Slice", stationId: "dessert" },
-      { name: "Cheesecake", variant: null, stationId: "dessert" },
-    ];
-
-    // Generate 1-4 random items
-    const itemCount = Math.floor(Math.random() * 4) + 1;
-    const selectedItems: OrderItem[] = [];
-    const stationsInOrder = new Set<string>();
-    
-    for (let i = 0; i < itemCount; i++) {
-      const menuItem = menuItems[Math.floor(Math.random() * menuItems.length)];
-      stationsInOrder.add(menuItem.stationId);
-      selectedItems.push({
-        id: `item-${Date.now()}-${i}`,
-        name: menuItem.name,
-        variant: menuItem.variant,
-        quantity: Math.floor(Math.random() * 2) + 1,
-        customizations: Math.random() > 0.7 ? ["Extra cheese"] : [],
-        stationId: menuItem.stationId,
-      });
+  const suppressModificationForOrderIdsRef = useRef<Set<string>>(new Set());
+  const suppressModificationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleLocalAction = useCallback((orderId: string) => {
+    suppressModificationForOrderIdsRef.current.add(orderId);
+    if (suppressModificationTimeoutRef.current) {
+      clearTimeout(suppressModificationTimeoutRef.current);
     }
+    suppressModificationTimeoutRef.current = setTimeout(() => {
+      suppressModificationForOrderIdsRef.current.clear();
+      suppressModificationTimeoutRef.current = null;
+    }, 1500);
+  }, []);
 
-    // Create station statuses for all stations that have items in this order
-    const stationStatuses: Record<string, OrderStatus> = {};
-    stationsInOrder.forEach(stationId => {
-      stationStatuses[stationId] = "pending";
+  const fallbackStationId = view?.stations[0]?.id ?? "kitchen";
+  const {
+    handleMarkPreparing,
+    handleMarkReady,
+    handleMarkServed,
+    handleVoidItem,
+    handleRecallOrder,
+    handleRefireItem,
+    handleSnooze,
+    handleWakeUp,
+  } = useKdsMutations({
+      patch,
+      refresh,
+      view,
+      currentStationId: activeStationId,
+      fallbackStationId,
+      onLocalAction: handleLocalAction,
     });
-    
-    const newOrder: Order = {
-      id: `new-${Date.now()}`,
-      orderNumber: String(nextOrderNumber.current++),
-      orderType,
-      tableNumber: orderType === "dine_in" ? String(Math.floor(Math.random() * 20) + 1) : null,
-      customerName: orderType === "pickup" ? ["Alex", "Sam", "Jordan", "Taylor"][Math.floor(Math.random() * 4)] : null,
-      status: "pending",
-      createdAt: new Date().toISOString(),
-      isPriority,
-      stationStatuses,
-      items: selectedItems,
-    };
 
-    setOrders((prev) => [...prev, newOrder]);
-    addToast(newOrder);
-  }, [addToast]);
+  const handleAction = useCallback(
+    (
+      orderId: string,
+      newStatus: OrderStatus | "served",
+      itemIds?: string[]
+    ) => {
+      if (newStatus === "preparing") void handleMarkPreparing(orderId, itemIds);
+      else if (newStatus === "ready") void handleMarkReady(orderId, itemIds);
+      else if (newStatus === "served") void handleMarkServed(orderId, itemIds);
+    },
+    [handleMarkPreparing, handleMarkReady, handleMarkServed]
+  );
 
-  const handleAction = (orderId: string, newStatus: OrderStatus) => {
-    // Find the current order to track the transition
-    const currentOrder = orders.find(o => o.id === orderId);
-    const previousStatus = currentOrder?.status;
+  const handleVoidItemForOrder = useCallback(
+    (orderId: string, itemId: string) => void handleVoidItem(orderId, itemId),
+    [handleVoidItem]
+  );
 
-    const previousOrder = currentOrder ? { ...currentOrder } : null;
-
-    // If bumping (remove), add to completedOrders for Recall
-    if (newStatus === "ready" && currentOrder?.status === "ready") {
-      const allStationsReady = currentOrder.stationStatuses
-        ? Object.values(currentOrder.stationStatuses).every(s => s === "ready")
-        : false;
-      if (allStationsReady) {
-        const completed: CompletedOrder = {
-          id: currentOrder.id,
-          orderNumber: currentOrder.orderNumber,
-          tableNumber: currentOrder.tableNumber,
-          customerName: currentOrder.customerName,
-          orderType: currentOrder.orderType,
-          bumpedAt: new Date().toISOString(),
-          createdAt: currentOrder.createdAt,
-          items: currentOrder.items,
-          stationStatuses: currentOrder.stationStatuses,
-        };
-        setCompletedOrders(prev => [completed, ...prev].slice(0, 10));
+  const handleRefire = useCallback(
+    async (orderId: string, item: OrderItem, reason: string) => {
+      const ok = await handleRefireItem(orderId, item.id, reason);
+      if (ok) {
+        setHighlightedTicketId(orderId);
+        setTimeout(() => {
+          const el = document.getElementById(`ticket-${orderId}`);
+          el?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 100);
+        setTimeout(() => setHighlightedTicketId(null), 2000);
       }
-    }
+    },
+    [handleRefireItem]
+  );
 
-    setOrders((prevOrders) => {
-      return prevOrders.map((order) => {
-        if (order.id !== orderId) return order;
-        
-        // Update this station's status
-        const updatedStationStatuses = order.stationStatuses ? {
-          ...order.stationStatuses,
-          [activeStationId]: newStatus,
-        } : undefined;
-
-        // Check if ALL stations are ready (or no stationStatuses = single-station order)
-        const allStationsReady = updatedStationStatuses
-          ? Object.values(updatedStationStatuses).every(status => status === "ready")
-          : true;
-
-        // If bumping from ready column and all stations ready, remove order
-        if (newStatus === "ready" && order.status === "ready" && allStationsReady) {
-          return null as any;
-        }
-
-        // Determine overall order status
-        let overallStatus: OrderStatus = order.status;
-        if (allStationsReady) {
-          overallStatus = "ready";
-        } else if (updatedStationStatuses && Object.values(updatedStationStatuses).some(s => s === "preparing")) {
-          overallStatus = "preparing";
-        } else if (updatedStationStatuses && Object.values(updatedStationStatuses).every(s => s === "pending")) {
-          overallStatus = "pending";
-        }
-
-        return {
-          ...order,
-          status: overallStatus,
-          stationStatuses: updatedStationStatuses,
-        };
-      }).filter(Boolean) as Order[];
-    });
-
-    // Track the transition for animation based on station-specific status change
-    const previousStationStatus = currentOrder?.stationStatuses?.[activeStationId];
-    if (previousStationStatus && previousStationStatus !== newStatus) {
-      setTransitioningTickets(prev => {
-        const updated = new Map(prev);
-        updated.set(orderId, { from: previousStationStatus, to: newStatus });
-        return updated;
-      });
-
-      // Clear the transition state after animation completes (1200ms)
+  const handleRecall = useCallback(
+    async (completed: CompletedOrder) => {
+      const ok = await handleRecallOrder(completed.id, completed.bumpedFromStationId);
+      if (!ok) return;
+      // Completed list is derived from view; patch will update view, so dropdown updates on next render
+      if (activeStationId !== completed.bumpedFromStationId) {
+        setActiveStationId(completed.bumpedFromStationId);
+      }
+      setHighlightedTicketId(completed.id);
       setTimeout(() => {
-        setTransitioningTickets(prev => {
-          const updated = new Map(prev);
-          updated.delete(orderId);
-          return updated;
-        });
-      }, 1200);
-    }
-
-    // Persist order_items status to DB when this order is from the API
-    if (kdsLiveOrderIds.has(orderId) && currentOrder?.items?.length && previousOrder) {
-      Promise.all(
-        currentOrder.items.map((item) =>
-          fetchPos(`/api/orders/${orderId}/items/${item.id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: newStatus, eventSource: "kds" }),
-          }).then(async (res) => {
-            const p = await res.json().catch(() => ({}));
-            return res.ok && p?.ok;
-          })
-        )
-      ).then((oks) => {
-        if (oks.some((ok) => !ok)) {
-          setOrders((prev) => {
-            const exists = prev.some((o) => o.id === orderId);
-            if (exists) return prev.map((o) => (o.id === orderId ? previousOrder : o));
-            return [...prev, previousOrder];
-          });
-          setCompletedOrders((prev) => prev.filter((o) => o.id !== orderId));
-          toast.error("Failed to update item status");
-        }
-      });
-    }
-  };
-
-  const handleSnooze = useCallback((orderId: string, durationSeconds: number) => {
-    const now = new Date();
-    const until = new Date(now.getTime() + durationSeconds * 1000);
-    setOrders((prev) =>
-      prev.map((o) =>
-        o.id !== orderId
-          ? o
-          : {
-              ...o,
-              isSnoozed: true,
-              snoozedAt: now.toISOString(),
-              snoozeUntil: until.toISOString(),
-              snoozeDurationSeconds: durationSeconds,
-            }
-      )
-    );
-  }, []);
-
-  const handleWakeUp = useCallback((orderId: string) => {
-    setOrders((prev) =>
-      prev.map((o) =>
-        o.id !== orderId
-          ? o
-          : {
-              ...o,
-              isSnoozed: false,
-              snoozedAt: undefined,
-              snoozeUntil: undefined,
-              snoozeDurationSeconds: undefined,
-              wasSnoozed: true,
-            }
-      )
-    );
-  }, []);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const now = Date.now();
-      setOrders((prev) =>
-        prev.map((o) => {
-          if (!o.isSnoozed || !o.snoozeUntil) return o;
-          if (new Date(o.snoozeUntil).getTime() > now) return o;
-          return {
-            ...o,
-            isSnoozed: false,
-            snoozedAt: undefined,
-            snoozeUntil: undefined,
-            snoozeDurationSeconds: undefined,
-            wasSnoozed: true,
-          };
-        })
-      );
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const handleRefire = useCallback((orderId: string, item: OrderItem, reason: string) => {
-    const original = orders.find(o => o.id === orderId);
-    if (!original) return;
-    const remakeId = `${orderId}-R`;
-    const remakeOrderNumber = `${original.orderNumber}-R`;
-    const stationId = item.stationId ?? activeStationId;
-    const stationStatuses: Record<string, OrderStatus> = { [stationId]: "pending" };
-    const remakeOrder: Order = {
-      id: remakeId,
-      orderNumber: remakeOrderNumber,
-      orderType: original.orderType,
-      tableNumber: original.tableNumber,
-      customerName: original.customerName,
-      status: "pending",
-      createdAt: new Date().toISOString(),
-      items: [{ ...item, id: `${item.id}-remake` }],
-      stationStatuses,
-      isRemake: true,
-      remakeReason: reason,
-      originalOrderId: orderId,
-    };
-    setOrders(prev => [remakeOrder, ...prev]);
-
-    if (kdsLiveOrderIds.has(orderId)) {
-      fetchPos(`/api/orders/${orderId}/items/${item.id}/refire`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason, eventSource: "kds" }),
-      })
-        .then(async (res) => {
-          const p = await res.json().catch(() => ({}));
-          if (!res.ok || !p?.ok) throw new Error("Refire failed");
-        })
-        .catch(() => {
-          setOrders((prev) => prev.filter((o) => o.id !== remakeId));
-          toast.error("Failed to refire item");
-        });
-    }
-  }, [orders, activeStationId, kdsLiveOrderIds]);
-
-  const handleRecall = useCallback((completed: CompletedOrder) => {
-    const stationIds = completed.stationStatuses
-      ? Object.keys(completed.stationStatuses)
-      : [...new Set(completed.items.map((i) => i.stationId).filter(Boolean))] as string[];
-    const stationStatuses: Record<string, OrderStatus> = Object.fromEntries(
-      stationIds.map((s) => [s, "ready" as OrderStatus])
-    );
-    const recalled: Order = {
-      ...completed,
-      status: "ready",
-      isRecalled: true,
-      recalledAt: new Date().toISOString(),
-      stationStatuses,
-    };
-    setOrders(prev => [recalled, ...prev]);
-    setCompletedOrders(prev => prev.filter(c => c.id !== completed.id));
-  }, []);
+        const el = document.getElementById(`ticket-${completed.id}`);
+        el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 100);
+      setTimeout(() => setHighlightedTicketId(null), 2000);
+    },
+    [handleRecallOrder, activeStationId]
+  );
 
   const handleClearModified = useCallback((orderId: string) => {
     const existing = modificationClearTimeoutsRef.current.get(orderId);
@@ -1000,23 +580,9 @@ export default function KDSPage() {
       clearTimeout(existing);
       modificationClearTimeoutsRef.current.delete(orderId);
     }
-    setOrders((prev) =>
-      prev.map((o) => {
-        if (o.id !== orderId) return o;
-        return {
-          ...o,
-          isModified: false,
-          modifiedAt: undefined,
-          items: o.items.map((item) => ({
-            ...item,
-            isNew: false,
-            isModified: false,
-            changeDetails: undefined,
-          })),
-        };
-      })
-    );
-  }, []);
+    // First slice: no local modified state; refresh to get latest from server if needed
+    refresh(true);
+  }, [refresh]);
 
   const handleModificationToastView = useCallback((orderId: string) => {
     setModificationToasts((prev) => prev.filter((t) => t.orderId !== orderId));
@@ -1030,69 +596,166 @@ export default function KDSPage() {
     setModificationToasts((prev) => prev.filter((t) => t.id !== toastId));
   }, []);
 
-  const simulateOrderModification = useCallback(() => {
-    const candidates = orders.filter(
-      (o) => o.items.some((i) => i.stationId === activeStationId) && !o.isRemake
+
+  // --- New order detection: toast when orders appear (after refresh) ---
+  const orderIdsForStation = useMemo(() => {
+    return new Set(
+      orders
+        .filter((o) => o.items.some((i) => i.stationId === activeStationId))
+        .map((o) => o.id)
     );
-    if (candidates.length === 0) return;
-    const order = candidates[Math.floor(Math.random() * candidates.length)];
-    const stationItems = order.items.filter((i) => i.stationId === activeStationId);
-    const now = new Date().toISOString();
+  }, [orders, activeStationId]);
 
-    const changes: OrderChange[] = [
-      { type: "removed", item: { name: "Pepperoni", quantity: 1, variant: "Medium" } },
-      { type: "added", item: { name: "Hawaiian", quantity: 1, variant: "Large" } },
-      { type: "modified", item: { name: stationItems[0]?.name ?? "Margherita" }, details: "Medium → Large" },
-    ];
-
-    const firstStationItem = stationItems[0];
-    const updatedItems = order.items.map((item) => {
-      if (item.stationId !== activeStationId) return item;
-      if (item.id === firstStationItem?.id) {
-        return { ...item, isModified: true, changeDetails: "Medium → Large" };
+  const prevStationIdRef = useRef<string>(activeStationId);
+  useEffect(() => {
+    if (!view || !activeStationId) return;
+    const currentIds = orderIdsForStation;
+    const stationChanged = prevStationIdRef.current !== activeStationId;
+    prevStationIdRef.current = activeStationId;
+    if (stationChanged || !hasInitializedNotificationsRef.current) {
+      prevOrderIdsRef.current = currentIds;
+      hasInitializedNotificationsRef.current = true;
+      return;
+    }
+    const prev = prevOrderIdsRef.current;
+    const newlyAppeared: Order[] = [];
+    currentIds.forEach((id) => {
+      if (!prev.has(id)) {
+        const order = orders.find((o) => o.id === id);
+        if (order && order.items.some((i) => i.stationId === activeStationId)) {
+          const stationStatus = order.stationStatuses?.[activeStationId] ?? order.status;
+          if (stationStatus === "pending") newlyAppeared.push(order);
+        }
       }
-      return item;
     });
+    prevOrderIdsRef.current = currentIds;
+    newlyAppeared.forEach((order) => addToast(order));
+  }, [orderIdsForStation, orders, activeStationId, view, addToast]);
 
-    const newItem: OrderItem = {
-      id: `new-${Date.now()}`,
-      name: "Hawaiian",
-      variant: "Large",
-      quantity: 1,
-      customizations: [],
-      stationId: activeStationId,
-      isNew: true,
-    };
-    const finalItems = [...updatedItems, newItem];
+  // --- Modification detection: toast when existing orders change (station-scoped) ---
+  const fallbackStationForSnapshot = view?.stations[0]?.id ?? "kitchen";
+  const viewSnapshot = useMemo(() => {
+    if (!view || !activeStationId) return "";
+    const parts: string[] = [];
+    for (const o of view.orders) {
+      const items = view.orderItems.filter((i) => i.orderId === o.id && i.voidedAt == null);
+      const itemStationId = (i: { stationOverride: string | null }) =>
+        i.stationOverride ?? o.station ?? fallbackStationForSnapshot;
+      const stationItems = items.filter((i) => itemStationId(i) === activeStationId);
+      if (stationItems.length === 0) continue;
+      parts.push(`${o.id}:${stationItems.map((i) => `${i.id}:${i.status}`).join(",")}`);
+    }
+    return parts.join("|");
+  }, [view, activeStationId, fallbackStationForSnapshot]);
 
-    const toastId = `mod-${nextModificationToastId.current++}`;
-    setModificationToasts((prev) =>
-      [
-        {
-          id: toastId,
-          orderId: order.id,
-          orderNumber: order.orderNumber,
-          tableNumber: order.tableNumber,
-          customerName: order.customerName,
-          changes,
-        },
-        ...prev,
-      ].slice(0, 5)
-    );
+  const prevModStationIdRef = useRef<string>(activeStationId);
+  useEffect(() => {
+    if (!view || !activeStationId) return;
+    const stationChanged = prevModStationIdRef.current !== activeStationId;
+    prevModStationIdRef.current = activeStationId;
+    if (stationChanged) {
+      prevViewSnapshotRef.current = viewSnapshot;
+      return;
+    }
+    if (!hasInitializedNotificationsRef.current) return;
+    const prev = prevViewSnapshotRef.current;
+    prevViewSnapshotRef.current = viewSnapshot;
+    if (prev === "" || prev === viewSnapshot) return;
 
-    setOrders((prev) =>
-      prev.map((o) => {
-        if (o.id !== order.id) return o;
-        return { ...o, items: finalItems, isModified: true, modifiedAt: now };
-      })
-    );
+    const prevByOrder = new Map<string, Map<string, string>>();
+    for (const part of prev.split("|")) {
+      const colonIdx = part.indexOf(":");
+      const orderId = part.slice(0, colonIdx);
+      const rest = part.slice(colonIdx + 1);
+      if (!orderId) continue;
+      const m = new Map<string, string>();
+      for (const itemPart of rest.split(",")) {
+        const [itemId, status] = itemPart.split(":");
+        if (itemId && status) m.set(itemId, status);
+      }
+      prevByOrder.set(orderId, m);
+    }
 
-    const timeout = setTimeout(() => {
-      handleClearModified(order.id);
-      modificationClearTimeoutsRef.current.delete(order.id);
-    }, 2 * 60 * 1000);
-    modificationClearTimeoutsRef.current.set(order.id, timeout);
-  }, [orders, activeStationId, handleClearModified]);
+    const fallbackStationId = view.stations[0]?.id ?? "kitchen";
+    const itemStation = (i: { stationOverride: string | null }, o: { station?: string | null }) =>
+      i.stationOverride ?? o.station ?? fallbackStationId;
+
+    const currentByOrder = new Map<string, Map<string, string>>();
+    for (const o of view.orders) {
+      const items = view.orderItems.filter((i) => i.orderId === o.id && i.voidedAt == null);
+      const stationItems = items.filter((i) => itemStation(i, o) === activeStationId);
+      if (stationItems.length === 0) continue;
+      const m = new Map<string, string>();
+      for (const i of stationItems) m.set(i.id, i.status);
+      currentByOrder.set(o.id, m);
+    }
+
+    const orderMap = new Map(view.orders.map((o) => [o.id, o]));
+    currentByOrder.forEach((currentItems, orderId) => {
+      const prevItems = prevByOrder.get(orderId);
+      if (!prevItems) return;
+      const changes: import("@/components/kds/KDSModificationToast").OrderChange[] = [];
+      let hasChange = false;
+      const changeSigs: string[] = [];
+      currentItems.forEach((status, itemId) => {
+        const prevStatus = prevItems.get(itemId);
+        if (prevStatus === undefined) {
+          const item = view.orderItems.find((i) => i.id === itemId);
+          if (item) {
+            changes.push({ type: "added", item: { name: item.itemName, quantity: item.quantity } });
+            changeSigs.push(`added:${itemId}`);
+            hasChange = true;
+          }
+        }
+        // Do NOT treat status changes (preparing, ready, served, bump, recall) as "modified".
+        // Lifecycle transitions are normal workflow, not order modifications.
+      });
+      prevItems.forEach((_, itemId) => {
+        if (!currentItems.has(itemId)) {
+          const item = view.orderItems.find((i) => i.id === itemId);
+          if (item) {
+            changes.push({ type: "removed", item: { name: item.itemName } });
+            changeSigs.push(`removed:${itemId}`);
+            hasChange = true;
+          }
+        }
+      });
+      if (hasChange && changes.length > 0) {
+        if (suppressModificationForOrderIdsRef.current.has(orderId)) return;
+        const changesSig = changeSigs.sort().join(",");
+        const modKey = `${orderId}:${changesSig}`;
+        const now = Date.now();
+        const recent = recentModToastKeysRef.current;
+        const recentAt = recent.get(modKey);
+        if (recentAt != null && now - recentAt < 8000) return;
+        for (const [k, t] of recent) {
+          if (now - t >= 8000) recent.delete(k);
+        }
+        recent.set(modKey, now);
+        const order = orderMap.get(orderId);
+        if (order) {
+          setModificationToasts((prev) => {
+            const id = `mod-${nextModificationToastId.current++}`;
+            const toast: ModificationToastData = {
+              id,
+              orderId,
+              orderNumber: order.orderNumber,
+              tableNumber: order.tableNumber,
+              customerName: order.customerName,
+              changes,
+            };
+            return [...prev.slice(-4), toast];
+          });
+        }
+      }
+    });
+  }, [viewSnapshot, view, activeStationId]);
+
+  // --- Completed order recall: derive from view (survives refresh) ---
+  const completedOrdersForRecall = useMemo(
+    () => deriveCompletedOrdersFromView(view),
+    [view]
+  );
 
   // Filter orders to only show items for current station
   const filteredOrders = useMemo(() => {
@@ -1242,13 +905,39 @@ export default function KDSPage() {
       ).length;
     });
     return counts;
-  }, [orders]);
+  }, [orders, STATIONS]);
 
   const activeCount = filteredOrders.length;
+
+  if (!locationId && !kdsLoading) {
+    return (
+      <DisplayModeProvider>
+        <KDSPageLayout>
+          <KDSNoLocationState />
+        </KDSPageLayout>
+      </DisplayModeProvider>
+    );
+  }
+
+  if (kdsError) {
+    return (
+      <DisplayModeProvider>
+        <KDSPageLayout>
+          <KDSErrorState message={kdsError} onRetry={() => refresh()} />
+        </KDSPageLayout>
+      </DisplayModeProvider>
+    );
+  }
 
   return (
     <DisplayModeProvider>
       <KDSPageLayout>
+      {kdsLoading && (
+        <div className="absolute inset-0 bg-black/20 flex items-center justify-center z-10">
+          <span className="text-white font-medium">Loading KDS…</span>
+        </div>
+      )}
+      {kdsStaleError && <KDSStaleBanner onRetry={() => refresh()} />}
       <KDSHeader
         stations={STATIONS}
         activeStationId={activeStationId}
@@ -1260,10 +949,19 @@ export default function KDSPage() {
         onOpenMessages={() => setMessagePanelOpen(true)}
         unreadMessageCount={unreadMessageCount}
         onOpenMessageHistory={() => setMessageHistoryOpen(true)}
-        completedOrders={completedOrders}
+        completedOrders={completedOrdersForRecall}
         onRecall={handleRecall}
+        settingsHref="/kds/settings"
       />
       <div className="flex-1 overflow-hidden flex flex-col">
+        {STATIONS.length === 0 && (
+          <div className={cn("shrink-0 px-4 py-3 text-center text-sm theme-transition", "bg-amber-500/20 text-amber-800 dark:bg-amber-500/25 dark:text-amber-200")}>
+            No stations configured.{" "}
+            <Link href="/kds/settings" className="underline font-medium hover:no-underline">
+              Add stations in KDS settings
+            </Link>
+          </div>
+        )}
         {viewMode === "tickets" ? (
           <>
             {batchSuggestions.length > 0 && batchSuggestions.some((b) => !dismissedBatchKeys.has(batchKey(b))) && (
@@ -1280,6 +978,7 @@ export default function KDSPage() {
                 orders={filteredOrders}
                 onAction={handleAction}
                 onRefire={handleRefire}
+                onVoidItem={handleVoidItemForOrder}
                 onClearModified={handleClearModified}
                 onSnooze={handleSnooze}
                 onWakeUp={handleWakeUp}
@@ -1292,7 +991,7 @@ export default function KDSPage() {
             </div>
           </>
         ) : (
-          <AllDayView orders={allDayOrders} />
+          <AllDayView orders={allDayOrders} stationId={activeStationId} />
         )}
       </div>
       
@@ -1345,15 +1044,6 @@ export default function KDSPage() {
         </div>
       )}
 
-      {/* Demo buttons */}
-      <div className="fixed bottom-4 right-4 flex flex-col gap-2 items-end">
-        <Button onClick={simulateNewOrder} size="lg" className="shadow-lg">
-          Simulate New Order
-        </Button>
-        <Button onClick={simulateOrderModification} size="lg" variant="outline" className="shadow-lg bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/30 dark:hover:bg-amber-900/30">
-          Simulate Order Modified
-        </Button>
-      </div>
       </KDSPageLayout>
     </DisplayModeProvider>
   );

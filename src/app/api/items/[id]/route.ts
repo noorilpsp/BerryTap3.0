@@ -4,6 +4,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { items, categoryItems, itemTags, itemAllergens, itemCustomizations } from "@/db/schema";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { getLocationStations } from "@/lib/kds/getLocationStations";
 import { unstable_cache } from "@/lib/unstable-cache";
 
 export const runtime = "nodejs";
@@ -214,6 +215,44 @@ export async function PUT(
     if (body.useCustomHours !== undefined) updateData.useCustomHours = body.useCustomHours;
     if (body.customSchedule !== undefined) updateData.customSchedule = body.customSchedule;
     if (body.displayOrder !== undefined) updateData.displayOrder = body.displayOrder;
+
+    if (body.defaultStation !== undefined) {
+      const locationId = existingItem.location.id;
+      if (body.defaultStation == null || body.defaultStation === "") {
+        updateData.defaultStation = null;
+      } else {
+        const stationKey = String(body.defaultStation).trim();
+        if (stationKey.length > 50) {
+          return NextResponse.json(
+            { error: "defaultStation must be at most 50 characters" },
+            { status: 400 }
+          );
+        }
+        const activeStations = await getLocationStations(locationId);
+        const isValid = activeStations.some((s) => s.key === stationKey);
+        if (!isValid) {
+          return NextResponse.json(
+            { error: "defaultStation must be an active station key for this location" },
+            { status: 400 }
+          );
+        }
+        updateData.defaultStation = stationKey;
+      }
+    }
+
+    if (body.defaultSubstation !== undefined) {
+      const ALLOWED_SUBSTATIONS = new Set(["grill", "fryer", "cold_prep"]);
+      if (body.defaultSubstation == null || body.defaultSubstation === "") {
+        updateData.defaultSubstation = null;
+      } else {
+        const key = String(body.defaultSubstation).trim().toLowerCase();
+        if (key.length <= 50 && ALLOWED_SUBSTATIONS.has(key)) {
+          updateData.defaultSubstation = key;
+        } else {
+          updateData.defaultSubstation = null;
+        }
+      }
+    }
 
     // Update item
     await db.update(items).set(updateData).where(eq(items.id, itemId));

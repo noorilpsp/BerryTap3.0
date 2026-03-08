@@ -16,6 +16,7 @@ import {
   canMarkItemPreparing,
   canMarkItemReady,
   canServeItem,
+  canUnserveItem,
   canVoidItem,
   canRefireItem,
 } from "@/domain/serviceFlow";
@@ -27,12 +28,12 @@ async function getItemWithOrder(
   orderItemId: string,
   dbOrTx: DbOrTx = db
 ): Promise<{
-  item: { id: string; orderId: string; status: string; voidedAt: Date | null };
+  item: { id: string; orderId: string; status: string; voidedAt: Date | null; sentToKitchenAt: Date | null };
   order: { id: string; sessionId: string | null; locationId: string };
 } | null> {
   const item = await dbOrTx.query.orderItems.findFirst({
     where: eq(orderItemsTable.id, orderItemId),
-    columns: { id: true, orderId: true, status: true, voidedAt: true },
+    columns: { id: true, orderId: true, status: true, voidedAt: true, sentToKitchenAt: true },
   });
   if (!item) return null;
 
@@ -69,9 +70,12 @@ export async function markItemPreparing(
   if (!location) return { ok: false, error: "Unauthorized or location not found" };
 
   const now = new Date();
+  // First kitchen touch: if sentToKitchenAt is null (e.g. pickup/delivery), set it now.
+  // Dine-in items already have it from fireWave.
+  const sentToKitchenAt = item.sentToKitchenAt ?? now;
   await dbOrTx
     .update(orderItemsTable)
-    .set({ status: "preparing", startedAt: now })
+    .set({ status: "preparing", startedAt: now, sentToKitchenAt })
     .where(eq(orderItemsTable.id, orderItemId));
   return { ok: true };
 }
@@ -159,6 +163,50 @@ export async function markItemServed(
       );
     } else {
       await recordSessionEvent(order.locationId, order.sessionId, "served", meta, undefined, dbOrTx);
+    }
+  }
+  return { ok: true };
+}
+
+/** Un-serve (recall) order item: served → ready. Valid only from served. */
+export async function markItemUnserved(
+  orderItemId: string,
+  options?: { eventSource?: EventSource },
+  dbOrTx: DbOrTx = db
+): Promise<{ ok: boolean; error?: string }> {
+  const row = await getItemWithOrder(orderItemId, dbOrTx);
+  if (!row) return { ok: false, error: "Order item not found" };
+
+  const { item, order } = row;
+  const unserveResult = canUnserveItem({ status: item.status, voidedAt: item.voidedAt });
+  if (!unserveResult.ok) {
+    return { ok: false, error: `Invalid transition: ${item.status} → ready (expected served)` };
+  }
+
+  const location = await verifyLocationAccess(order.locationId);
+  if (!location) return { ok: false, error: "Unauthorized or location not found" };
+
+  const now = new Date();
+  await dbOrTx
+    .update(orderItemsTable)
+    .set({ status: "ready", servedAt: null })
+    .where(eq(orderItemsTable.id, orderItemId));
+
+  if (order.sessionId) {
+    const meta = { orderItemId, status: "ready" as const };
+    if (options?.eventSource) {
+      await recordSessionEventWithSource(
+        order.locationId,
+        order.sessionId,
+        "item_recalled",
+        options.eventSource,
+        meta,
+        undefined,
+        undefined,
+        dbOrTx
+      );
+    } else {
+      await recordSessionEvent(order.locationId, order.sessionId, "item_recalled", meta, undefined, dbOrTx);
     }
   }
   return { ok: true };

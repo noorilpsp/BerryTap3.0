@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq, and, desc, gte, lte, inArray } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
-import { orders, orderTimeline, seats } from "@/lib/db/schema/orders";
+import { orders, orderItems, orderTimeline, seats } from "@/lib/db/schema/orders";
 import { devTimer, devSqlLog, devTimeStart, devTimeEnd, runExplain, DEV } from "@/lib/pos/devTimer";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
 import { createOrderFromApi, fireWave } from "@/domain";
@@ -316,7 +316,10 @@ export async function POST(request: NextRequest) {
     if (DEV) devSqlLog("POST /orders", "orders.findFirst (main query)", ordersSql, ordersParams);
 
     const addedItemIds = result.addedItemIds ?? [];
-    const waveNumber = completeOrder?.wave ?? 1;
+    const orderIdToWave = new Map<string, number>(
+      (result.orders ?? []).map((o) => [o.orderId, o.wave])
+    );
+    const defaultWave = completeOrder?.wave ?? 1;
     const sid = result.sessionId ?? null;
 
     const t4 = DEV ? performance.now() : 0;
@@ -332,38 +335,44 @@ export async function POST(request: NextRequest) {
     if (DEV) devTimer("POST /orders seats.findMany", t4, seatRows.length);
     const seatNumberBySeatId = new Map(seatRows.map((s) => [s.id, s.seatNumber]));
 
-    const addedItems =
-      completeOrder?.orderItems
-        ?.filter((oi) => addedItemIds.includes(oi.id))
-        .map((row) => {
-          const seatNumber =
-            row.seatId && seatNumberBySeatId.has(row.seatId)
-              ? seatNumberBySeatId.get(row.seatId)!
-              : (row.seat ?? 0);
-          const status: "held" | "sent" | "cooking" | "ready" | "served" | "void" = row.voidedAt
-            ? "void"
-            : row.status === "served"
-              ? "served"
-              : row.status === "ready"
-                ? "ready"
-                : row.status === "preparing"
-                  ? "cooking"
-                  : row.status === "pending"
-                    ? "held"
-                    : "sent";
-          return {
-            id: row.id,
-            orderId: row.orderId,
-            menuItemId: row.itemId,
-            name: row.itemName ?? "",
-            price: Number(row.itemPrice),
-            quantity: row.quantity ?? 1,
-            status,
-            seatNumber,
-            waveNumber,
-            notes: row.notes,
-          };
-        }) ?? [];
+    const orderItemRows =
+      addedItemIds.length > 0
+        ? await db.query.orderItems.findMany({
+            where: inArray(orderItems.id, addedItemIds),
+            with: { customizations: true },
+          })
+        : [];
+
+    const addedItems = orderItemRows.map((row) => {
+      const waveNumber = orderIdToWave.get(row.orderId) ?? defaultWave;
+      const seatNumber =
+        row.seatId && seatNumberBySeatId.has(row.seatId)
+          ? seatNumberBySeatId.get(row.seatId)!
+          : (row.seat ?? 0);
+      const status: "held" | "sent" | "cooking" | "ready" | "served" | "void" = row.voidedAt
+        ? "void"
+        : row.status === "served"
+          ? "served"
+          : row.status === "ready"
+            ? "ready"
+            : row.status === "preparing"
+              ? "cooking"
+              : row.status === "pending"
+                ? "held"
+                : "sent";
+      return {
+        id: row.id,
+        orderId: row.orderId,
+        menuItemId: row.itemId,
+        name: row.itemName ?? "",
+        price: Number(row.itemPrice),
+        quantity: row.quantity ?? 1,
+        status,
+        seatNumber,
+        waveNumber,
+        notes: row.notes,
+      };
+    });
 
     const affectedWaveNumbers = addedItems.length > 0
       ? [...new Set(addedItems.map((i) => i.waveNumber))].sort((a, b) => a - b)

@@ -48,6 +48,7 @@ export async function POST(
       typeof body.reason === "string" && body.reason.trim().length > 0
         ? body.reason.trim()
         : "Refired via API";
+    const eventSource = body.eventSource === "kds" ? "kds" : "api";
 
     const requestHash = computeRequestHash({ ...body, id, itemId });
     const cached = await getIdempotentResponse({
@@ -100,7 +101,7 @@ export async function POST(
       return posFailure("NOT_FOUND", "Order item not found", { status: 404, correlationId: idempotencyKey });
     }
 
-    const result = await refireItem(itemId, reason, { eventSource: "api" });
+    const result = await refireItem(itemId, reason, { eventSource });
     if (!result.ok) {
       const msg = result.reason ?? "refire_failed";
       const failureBody = { ok: false as const, error: { code: "BAD_REQUEST", message: msg }, correlationId: idempotencyKey };

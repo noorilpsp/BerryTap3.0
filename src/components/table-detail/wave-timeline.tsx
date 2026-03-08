@@ -345,6 +345,7 @@ export function WaveTimeline({
                   <div className="space-y-2">
                     {waveItems.map(({ seatNumber, item }) => {
                       const sCfg = statusConfig[item.status]
+                      const isVoided = item.status === "void"
                       const seatChip = seatNumber === 0 ? `T${tableNumber ?? ""}` : `S${seatNumber}`
                       const seatChipClass =
                         seatNumber === 0
@@ -353,9 +354,15 @@ export function WaveTimeline({
                       return (
                         <div
                           key={item.id}
-                          className="flex items-center gap-3 text-sm"
+                          className={cn(
+                            "flex items-center gap-3 text-sm",
+                            isVoided && "opacity-60"
+                          )}
                         >
-                          <span className={cn("flex-1 font-medium text-foreground", sCfg.strike && "line-through text-muted-foreground")}>
+                          <span className={cn(
+                            "flex-1 font-medium",
+                            (isVoided || sCfg.strike) ? "line-through text-muted-foreground" : "text-foreground"
+                          )}>
                             <span>{item.name}{item.variant && ` (${item.variant})`}</span>
                             <span
                               className={cn(
@@ -365,16 +372,21 @@ export function WaveTimeline({
                             >
                               {seatChip}
                             </span>
+                            {isVoided && (
+                              <span className="ml-2 inline-flex items-center rounded border border-red-500/50 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-red-600 dark:text-red-400">
+                                VOIDED
+                              </span>
+                            )}
                           </span>
                           <span
                             className={cn(
                               "text-xs font-medium",
                               sCfg.colorClass,
-                              sCfg.pulse && "animate-pulse"
+                              !isVoided && sCfg.pulse && "animate-pulse"
                             )}
                           >
                             {sCfg.label}
-                            {item.eta ? ` (~${item.eta}m)` : ""}
+                            {!isVoided && item.eta ? ` (~${item.eta}m)` : ""}
                           </span>
                         </div>
                       )

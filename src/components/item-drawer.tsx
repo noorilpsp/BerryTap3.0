@@ -31,6 +31,7 @@ import { DeleteConfirmationDialog } from "@/components/modals/delete-confirmatio
 import { PhotoUpload } from "@/components/photo-upload"
 import type { Photo } from "@/types/photo"
 import { useMenu } from "@/app/dashboard/(dashboard)/menu/menu-context"
+import { useStationSettingsView } from "@/lib/hooks/useStationSettingsView"
 
 const menuItemSchema = z.object({
   id: z.string().optional(),
@@ -63,6 +64,8 @@ const menuItemSchema = z.object({
     })
     .optional()
     .nullable(),
+  defaultStation: z.string().max(50).optional().nullable(),
+  defaultSubstation: z.string().max(50).optional().nullable(),
 })
 
 interface ItemDrawerProps {
@@ -97,6 +100,8 @@ const getOrderedTimeSlots = (selectedTime: string) => {
 
 export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories }: ItemDrawerProps) {
   const { locationId, customizationGroups, updateCustomizationGroup, deleteCustomizationGroup } = useMenu()
+  const { view: stationView } = useStationSettingsView(locationId)
+  const activeStations = stationView?.stations?.filter((s) => s.isActive) ?? []
   const [activeTab, setActiveTab] = React.useState("basic")
   const [isSaving, setIsSaving] = React.useState(false)
   const [isUploading, setIsUploading] = React.useState(false)
@@ -126,6 +131,8 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
       availabilityMode: "menu-hours" as const,
       customSchedule: [{ days: [], startTime: "7:00 AM", endTime: "11:00 AM" }],
       nutrition: {},
+      defaultStation: null,
+      defaultSubstation: null,
     },
   })
 
@@ -206,6 +213,8 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
           calories: undefined,
           allergens: [],
         },
+        defaultStation: null,
+        defaultSubstation: null,
       })
       setCurrentPhoto(undefined)
     }
@@ -586,6 +595,88 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
                     <p className="text-xs text-gray-500">Base price for this item</p>
                   </div>
                 </div>
+
+                <Separator />
+
+                {/* Prep Station (KDS) */}
+                <div className="space-y-4">
+                  <h3 className="font-semibold">Prep Station (KDS)</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Assign this item to a kitchen display station. Orders will route here by default.
+                  </p>
+                  {activeStations.length === 0 ? (
+                    <div className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground">
+                      No active stations for this location. Add stations in KDS settings to assign items.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <Label htmlFor="defaultStation">KDS Station</Label>
+                      {form.watch("defaultStation") &&
+                        !activeStations.some((s) => s.key === form.watch("defaultStation")) && (
+                          <div className="rounded-md bg-amber-50 dark:bg-amber-950/50 p-2 text-sm text-amber-800 dark:text-amber-200">
+                            Current: <strong>{form.watch("defaultStation")}</strong> (inactive) — choose an active
+                            station or None to update.
+                          </div>
+                        )}
+                      <Select
+                        value={form.watch("defaultStation") ?? "none"}
+                        onValueChange={(v) =>
+                          form.setValue("defaultStation", v === "none" ? null : v, {
+                            shouldDirty: true,
+                            shouldValidate: true,
+                          })
+                        }
+                      >
+                        <SelectTrigger id="defaultStation">
+                          <SelectValue placeholder="Select station (optional)" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">None (use default routing)</SelectItem>
+                          {activeStations.map((s) => (
+                            <SelectItem key={s.id} value={s.key}>
+                              {s.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </div>
+
+                {/* Lane (substation) - only kitchen supports lanes currently */}
+                {form.watch("defaultStation") === "kitchen" && (
+                  <>
+                    <Separator />
+                    <div className="space-y-4">
+                      <h3 className="font-semibold">Kitchen Lane</h3>
+                      <p className="text-sm text-muted-foreground">
+                        Assign to a lane within the kitchen (grill, fryer, cold prep).
+                      </p>
+                      <div className="space-y-2">
+                        <Label htmlFor="defaultSubstation">Lane</Label>
+                        <Select
+                          value={form.watch("defaultSubstation") ?? "none"}
+                          onValueChange={(v) =>
+                            form.setValue("defaultSubstation", v === "none" ? null : v, {
+                              shouldDirty: true,
+                              shouldValidate: true,
+                            })
+                          }
+                        >
+                          <SelectTrigger id="defaultSubstation">
+                            <SelectValue placeholder="Select lane (optional)" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">None (unassigned)</SelectItem>
+                            <SelectItem value="grill">Grill</SelectItem>
+                            <SelectItem value="fryer">Fryer</SelectItem>
+                            <SelectItem value="cold_prep">Cold Prep</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </>
+                )}
 
                 <Separator />
 

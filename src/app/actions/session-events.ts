@@ -14,6 +14,7 @@ export type SessionEventType =
   | "items_added"
   | "order_sent"
   | "item_ready"
+  | "item_recalled"
   | "served"
   | "bill_requested"
   | "payment_completed"

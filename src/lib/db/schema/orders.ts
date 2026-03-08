@@ -9,6 +9,7 @@ import {
   decimal,
   date,
   jsonb,
+  boolean,
   index,
   uniqueIndex,
   check,
@@ -490,6 +491,12 @@ export const orders = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     cancellationReason: text("cancellation_reason"),
+    /** KDS snooze: when snooze was triggered. */
+    snoozedAt: timestamp("snoozed_at", { withTimezone: true }),
+    /** KDS snooze: when it expires. Derived isSnoozed = snoozeUntil != null && snoozeUntil > now. */
+    snoozeUntil: timestamp("snooze_until", { withTimezone: true }),
+    /** KDS: set on wake; prevents re-snooze. */
+    wasSnoozed: boolean("was_snoozed").default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

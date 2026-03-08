@@ -50,6 +50,7 @@ function mapItemStatus(
   return waveFiredAt ? "sent" : "held";
 }
 
+/** Wave is ready only when all non-void items are ready or served (no partial station readiness). */
 function mapWaveStatus(
   items: Array<{ status: PosItemStatus }>,
   firedAt: Date | null
@@ -57,7 +58,10 @@ function mapWaveStatus(
   const active = items.filter((i) => i.status !== "void");
   if (active.length === 0) return "held";
   if (active.every((i) => i.status === "served")) return "served";
-  if (active.some((i) => i.status === "ready")) return "ready";
+  const allReadyOrServed = active.every(
+    (i) => i.status === "ready" || i.status === "served"
+  );
+  if (allReadyOrServed && active.some((i) => i.status === "ready")) return "ready";
   if (active.some((i) => i.status === "cooking")) return "preparing";
   if (firedAt) return "sent";
   return "held";
@@ -287,6 +291,7 @@ export async function GET(
             readyAt: true,
             servedAt: true,
             voidedAt: true,
+            stationOverride: true,
           },
           orderBy: (i, { asc }) => [asc(i.createdAt)],
         })

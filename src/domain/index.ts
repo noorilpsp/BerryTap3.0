@@ -19,6 +19,7 @@ export {
   removeSeatByNumber,
   renameSeat,
   serveItem,
+  unserveItem,
   unlinkOrdersAndReservationsFromTableIds,
   updateItemNotes,
   updateItemQuantity,

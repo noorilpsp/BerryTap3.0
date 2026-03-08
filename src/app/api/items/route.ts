@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { items, categoryItems, itemTags, itemAllergens, itemCustomizations } from "@/db/schema";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
 import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
+import { getLocationStations } from "@/lib/kds/getLocationStations";
 
 export const runtime = "nodejs";
 
@@ -162,6 +163,8 @@ export async function POST(request: NextRequest) {
       tagIds,
       allergenIds,
       customizationGroupIds,
+      defaultStation,
+      defaultSubstation,
     } = body;
 
     if (!locationId || !name || price === undefined) {
@@ -203,6 +206,35 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Validate defaultStation against active location_stations
+    let validatedDefaultStation: string | null = null;
+    if (defaultStation != null && defaultStation !== "") {
+      const stationKey = String(defaultStation).trim();
+      if (stationKey.length > 50) {
+        return posFailure("BAD_REQUEST", "defaultStation must be at most 50 characters", { status: 400 });
+      }
+      const activeStations = await getLocationStations(locationId);
+      const isValid = activeStations.some((s) => s.key === stationKey);
+      if (!isValid) {
+        return posFailure(
+          "BAD_REQUEST",
+          "defaultStation must be an active station key for this location",
+          { status: 400 }
+        );
+      }
+      validatedDefaultStation = stationKey;
+    }
+
+    // Validate defaultSubstation (fixed kitchen lanes for first slice)
+    const ALLOWED_SUBSTATIONS = new Set(["grill", "fryer", "cold_prep"]);
+    let validatedDefaultSubstation: string | null = null;
+    if (defaultSubstation != null && defaultSubstation !== "") {
+      const key = String(defaultSubstation).trim().toLowerCase();
+      if (key.length <= 50 && ALLOWED_SUBSTATIONS.has(key)) {
+        validatedDefaultSubstation = key;
+      }
+    }
+
     // Create item
     const [newItem] = await db
       .insert(items)
@@ -217,6 +249,8 @@ export async function POST(request: NextRequest) {
         useCustomHours: useCustomHours ?? false,
         customSchedule: customSchedule || null,
         displayOrder: displayOrder ?? 0,
+        defaultStation: validatedDefaultStation,
+        defaultSubstation: validatedDefaultSubstation,
       })
       .returning();
 

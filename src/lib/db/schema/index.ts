@@ -17,6 +17,7 @@ import { relations } from "drizzle-orm";
 // Export all tables
 export * from "./merchants";
 export * from "./merchant-locations";
+export * from "./location-stations";
 export * from "./merchant-users";
 export * from "./staff";
 export * from "./invitations";
@@ -29,6 +30,7 @@ export * from "./pos-idempotency";
 // Import tables for relations
 import { merchants } from "./merchants";
 import { merchantLocations } from "./merchant-locations";
+import { locationStations } from "./location-stations";
 import { merchantUsers } from "./merchant-users";
 import { staff } from "./staff";
 import { invitations } from "./invitations";
@@ -85,6 +87,7 @@ export const merchantsRelations = relations(merchants, ({ many }) => ({
  * - One location has many orders
  * - One location has many waitlist entries
  * - One location has many floor plans
+ * - One location has many location_stations (KDS stations)
  */
 export const merchantLocationsRelations = relations(
   merchantLocations,
@@ -93,6 +96,7 @@ export const merchantLocationsRelations = relations(
       fields: [merchantLocations.merchantId],
       references: [merchants.id],
     }),
+    locationStations: many(locationStations),
     staff: many(staff),
     menus: many(menus),
     categories: many(categories),
@@ -191,5 +195,12 @@ export {
 } from "./orders";
 
 export { floorPlansRelations } from "./floor-plans";
+
+export const locationStationsRelations = relations(locationStations, ({ one }) => ({
+  location: one(merchantLocations, {
+    fields: [locationStations.locationId],
+    references: [merchantLocations.id],
+  }),
+}));
 
 

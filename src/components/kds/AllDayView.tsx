@@ -18,6 +18,8 @@ export interface AllDayOrder {
   tableNumber: string | null;
   customerName: string | null;
   status: string;
+  /** Per-station status when order has items at multiple stations. */
+  stationStatuses?: Record<string, string>;
   items: ReadonlyArray<{
     id: string;
     name: string;
@@ -126,7 +128,8 @@ function getItemKey(item: {
 }
 
 export function groupItemsByCategory(
-  orders: AllDayOrder[]
+  orders: AllDayOrder[],
+  stationId?: string
 ): CategoryGroup[] {
   type OrderRef = {
     orderId: string;
@@ -153,6 +156,10 @@ export function groupItemsByCategory(
       const key = getItemKey(item);
       const existing = byKey.get(key);
       const mods = [...(item.customizations ?? [])].sort();
+      const displayStatus =
+        stationId && order.stationStatuses?.[stationId] != null
+          ? order.stationStatuses[stationId]
+          : order.status;
       if (existing) {
         existing.count += item.quantity;
         existing.orderRefs.push({
@@ -160,7 +167,7 @@ export function groupItemsByCategory(
           orderNumber: order.orderNumber,
           tableNumber: order.tableNumber,
           customerName: order.customerName,
-          status: order.status,
+          status: displayStatus,
           quantity: item.quantity,
         });
       } else {
@@ -175,7 +182,7 @@ export function groupItemsByCategory(
               orderNumber: order.orderNumber,
               tableNumber: order.tableNumber,
               customerName: order.customerName,
-              status: order.status,
+              status: displayStatus,
               quantity: item.quantity,
             },
           ],
@@ -250,13 +257,15 @@ function orderRefLabel(ref: {
 
 interface AllDayViewProps {
   orders: AllDayOrder[];
+  /** When set, orderRef labels use station-specific status for mixed-station orders. */
+  stationId?: string;
 }
 
-export function AllDayView({ orders }: AllDayViewProps) {
+export function AllDayView({ orders, stationId }: AllDayViewProps) {
   const { theme, isHighContrast } = useDisplayMode();
   const categories = useMemo(
-    () => groupItemsByCategory(orders),
-    [orders]
+    () => groupItemsByCategory(orders, stationId),
+    [orders, stationId]
   );
   const [openItemKey, setOpenItemKey] = useState<string | null>(null);
   const hc = isHighContrast ? "border-2 border-white" : "";

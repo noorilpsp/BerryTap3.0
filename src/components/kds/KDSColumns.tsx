@@ -1,12 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { KDSColumn } from "./KDSColumn";
 import { PreparingLanes } from "./PreparingLanes";
 import { Button } from "@/components/kds/ui/button";
 import { useDisplayMode } from "./DisplayModeContext";
 import type { Station } from "./StationSwitcher";
 import { cn } from "@/lib/utils";
+import {
+  derivePreparingLaneEntries,
+  getOrdersForReadyColumn,
+  deriveReadySubstationSummary,
+} from "@/lib/kds/derivePreparingLaneEntries";
 
 type OrderStatus = "pending" | "preparing" | "ready";
 
@@ -41,8 +46,9 @@ export interface HighlightedBatch {
 
 interface KDSColumnsProps {
   orders: Order[];
-  onAction: (orderId: string, newStatus: OrderStatus) => void;
+  onAction: (orderId: string, newStatus: OrderStatus | "served", itemIds?: string[]) => void;
   onRefire?: (orderId: string, item: import("./KDSTicket").OrderItem, reason: string) => void;
+  onVoidItem?: (orderId: string, itemId: string) => void;
   onClearModified?: (orderId: string) => void;
   onSnooze?: (orderId: string, durationSeconds: number) => void;
   onWakeUp?: (orderId: string) => void;
@@ -57,6 +63,7 @@ export function KDSColumns({
   orders, 
   onAction, 
   onRefire,
+  onVoidItem,
   onClearModified,
   onSnooze,
   onWakeUp,
@@ -69,19 +76,44 @@ export function KDSColumns({
   const [activeTab, setActiveTab] = useState<OrderStatus>("pending");
   const { theme } = useDisplayMode();
 
-  // Filter by station-specific status if currentStationId is provided
-  const getOrdersByStatus = (status: OrderStatus) => {
-    return orders.filter((order) => {
-      if (currentStationId && order.stationStatuses) {
-        return order.stationStatuses[currentStationId] === status;
-      }
-      return order.status === status;
-    });
-  };
+  const newOrders = useMemo(
+    () =>
+      orders.filter((order) => {
+        if (currentStationId && order.stationStatuses) {
+          return order.stationStatuses[currentStationId] === "pending";
+        }
+        return order.status === "pending";
+      }),
+    [orders, currentStationId]
+  );
 
-  const newOrders = getOrdersByStatus("pending");
-  const preparingOrders = getOrdersByStatus("preparing");
-  const readyOrders = getOrdersByStatus("ready");
+  const preparingOrders = useMemo(
+    () =>
+      orders.filter((order) => {
+        if (currentStationId && order.stationStatuses) {
+          return order.stationStatuses[currentStationId] === "preparing";
+        }
+        return order.status === "preparing";
+      }),
+    [orders, currentStationId]
+  );
+  const readyOrders = useMemo(
+    () => getOrdersForReadyColumn(orders, currentStationId ?? ""),
+    [orders, currentStationId]
+  );
+
+  const preparingLaneEntries = useMemo(() => {
+    if (currentStationId !== "kitchen") return [];
+    return derivePreparingLaneEntries(preparingOrders, currentStationId);
+  }, [preparingOrders, currentStationId]);
+
+  const getReadySubstationSummary = useCallback(
+    (order: Order) =>
+      currentStationId === "kitchen"
+        ? deriveReadySubstationSummary(order, currentStationId)
+        : null,
+    [currentStationId]
+  );
 
   return (
     <>
@@ -94,8 +126,10 @@ export function KDSColumns({
             titleIcon="📋"
             status="pending"
             orders={orders}
+            allOrdersForQueue={orders}
             onAction={onAction}
             onRefire={onRefire}
+            onVoidItem={onVoidItem}
             onClearModified={onClearModified}
             onSnooze={onSnooze}
             onWakeUp={onWakeUp}
@@ -111,14 +145,21 @@ export function KDSColumns({
         <div className="w-[60%] flex-shrink-0 flex flex-col min-h-0">
           <div className={cn("px-1.5 py-1 2xl:px-2 2xl:py-1.5 border-b-2 border-b-blue-400 dark:border-b-blue-500 shrink-0 theme-transition", theme.cardBg, theme.text, theme.columnTitleSeparatorPreparing)}>
             <h2 className="font-semibold text-sm 2xl:text-base text-center uppercase tracking-wide">
-              PREPARING ({preparingOrders.length})
+              PREPARING (
+              {currentStationId === "kitchen"
+                ? preparingLaneEntries.length
+                : preparingOrders.length}
+              )
             </h2>
           </div>
           <div className="flex-1 min-h-0">
             <PreparingLanes
+              useLanes={currentStationId === "kitchen"}
               orders={preparingOrders}
+              laneEntries={preparingLaneEntries}
               onAction={onAction}
               onRefire={onRefire}
+              onVoidItem={onVoidItem}
               onClearModified={onClearModified}
               onSnooze={onSnooze}
               onWakeUp={onWakeUp}
@@ -132,14 +173,16 @@ export function KDSColumns({
           </div>
         </div>
 
-        {/* READY Column - 20% */}
+        {/* READY Column - 20%: merged tickets, one per order, with substation summary for kitchen */}
         <div className="w-[20%] flex-shrink-0">
           <KDSColumn
             title="READY"
             status="ready"
-            orders={orders}
+            orders={readyOrders}
+            allOrdersForQueue={orders}
             onAction={onAction}
             onRefire={onRefire}
+            onVoidItem={onVoidItem}
             onClearModified={onClearModified}
             onSnooze={onSnooze}
             onWakeUp={onWakeUp}
@@ -149,6 +192,10 @@ export function KDSColumns({
             isReady={true}
             transitioningTickets={transitioningTickets}
             highlightedBatch={highlightedBatch}
+            getReadySubstationSummary={
+              currentStationId === "kitchen" ? getReadySubstationSummary : undefined
+            }
+            disableStatusFilter={true}
           />
         </div>
       </div>
@@ -185,9 +232,11 @@ export function KDSColumns({
           <KDSColumn
             title={activeTab === "pending" ? "NEW" : activeTab === "preparing" ? "PREPARING" : "READY"}
             status={activeTab}
-            orders={orders}
+            orders={activeTab === "ready" ? readyOrders : orders}
+            allOrdersForQueue={orders}
             onAction={onAction}
             onRefire={onRefire}
+            onVoidItem={onVoidItem}
             onClearModified={onClearModified}
             onSnooze={onSnooze}
             onWakeUp={onWakeUp}
@@ -197,6 +246,12 @@ export function KDSColumns({
             isMobile={true}
             transitioningTickets={transitioningTickets}
             highlightedBatch={highlightedBatch}
+            getReadySubstationSummary={
+              activeTab === "ready" && currentStationId === "kitchen"
+                ? getReadySubstationSummary
+                : undefined
+            }
+            disableStatusFilter={activeTab === "ready"}
           />
         </div>
       </div>

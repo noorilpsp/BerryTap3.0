@@ -8,6 +8,7 @@ import {
   markItemPreparing,
   markItemReady,
   serveItem,
+  unserveItem,
   updateItemQuantity,
   updateItemNotes,
   voidItem,
@@ -58,7 +59,7 @@ export async function PUT(
     }
 
     const body = await request.json().catch(() => ({}));
-    const { quantity, notes, status, eventSource } = body;
+    const { quantity, notes, status, recall, eventSource } = body;
     const source = normalizeEventSource(eventSource);
 
     const requestHash = computeRequestHash({ ...body, id, itemId });
@@ -142,7 +143,39 @@ export async function PUT(
           });
           return posFailure("BAD_REQUEST", result.reason, { status: 400, correlationId: idempotencyKey });
         }
+        const preparingBody = { ok: true as const, data: { itemId, status: "preparing" as const }, correlationId: idempotencyKey };
+        await saveIdempotentResponse({
+          key: idempotencyKey,
+          userId: user.id,
+          route: ROUTE_PUT,
+          requestHash,
+          responseJson: { body: preparingBody, status: 200 },
+        });
+        return posSuccess(preparingBody.data, { correlationId: idempotencyKey });
       } else if (status === "ready") {
+        if (recall === true) {
+          const result = await unserveItem(itemId, { eventSource: source });
+          if (!result.ok) {
+            const failureBody = { ok: false as const, error: { code: "BAD_REQUEST", message: result.reason }, correlationId: idempotencyKey };
+            await saveIdempotentResponse({
+              key: idempotencyKey,
+              userId: user.id,
+              route: ROUTE_PUT,
+              requestHash,
+              responseJson: { body: failureBody, status: 400 },
+            });
+            return posFailure("BAD_REQUEST", result.reason, { status: 400, correlationId: idempotencyKey });
+          }
+          const readyBody = { ok: true as const, data: { itemId, status: "ready" as const }, correlationId: idempotencyKey };
+          await saveIdempotentResponse({
+            key: idempotencyKey,
+            userId: user.id,
+            route: ROUTE_PUT,
+            requestHash,
+            responseJson: { body: readyBody, status: 200 },
+          });
+          return posSuccess(readyBody.data, { correlationId: idempotencyKey });
+        }
         const result = await markItemReady(itemId, { eventSource: source });
         if (!result.ok) {
           const failureBody = { ok: false as const, error: { code: "BAD_REQUEST", message: result.reason }, correlationId: idempotencyKey };
@@ -155,6 +188,15 @@ export async function PUT(
           });
           return posFailure("BAD_REQUEST", result.reason, { status: 400, correlationId: idempotencyKey });
         }
+        const readyBody = { ok: true as const, data: { itemId, status: "ready" as const }, correlationId: idempotencyKey };
+        await saveIdempotentResponse({
+          key: idempotencyKey,
+          userId: user.id,
+          route: ROUTE_PUT,
+          requestHash,
+          responseJson: { body: readyBody, status: 200 },
+        });
+        return posSuccess(readyBody.data, { correlationId: idempotencyKey });
       } else if (status === "served") {
         const result = await serveItem(itemId, { eventSource: source });
         if (!result.ok) {
@@ -363,7 +405,12 @@ export async function DELETE(
       return posFailure("BAD_REQUEST", msg, { status: 400, correlationId: idempotencyKey });
     }
 
-    const successBody = { ok: true as const, data: { itemId, status: "void" as const }, correlationId: idempotencyKey };
+    const voidedRow = await db.query.orderItems.findFirst({
+      where: eq(orderItems.id, itemId),
+      columns: { voidedAt: true },
+    });
+    const voidedAt = voidedRow?.voidedAt?.toISOString() ?? new Date().toISOString();
+    const successBody = { ok: true as const, data: { itemId, voidedAt }, correlationId: idempotencyKey };
     await saveIdempotentResponse({
       key: idempotencyKey,
       userId: user.id,

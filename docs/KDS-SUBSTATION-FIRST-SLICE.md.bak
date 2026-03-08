@@ -1,0 +1,91 @@
+# KDS Substation / Kitchen Lane — First Slice
+
+## Overview
+
+Allow menu items in the kitchen station to be grouped into substation lanes (grill, fryer, cold prep) within the KDS preparing view. Substation is a lane/bucket inside a station, not a separate KDS screen.
+
+## Chosen Model
+
+- **items.default_substation** (nullable varchar): Fixed set `grill`, `fryer`, `cold_prep`. null = unassigned.
+- **Derivation**: Order item substation comes from menu item via `order_items.item_id` → `items.default_substation`. No persistence on order_items in this slice.
+- **Station** remains the top-level routing key; substation is optional and scoped to the primary station.
+
+## Lane Resolution Rule
+
+**Rule**: Lane = first item that routes to the current tab's station (activeStationId), use its substation.
+
+- **Station-scoped**: subStation is computed per active tab. When viewing kitchen, use first kitchen item's substation; when viewing bar, use first bar item's substation.
+- **Fallback station**: When `order.station` and `item.stationOverride` are null, use the location's first active station (by display_order), not a hardcoded `"kitchen"`.
+- **UNASSIGNED** when: no item routes to the current station, item has no `default_substation`, or `item_id` is null.
+
+## Why First-Item Strategy
+
+- One order can span multiple stations (kitchen + bar). We assign the whole ticket to a single lane for the *current* tab.
+- Using the first matching item is simple, deterministic, and stable.
+- Future: per-item lanes or multi-lane orders would need schema and UI changes.
+
+## Files Changed
+
+| File | Changes |
+|------|---------|
+| `src/lib/db/schema/menus.ts` | Add `defaultSubstation` column |
+| `drizzle/0008_items_default_substation.sql` | Migration |
+| `scripts/run-migration-0008.ts` | Migration runner |
+| `package.json` | `db:migrate:0008` script |
+| `src/types/menu-item.ts` | Add `defaultSubstation` |
+| `src/components/item-drawer.tsx` | Lane select (when station = first active station) |
+| `src/app/dashboard/(dashboard)/menu/menu-context.tsx` | `transformItem`, create/update payloads |
+| `src/app/api/items/route.ts` | POST: validate & insert `defaultSubstation` |
+| `src/app/api/items/[id]/route.ts` | PUT: validate & update `defaultSubstation` |
+| `src/lib/kds/kdsView.ts` | Add `substation` to `KdsOrderItem` |
+| `src/app/api/kds/view/route.ts` | Join items, include substation per order item |
+| `src/app/kds/page.tsx` | Compute `order.subStation` from activeStationId; location-agnostic fallback |
+| `src/components/kds/PreparingLanes.tsx` | Use real `order.subStation`, add unassigned lane, remove hash |
+
+## Data Flow
+
+1. **Menu item edit**: User sets `defaultStation` = kitchen and optionally `defaultSubstation` = grill/fryer/cold_prep.
+2. **Order creation**: Order items reference menu items via `item_id`. Substation is derived at read time.
+3. **KDS view**: `GET /api/kds/view` loads order items with `item.defaultSubstation`, returns `substation` per order item.
+4. **kdsViewToOrders(view, activeStationId)**: For each order, `subStation` = first kitchen item’s substation, or `"unassigned"`.
+5. **PreparingLanes**: Groups orders by `order.subStation` into grill, fryer, cold_prep, unassigned.
+
+## KDS Lane Grouping
+
+- Four lanes: GRILL, FRYER, COLD PREP, UNASSIGNED.
+- Order lane = first kitchen item’s substation.
+- No substation → `unassigned`.
+- Hash-based assignment removed.
+
+## What Works in This Slice
+
+- Menu items with kitchen station can select a lane (grill, fryer, cold prep).
+- KDS kitchen preparing view groups orders by real substation.
+- Orders with no substation appear in UNASSIGNED.
+- Validation: only `grill`, `fryer`, `cold_prep` allowed.
+
+## Limitations (Current Model)
+
+- Fixed substation set (`grill`, `fryer`, `cold_prep`); no per-location config.
+- One lane per order per tab; no per-item lanes or multi-lane orders.
+- Lane picker only for the primary station (first by display order).
+
+## Future Model
+
+- Substation settings UI (custom lanes per location).
+- Substations for non-primary stations.
+- `order_items.substation_override` for overrides.
+- Advanced routing (e.g. by modifier).
+- Bulk lane assignment.
+
+## Migration
+
+```bash
+npm run db:migrate:0008
+```
+
+## Risks / Cleanup
+
+- **Migration required**: Run `npm run db:migrate:0008` before using substation features.
+- **Order items without itemId**: Legacy items (itemId null) have `substation = null` → UNASSIGNED.
+- **API fallback**: When a location has no active stations, KDS view falls back to `"kitchen"` to avoid empty KDS; admin should add stations.

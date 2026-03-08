@@ -18,6 +18,7 @@ import {
   customizationGroups as customizationGroupsTable,
 } from "@/lib/db/schema/menus";
 import { merchantLocations as merchantLocationsTable } from "@/lib/db/schema";
+import { getActiveStationKeysForRouting } from "@/lib/kds/getLocationStations";
 import { floorPlans as floorPlansTable } from "@/lib/db/schema/floor-plans";
 import { canFireWave, canAddItems, canRefireItem, canModifyOrderItem } from "@/domain/serviceFlow";
 import {
@@ -44,6 +45,7 @@ import {
   markItemPreparing as markItemPreparingAction,
   markItemReady as markItemReadyAction,
   markItemServed as markItemServedAction,
+  markItemUnserved as markItemUnservedAction,
   voidItem as voidItemAction,
   refireItem as refireItemAction,
 } from "@/app/actions/order-item-lifecycle";
@@ -94,6 +96,10 @@ export type AddItemInput = {
   seatId?: string;
   notes?: string;
   customizations?: AddItemCustomizationInput[];
+  /** Target wave (1-based). When omitted, items go to the first open wave. */
+  waveNumber?: number;
+  /** Optional station override (e.g. bar, kitchen). When omitted, uses menu item default or fallback. */
+  stationOverride?: string;
 };
 
 export type AddItemsToOrderResult =
@@ -228,6 +234,7 @@ export type CreateOrderFromApiInput = {
     quantity?: number;
     seatId?: string;
     notes?: string | null;
+    waveNumber?: number;
     customizations?: Array<{
       groupId?: string;
       optionId?: string;
@@ -243,7 +250,14 @@ export type CreateOrderFromApiInput = {
 
 /** Result of createOrderFromApi. */
 export type CreateOrderFromApiResult =
-  | { ok: true; orderId: string; sessionId?: string | null; addedItemIds?: string[] }
+  | {
+      ok: true;
+      orderId: string;
+      sessionId?: string | null;
+      addedItemIds?: string[];
+      /** Per-wave results when items were added to multiple waves. */
+      orders?: Array<{ orderId: string; wave: number; addedItemIds: string[] }>;
+    }
   | { ok: false; reason: string };
 
 /**
@@ -301,7 +315,7 @@ export async function createOrderFromApi(
       return { ok: false, reason: "All items must have itemId" };
     }
 
-    const addInputs: AddItemInput[] = itemsWithIds.map((item) => ({
+    const toAddInput = (item: (typeof itemsWithIds)[0]): AddItemInput => ({
       itemId: item.itemId!,
       quantity: Math.max(1, Math.floor(item.quantity ?? 1)),
       seatId: item.seatId ?? undefined,
@@ -314,17 +328,40 @@ export async function createOrderFromApi(
         optionPrice: c.optionPrice,
         quantity: c.quantity,
       })),
-    }));
-
-    const result = await addItemsToOrder(sessionId, addInputs, {
-      eventSource: input.eventSource,
     });
-    if (!result.ok) return { ok: false, reason: result.reason };
+
+    const byWave = new Map<number, AddItemInput[]>();
+    for (const item of itemsWithIds) {
+      const wave = Math.max(1, Math.floor(item.waveNumber ?? 1));
+      const list = byWave.get(wave) ?? [];
+      list.push(toAddInput(item));
+      byWave.set(wave, list);
+    }
+    const waveNumbers = Array.from(byWave.keys()).sort((a, b) => a - b);
+
+    const orders: Array<{ orderId: string; wave: number; addedItemIds: string[] }> = [];
+    const allAddedItemIds: string[] = [];
+    let firstOrderId: string | undefined;
+
+    for (const wave of waveNumbers) {
+      const waveItems = byWave.get(wave) ?? [];
+      if (waveItems.length === 0) continue;
+      const result = await addItemsToOrder(sessionId, waveItems, {
+        eventSource: input.eventSource,
+        targetWaveNumber: wave,
+      });
+      if (!result.ok) return { ok: false, reason: result.reason };
+      orders.push({ orderId: result.orderId, wave: result.wave, addedItemIds: result.addedItemIds });
+      allAddedItemIds.push(...result.addedItemIds);
+      if (firstOrderId == null) firstOrderId = result.orderId;
+    }
+
     return {
       ok: true,
-      orderId: result.orderId,
-      sessionId: result.sessionId,
-      addedItemIds: result.addedItemIds,
+      orderId: firstOrderId ?? "",
+      sessionId,
+      addedItemIds: allAddedItemIds,
+      orders: orders.length > 0 ? orders : undefined,
     };
   }
 
@@ -352,10 +389,11 @@ async function createPickupDeliveryOrder(
             eq(itemsTable.locationId, input.locationId),
             inArray(itemsTable.id, itemIds)
           ),
-          columns: { id: true, name: true, price: true },
+          columns: { id: true, name: true, price: true, defaultStation: true },
         })
       : [];
   const itemMap = new Map(menuItems.map((m) => [m.id, m]));
+  const { validKeys, firstKey } = await getActiveStationKeysForRouting(input.locationId);
 
   const lineItems: PickupDeliveryLineItemInput[] = [];
   let subtotal = 0;
@@ -406,6 +444,33 @@ async function createPickupDeliveryOrder(
 
     const lineTotal = itemPrice * qty + customizationsTotal;
     subtotal += lineTotal;
+    const menuDefault = menuItem?.defaultStation?.trim() || null;
+    let resolvedStation: string;
+    let source: string;
+    if (menuDefault && validKeys.has(menuDefault)) {
+      resolvedStation = menuDefault;
+      source = "menuItem";
+    } else {
+      if (menuDefault && process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.log("[kds-routing] menuItem.defaultStation rejected", {
+          itemId: item.itemId,
+          stationKey: menuDefault,
+          reason: "not in active location_stations",
+        });
+      }
+      resolvedStation = firstKey ?? "kitchen";
+      source = firstKey ? "firstActiveStation" : "fallback";
+      if (process.env.NODE_ENV !== "production" && (menuDefault || firstKey)) {
+        // eslint-disable-next-line no-console
+        console.log("[kds-routing] createPickupDeliveryOrder resolved", {
+          itemId: item.itemId,
+          resolvedStation,
+          source,
+        });
+      }
+    }
+
     lineItems.push({
       itemId: item.itemId ?? null,
       itemName,
@@ -414,6 +479,7 @@ async function createPickupDeliveryOrder(
       customizationsTotal: customizationsTotal.toFixed(2),
       lineTotal: lineTotal.toFixed(2),
       notes: item.notes ?? null,
+      stationOverride: resolvedStation,
       customizations: custRows,
     });
   }
@@ -571,6 +637,12 @@ export type FireWaveOptions = {
   eventSource?: EventSource;
 };
 
+export type AddItemsToOrderOptions = {
+  eventSource?: EventSource;
+  /** Target wave (1-based). When provided, items go to this wave's order. When omitted, items go to the first open wave. */
+  targetWaveNumber?: number;
+};
+
 /**
  * Add items to an order: validate session, find/create active wave, insert order_items.
  * Canonical way to add items to an order.
@@ -578,7 +650,7 @@ export type FireWaveOptions = {
 export async function addItemsToOrder(
   sessionId: string,
   items: AddItemInput[],
-  options?: { eventSource?: EventSource }
+  options?: AddItemsToOrderOptions
 ): Promise<AddItemsToOrderResult> {
   if (items.length === 0) {
     return { ok: false, reason: "no_items", data: { message: "At least one item required" } };
@@ -614,19 +686,32 @@ export async function addItemsToOrder(
   return withTx(async (tx) => {
     let orderId: string;
     let wave: number;
+    const targetWave = options?.targetWaveNumber;
 
-    const openWave = await getOpenWave(sessionId, undefined, undefined, tx);
-
-    if (openWave) {
+    if (targetWave != null && targetWave > 0) {
+      let openWave = await getOpenWave(sessionId, targetWave, undefined, tx);
+      while (!openWave) {
+        const createResult = await createNextWave(sessionId, tx);
+        if (!createResult.ok) {
+          return { ok: false, reason: "create_wave_failed", data: { error: createResult.error } };
+        }
+        openWave = await getOpenWave(sessionId, targetWave, undefined, tx);
+      }
       orderId = openWave.id;
       wave = openWave.wave;
     } else {
-      const createResult = await createNextWave(sessionId, tx);
-      if (!createResult.ok) {
-        return { ok: false, reason: "create_wave_failed", data: { error: createResult.error } };
+      const openWave = await getOpenWave(sessionId, undefined, undefined, tx);
+      if (openWave) {
+        orderId = openWave.id;
+        wave = openWave.wave;
+      } else {
+        const createResult = await createNextWave(sessionId, tx);
+        if (!createResult.ok) {
+          return { ok: false, reason: "create_wave_failed", data: { error: createResult.error } };
+        }
+        orderId = createResult.order.id;
+        wave = createResult.order.wave;
       }
-      orderId = createResult.order.id;
-      wave = createResult.order.wave;
     }
 
     let order = await tx.query.orders.findFirst({
@@ -653,12 +738,13 @@ export async function addItemsToOrder(
 
     const itemIds = [...new Set(items.map((i) => i.itemId))];
     const menuItems = await tx
-    .select({ id: itemsTable.id, name: itemsTable.name, price: itemsTable.price })
+    .select({ id: itemsTable.id, name: itemsTable.name, price: itemsTable.price, defaultStation: itemsTable.defaultStation })
     .from(itemsTable)
     .where(
       and(eq(itemsTable.locationId, orderRef.locationId), inArray(itemsTable.id, itemIds))
     );
     const menuItemMap = new Map(menuItems.map((m) => [m.id, m]));
+    const { validKeys, firstKey } = await getActiveStationKeysForRouting(orderRef.locationId);
 
     const now = new Date();
     const inserted: string[] = [];
@@ -710,6 +796,48 @@ export async function addItemsToOrder(
     const lineTotal = price * qty + customizationsTotal;
     itemCount += qty;
 
+      const inputOverride = input.stationOverride?.trim() || null;
+      const menuDefault = menuItem.defaultStation?.trim() || null;
+      let resolvedStation: string;
+      let source: string;
+      if (inputOverride && validKeys.has(inputOverride)) {
+        resolvedStation = inputOverride;
+        source = "input";
+      } else if (menuDefault && validKeys.has(menuDefault)) {
+        resolvedStation = menuDefault;
+        source = "menuItem";
+      } else {
+        if (inputOverride && process.env.NODE_ENV !== "production") {
+          // eslint-disable-next-line no-console
+          console.log("[kds-routing] input.stationOverride rejected", {
+            orderId: orderRef.id,
+            itemId: input.itemId,
+            stationKey: inputOverride,
+            reason: "not in active location_stations",
+          });
+        }
+        if (menuDefault && process.env.NODE_ENV !== "production") {
+          // eslint-disable-next-line no-console
+          console.log("[kds-routing] menuItem.defaultStation rejected", {
+            orderId: orderRef.id,
+            itemId: input.itemId,
+            stationKey: menuDefault,
+            reason: "not in active location_stations",
+          });
+        }
+        resolvedStation = firstKey ?? "kitchen";
+        source = firstKey ? "firstActiveStation" : "fallback";
+        if (process.env.NODE_ENV !== "production" && (inputOverride || menuDefault || firstKey)) {
+          // eslint-disable-next-line no-console
+          console.log("[kds-routing] addItemsToOrder resolved", {
+            orderId: orderRef.id,
+            itemId: input.itemId,
+            resolvedStation,
+            source,
+          });
+        }
+      }
+
       const seatKey = input.seatId ?? "shared";
       seatBreakdown[seatKey] = (seatBreakdown[seatKey] ?? 0) + qty;
 
@@ -727,6 +855,7 @@ export async function addItemsToOrder(
         lineTotal: lineTotal.toFixed(2),
         notes: input.notes ?? null,
         status: "pending",
+        stationOverride: resolvedStation,
       })
       .returning({ id: orderItemsTable.id });
       if (row) {
@@ -1211,6 +1340,30 @@ export async function serveItem(
       orderId: ctx?.orderId ?? "",
       sessionId: ctx?.sessionId ?? null,
       status: "served",
+    },
+  });
+  return ctx
+    ? { ok: true, itemId: orderItemId, orderId: ctx.orderId, sessionId: ctx.sessionId ?? undefined, affectedItems: [orderItemId] }
+    : { ok: true, itemId: orderItemId, affectedItems: [orderItemId] };
+}
+
+/** Un-serve (recall) an item: served → ready. Valid only from served. */
+export async function unserveItem(
+  orderItemId: string,
+  options?: { eventSource?: EventSource }
+): Promise<ServiceResult> {
+  const result = await markItemUnservedAction(orderItemId, options);
+  if (!result.ok) {
+    return { ok: false, reason: "item_not_served", data: { error: result.error } };
+  }
+  const ctx = await getItemContext(orderItemId);
+  safeEmit({
+    type: "item.status_changed",
+    payload: {
+      itemId: orderItemId,
+      orderId: ctx?.orderId ?? "",
+      sessionId: ctx?.sessionId ?? null,
+      status: "ready",
     },
   });
   return ctx

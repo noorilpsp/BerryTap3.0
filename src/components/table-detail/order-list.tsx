@@ -70,6 +70,7 @@ function ItemCard({
   const touchStartX = useRef(0)
   const [swipeOffset, setSwipeOffset] = useState(0)
   const [swipeAction, setSwipeAction] = useState<"served" | "void" | null>(null)
+  const isVoided = item.status === "void"
 
   function handleTouchStart(e: React.TouchEvent) {
     touchStartX.current = e.touches[0].clientX
@@ -84,7 +85,7 @@ function ItemCard({
     else setSwipeAction(null)
   }
   function handleTouchEnd() {
-    if (swipeAction === "served" && item.status !== "served") {
+    if (swipeAction === "served" && item.status !== "served" && item.status !== "void") {
       onMarkServed(item.id)
     } else if (swipeAction === "void" && item.status !== "void") {
       onVoidItem(item.id)
@@ -95,7 +96,8 @@ function ItemCard({
 
   return (
     <div className="relative overflow-hidden rounded-lg">
-      {/* Swipe reveal backgrounds */}
+      {/* Swipe reveal backgrounds - hidden for voided */}
+      {!isVoided && (
       <div className="absolute inset-0 flex items-center justify-between px-4">
         <div className={cn(
           "flex items-center gap-1 text-xs font-medium transition-opacity",
@@ -112,6 +114,7 @@ function ItemCard({
           Served
         </div>
       </div>
+      )}
 
       <div
         className={cn(
@@ -120,12 +123,12 @@ function ItemCard({
           cfg.strike && "opacity-50"
         )}
         style={{
-          transform: `translateX(${swipeOffset}px)`,
+          transform: isVoided ? undefined : `translateX(${swipeOffset}px)`,
           transition: swipeOffset === 0 ? "transform 0.2s ease" : "none",
         }}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
+        onTouchStart={isVoided ? undefined : handleTouchStart}
+        onTouchMove={isVoided ? undefined : handleTouchMove}
+        onTouchEnd={isVoided ? undefined : handleTouchEnd}
       >
         {/* Top row: name + price */}
         <div className="flex items-start justify-between gap-2">
@@ -140,6 +143,11 @@ function ItemCard({
                   <span className="text-muted-foreground"> ({item.variant})</span>
                 )}
               </span>
+              {isVoided && (
+                <span className="inline-flex items-center rounded border border-red-500/50 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-red-600 dark:text-red-400 shrink-0">
+                  VOIDED
+                </span>
+              )}
               {showWaveChip && waveLabel && (
                 <span className="inline-flex h-5 items-center rounded border border-amber-400/40 bg-amber-500/10 px-1.5 text-[10px] font-semibold text-amber-200">
                   {waveLabel}
@@ -343,11 +351,15 @@ function ByWaveView({
 }) {
   const waveGroups = new Map<number, { seatNumber: number; item: OrderItem }[]>()
   const unassigned: { seatNumber: number; item: OrderItem }[] = []
+  const voided: { seatNumber: number; item: OrderItem }[] = []
 
   for (const seat of seats) {
     if (!matchesTargetFilter(seat.number, targetFilter)) continue
     for (const item of seat.items) {
-      if (item.status === "void") continue
+      if (item.status === "void") {
+        voided.push({ seatNumber: seat.number, item })
+        continue
+      }
       if (!matchesWaveFilter(item, waveFilter)) continue
       const waveNumber = getWaveNumber(item)
       if (waveNumber === null) {
@@ -361,7 +373,10 @@ function ByWaveView({
   }
   for (const item of tableItems) {
     if (!matchesTargetFilter(0, targetFilter)) continue
-    if (item.status === "void") continue
+    if (item.status === "void") {
+      voided.push({ seatNumber: 0, item })
+      continue
+    }
     if (!matchesWaveFilter(item, waveFilter)) continue
     const waveNumber = getWaveNumber(item)
     if (waveNumber === null) {
@@ -447,6 +462,29 @@ function ByWaveView({
           </div>
         </div>
       )}
+
+      {voided.length > 0 && (
+        <div>
+          <div className="pb-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Voided
+            </h3>
+          </div>
+          <div className="space-y-2">
+            {voided.map(({ seatNumber, item }) => (
+              <ItemCard
+                key={item.id}
+                item={item}
+                seatNumber={seatNumber}
+                tableNumber={tableNumber}
+                showSeat
+                onMarkServed={onMarkServed}
+                onVoidItem={onVoidItem}
+              />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -469,11 +507,15 @@ function getWaveNumber(item: OrderItem): number | null {
   return null
 }
 
+/** Wave is ready only when all non-void items are ready or served (no partial station readiness). */
 function getWaveProgressStatus(items: OrderItem[]): "held" | "sent" | "cooking" | "ready" | "served" {
   const activeItems = items.filter((item) => item.status !== "void")
   if (activeItems.length === 0) return "held"
   if (activeItems.every((item) => item.status === "served")) return "served"
-  if (activeItems.some((item) => item.status === "ready")) return "ready"
+  const allReadyOrServed = activeItems.every(
+    (item) => item.status === "ready" || item.status === "served"
+  )
+  if (allReadyOrServed && activeItems.some((item) => item.status === "ready")) return "ready"
   if (activeItems.some((item) => item.status === "cooking")) return "cooking"
   if (activeItems.some((item) => item.status === "sent")) return "sent"
   return "held"
