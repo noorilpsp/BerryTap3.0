@@ -46,12 +46,22 @@ export type KdsOrderItem = {
   seatNumber: number | null;
   /** Kitchen lane from menu item default_substation (grill, fryer, cold_prep). null = unassigned. */
   substation: string | null;
+  /** Work group for split tickets. null = main; non-null = split group. */
+  prepGroup: string | null;
+};
+
+export type KdsSubstation = {
+  id: string;
+  key: string;
+  name: string;
+  displayOrder: number;
 };
 
 export type KdsStation = {
   id: string;
   name: string;
   displayOrder?: number;
+  substations?: KdsSubstation[];
 };
 
 export type KdsDelay = {

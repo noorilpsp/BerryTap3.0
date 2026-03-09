@@ -552,6 +552,8 @@ export const orderItems = pgTable(
     servedAt: timestamp("served_at", { withTimezone: true }),
     voidedAt: timestamp("voided_at", { withTimezone: true }),
     refiredAt: timestamp("refired_at", { withTimezone: true }),
+    /** Work group for split tickets. null = main; non-null = split group (e.g. "grill", "salad"). */
+    prepGroup: varchar("prep_group", { length: 50 }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

@@ -2,11 +2,19 @@ import { NextRequest } from "next/server";
 import { eq, asc } from "drizzle-orm";
 import { db } from "@/db";
 import { locationStations } from "@/lib/db/schema/location-stations";
+import { locationSubstations } from "@/lib/db/schema/location-substations";
 import { merchantLocations } from "@/lib/db/schema/merchant-locations";
 import { verifyLocationAccess } from "@/lib/location-access";
 import { posSuccess, posFailure, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 
 export const runtime = "nodejs";
+
+export type KdsStationSettingsSubstation = {
+  id: string;
+  key: string;
+  name: string;
+  displayOrder: number;
+};
 
 export type KdsStationSettingsStation = {
   id: string;
@@ -14,6 +22,7 @@ export type KdsStationSettingsStation = {
   name: string;
   displayOrder: number;
   isActive: boolean;
+  substations: KdsStationSettingsSubstation[];
 };
 
 export type KdsStationSettingsView = {
@@ -52,6 +61,12 @@ export async function GET(request: NextRequest) {
       where: eq(locationStations.locationId, locationId),
       columns: { id: true, key: true, name: true, displayOrder: true, isActive: true },
       orderBy: [asc(locationStations.displayOrder), asc(locationStations.key)],
+      with: {
+        substations: {
+          columns: { id: true, key: true, name: true, displayOrder: true },
+          orderBy: [asc(locationSubstations.displayOrder), asc(locationSubstations.key)],
+        },
+      },
     });
 
     const data: KdsStationSettingsView = {
@@ -62,6 +77,12 @@ export async function GET(request: NextRequest) {
         name: r.name,
         displayOrder: r.displayOrder,
         isActive: r.isActive,
+        substations: (r.substations ?? []).map((s) => ({
+          id: s.id,
+          key: s.key,
+          name: s.name,
+          displayOrder: s.displayOrder,
+        })),
       })),
     };
 

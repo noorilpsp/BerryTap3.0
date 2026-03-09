@@ -12,6 +12,7 @@ import {
   getOrdersForReadyColumn,
   deriveReadySubstationSummary,
 } from "@/lib/kds/derivePreparingLaneEntries";
+import { deriveNewWorkGroupEntries } from "@/lib/kds/deriveNewWorkGroupEntries";
 
 type OrderStatus = "pending" | "preparing" | "ready";
 
@@ -35,6 +36,10 @@ interface Order {
   items: OrderItem[];
   stationStatuses?: Record<string, OrderStatus>;
   isRemake?: boolean;
+  /** Work group for split tickets. Set for NEW work-group entries. */
+  prepGroup?: string | null;
+  /** Order-level station statuses (for waiting-on when work-group entry). */
+  stationStatusesFull?: Record<string, OrderStatus>;
 }
 
 export interface HighlightedBatch {
@@ -44,6 +49,10 @@ export interface HighlightedBatch {
   variant: string | null;
 }
 
+type StationWithSubstations = Station & {
+  substations?: Array<{ id: string; key: string; name: string; displayOrder: number }>;
+};
+
 interface KDSColumnsProps {
   orders: Order[];
   onAction: (orderId: string, newStatus: OrderStatus | "served", itemIds?: string[]) => void;
@@ -52,9 +61,11 @@ interface KDSColumnsProps {
   onClearModified?: (orderId: string) => void;
   onSnooze?: (orderId: string, durationSeconds: number) => void;
   onWakeUp?: (orderId: string) => void;
+  onSplitToNewTicket?: (orderId: string, itemId: string) => void;
+  onUnsplitToMain?: (orderId: string, itemId: string) => void;
   highlightedTicketId?: string | null;
   currentStationId?: string;
-  stations?: Station[];
+  stations?: StationWithSubstations[];
   transitioningTickets?: Map<string, { from: OrderStatus; to: OrderStatus }>;
   highlightedBatch?: HighlightedBatch | null;
 }
@@ -67,6 +78,8 @@ export function KDSColumns({
   onClearModified,
   onSnooze,
   onWakeUp,
+  onSplitToNewTicket,
+  onUnsplitToMain,
   highlightedTicketId,
   currentStationId,
   stations,
@@ -78,12 +91,7 @@ export function KDSColumns({
 
   const newOrders = useMemo(
     () =>
-      orders.filter((order) => {
-        if (currentStationId && order.stationStatuses) {
-          return order.stationStatuses[currentStationId] === "pending";
-        }
-        return order.status === "pending";
-      }),
+      deriveNewWorkGroupEntries(orders, currentStationId ?? ""),
     [orders, currentStationId]
   );
 
@@ -97,42 +105,63 @@ export function KDSColumns({
       }),
     [orders, currentStationId]
   );
+  const currentStation = useMemo(
+    () => stations?.find((s) => s.id === currentStationId),
+    [stations, currentStationId]
+  );
+  const preparingLaneKeys = useMemo(
+    () => currentStation?.substations?.map((s) => s.key) ?? [],
+    [currentStation]
+  );
+
   const readyOrders = useMemo(
-    () => getOrdersForReadyColumn(orders, currentStationId ?? ""),
-    [orders, currentStationId]
+    () =>
+      getOrdersForReadyColumn(orders, currentStationId ?? "", preparingLaneKeys),
+    [orders, currentStationId, preparingLaneKeys]
   );
 
   const preparingLaneEntries = useMemo(() => {
-    if (currentStationId !== "kitchen") return [];
-    return derivePreparingLaneEntries(preparingOrders, currentStationId);
-  }, [preparingOrders, currentStationId]);
+    return derivePreparingLaneEntries(
+      preparingOrders,
+      currentStationId ?? "",
+      preparingLaneKeys.length > 0 ? preparingLaneKeys : ["unassigned"]
+    );
+  }, [preparingOrders, currentStationId, preparingLaneKeys]);
 
   const getReadySubstationSummary = useCallback(
     (order: Order) =>
-      currentStationId === "kitchen"
-        ? deriveReadySubstationSummary(order, currentStationId)
+      preparingLaneKeys.length > 0
+        ? deriveReadySubstationSummary(
+            order,
+            currentStationId ?? "",
+            preparingLaneKeys
+          )
         : null,
-    [currentStationId]
+    [currentStationId, preparingLaneKeys]
   );
 
   return (
     <>
       {/* Desktop/Tablet: Three columns with 20-60-20 proportions */}
       <div className={cn("hidden md:flex h-full theme-transition", theme.columnDivide)}>
-        {/* NEW Column - 20% */}
+        {/* NEW Column - 20%: work-group tickets */}
         <div className="w-[20%] flex-shrink-0">
           <KDSColumn
             title="NEW"
             titleIcon="📋"
             status="pending"
-            orders={orders}
+            orders={newOrders}
             allOrdersForQueue={orders}
+            useWorkGroupKey={true}
             onAction={onAction}
             onRefire={onRefire}
             onVoidItem={onVoidItem}
             onClearModified={onClearModified}
             onSnooze={onSnooze}
             onWakeUp={onWakeUp}
+            onSplitToNewTicket={onSplitToNewTicket}
+            onUnsplitToMain={onUnsplitToMain}
+            allowSplitUnsplit={true}
             highlightedTicketId={highlightedTicketId}
             currentStationId={currentStationId}
             stations={stations}
@@ -145,16 +174,24 @@ export function KDSColumns({
         <div className="w-[60%] flex-shrink-0 flex flex-col min-h-0">
           <div className={cn("px-1.5 py-1 2xl:px-2 2xl:py-1.5 border-b-2 border-b-blue-400 dark:border-b-blue-500 shrink-0 theme-transition", theme.cardBg, theme.text, theme.columnTitleSeparatorPreparing)}>
             <h2 className="font-semibold text-sm 2xl:text-base text-center uppercase tracking-wide">
-              PREPARING (
-              {currentStationId === "kitchen"
-                ? preparingLaneEntries.length
-                : preparingOrders.length}
-              )
+            PREPARING ({preparingLaneEntries.length})
             </h2>
           </div>
           <div className="flex-1 min-h-0">
             <PreparingLanes
-              useLanes={currentStationId === "kitchen"}
+              useLanes={preparingLaneKeys.length > 0}
+              onSplitToNewTicket={onSplitToNewTicket}
+              onUnsplitToMain={onUnsplitToMain}
+              subStations={
+                currentStation?.substations?.map((s, i) => {
+                  const tints = ["bg-orange-500/5", "bg-amber-500/5", "bg-teal-500/5", "bg-blue-500/5", "bg-purple-500/5"];
+                  return {
+                    id: s.key,
+                    name: s.name.toUpperCase(),
+                    tint: tints[i % tints.length],
+                  };
+                }) ?? []
+              }
               orders={preparingOrders}
               laneEntries={preparingLaneEntries}
               onAction={onAction}
@@ -186,6 +223,7 @@ export function KDSColumns({
             onClearModified={onClearModified}
             onSnooze={onSnooze}
             onWakeUp={onWakeUp}
+            allowSplitUnsplit={false}
             highlightedTicketId={highlightedTicketId}
             currentStationId={currentStationId}
             stations={stations}
@@ -193,7 +231,7 @@ export function KDSColumns({
             transitioningTickets={transitioningTickets}
             highlightedBatch={highlightedBatch}
             getReadySubstationSummary={
-              currentStationId === "kitchen" ? getReadySubstationSummary : undefined
+              preparingLaneKeys.length > 0 ? getReadySubstationSummary : undefined
             }
             disableStatusFilter={true}
           />
@@ -232,7 +270,7 @@ export function KDSColumns({
           <KDSColumn
             title={activeTab === "pending" ? "NEW" : activeTab === "preparing" ? "PREPARING" : "READY"}
             status={activeTab}
-            orders={activeTab === "ready" ? readyOrders : orders}
+            orders={activeTab === "ready" ? readyOrders : activeTab === "pending" ? newOrders : orders}
             allOrdersForQueue={orders}
             onAction={onAction}
             onRefire={onRefire}
@@ -240,14 +278,18 @@ export function KDSColumns({
             onClearModified={onClearModified}
             onSnooze={onSnooze}
             onWakeUp={onWakeUp}
+            onSplitToNewTicket={onSplitToNewTicket}
+            onUnsplitToMain={onUnsplitToMain}
+            allowSplitUnsplit={activeTab !== "ready"}
             highlightedTicketId={highlightedTicketId}
             currentStationId={currentStationId}
             stations={stations}
             isMobile={true}
+            useWorkGroupKey={activeTab === "pending"}
             transitioningTickets={transitioningTickets}
             highlightedBatch={highlightedBatch}
             getReadySubstationSummary={
-              activeTab === "ready" && currentStationId === "kitchen"
+              activeTab === "ready" && preparingLaneKeys.length > 0
                 ? getReadySubstationSummary
                 : undefined
             }

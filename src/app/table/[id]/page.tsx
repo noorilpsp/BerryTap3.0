@@ -58,6 +58,7 @@ import { storeTablesToFloorTables } from "@/lib/floor-map-data"
 import { fetchPos, getPosCorrelationId, makeIdempotencyKey } from "@/lib/pos/fetchPos"
 import { fireAndForget } from "@/lib/pos/fireAndForget"
 import { posDebugError } from "@/lib/pos/posDebugError"
+import { TablePageSkeleton } from "@/components/table-detail/TablePageSkeleton"
 
 function getAutoSelectedOptions(item: MenuItem): Record<string, string> {
   const options: Record<string, string> = {}
@@ -340,6 +341,7 @@ function projectTableView(view: TableView | null, tableId: string): {
   seatIdByNumber: Map<number, string>
   itemOrderIds: Map<string, string>
 } {
+  /** null view = unresolved/loading. Do not use returned uiMode for rendering; gate on view !== null. */
   if (!view) {
     return {
       table: createEmptyTableDetail(tableId),
@@ -490,7 +492,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   const [armedWaveDelete, setArmedWaveDelete] = useState<number | null>(null)
   const [armedSeatDelete, setArmedSeatDelete] = useState<number | null>(null)
   const [seatRenameState, setSeatRenameState] = useState<{ seatNumber: number; input: string } | null>(null)
-  const [tableViewLoading, setTableViewLoading] = useState(false)
+  const [tableViewLoading, setTableViewLoading] = useState(true)
   const [tableViewError, setTableViewError] = useState<string | null>(null)
   const [kitchenDelayDismissed, setKitchenDelayDismissed] = useState(false)
   const waveHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -2427,8 +2429,12 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     setOrderItems([])
   }), [activeStoreTable, currentLocationId, id, mutateThenRefresh, openOrderForTable])
 
+  if (tableView === null && !tableViewError) {
+    return <TablePageSkeleton />
+  }
+
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background pb-14">
+    <div className="flex h-full min-h-0 flex-col bg-background pb-14 animate-[fade-in_0.15s_ease-out]">
       {/* Top Bar */}
       <TopBar
         table={table}
@@ -2444,7 +2450,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
           </Button>
         </div>
       )}
-      {tableViewLoading && (
+      {tableView !== null && tableViewLoading && (
         <div className="mx-3 mt-2 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground md:mx-4">
           Loading table...
         </div>

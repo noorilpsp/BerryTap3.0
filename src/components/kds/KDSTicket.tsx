@@ -4,7 +4,7 @@ import { Button } from "@/components/kds/ui/button";
 import { Card } from "@/components/ui/card";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion } from "framer-motion";
-import { RotateCcw, AlertTriangle, Ban } from "lucide-react";
+import { RotateCcw, AlertTriangle, Ban, SplitSquareVertical, Merge } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -65,6 +65,8 @@ interface Order {
   snoozeUntil?: string;
   snoozeDurationSeconds?: number;
   wasSnoozed?: boolean;
+  /** Work group for split tickets. null/"main" = main. */
+  prepGroup?: string | null;
 }
 
 const REFIRE_REASONS = ["Burned", "Dropped", "Wrong", "Other"] as const;
@@ -134,6 +136,8 @@ interface KDSTicketProps {
   onAction: (orderId: string, newStatus: ActionStatus, itemIds?: string[]) => void;
   onRefire?: (orderId: string, item: OrderItem, reason: string) => void;
   onVoidItem?: (orderId: string, itemId: string) => void;
+  onSplitToNewTicket?: (orderId: string, itemId: string) => void;
+  onUnsplitToMain?: (orderId: string, itemId: string) => void;
   onClearModified?: (orderId: string) => void;
   priority?: number | null;
   isHighlighted?: boolean;
@@ -152,6 +156,10 @@ interface KDSTicketProps {
   isBatchHighlighted?: boolean;
   onSnooze?: (orderId: string, durationSeconds: number) => void;
   onWakeUp?: (orderId: string) => void;
+  /** When true, show Split / Move back to main in item menu. False for READY. */
+  allowSplitUnsplit?: boolean;
+  onSplitToNewTicket?: (orderId: string, itemId: string) => void;
+  onUnsplitToMain?: (orderId: string, itemId: string) => void;
   /** READY column + kitchen: substation progress summary */
   readySubstationSummary?: {
     readyLanes: string[];
@@ -249,6 +257,9 @@ export function KDSTicket({
   isBatchHighlighted = false,
   onSnooze,
   onWakeUp,
+  allowSplitUnsplit = false,
+  onSplitToNewTicket,
+  onUnsplitToMain,
   readySubstationSummary,
 }: KDSTicketProps) {
   const statusForButton =
@@ -425,7 +436,11 @@ export function KDSTicket({
     <motion.div
       id={`ticket-${order.id}`}
       layout={!(isLanding && (columnAccent === "ready" || columnAccent === "preparing"))}
-      layoutId={`${order.id}-${columnAccent ?? "preparing"}`}
+      layoutId={
+        order.prepGroup != null && order.prepGroup !== "main"
+          ? `${order.id}::${order.prepGroup}-${columnAccent ?? "preparing"}`
+          : `${order.id}-${columnAccent ?? "preparing"}`
+      }
       initial={skipEntranceAnimation ? getAnimateState() : getInitialAnimation()}
       animate={getAnimateState()}
       exit={
@@ -506,8 +521,16 @@ export function KDSTicket({
             </span>
           </div>
         )}
+        {/* Split work-group badge (when not main) */}
+        {order.prepGroup != null && order.prepGroup !== "main" && (
+          <div className={cn("px-2 pt-1 pb-0 2xl:px-3 2xl:pt-1 2xl:pb-0 border-b theme-transition", theme.border, "bg-blue-500/10 dark:bg-blue-500/15")}>
+            <span className="text-xs 2xl:text-sm font-semibold text-blue-700 dark:text-blue-300">
+              Split ticket
+            </span>
+          </div>
+        )}
         {/* COMPACT METADATA ROW - table/order prominent for expo scanning */}
-        <div className={cn("px-2 pb-0 2xl:px-3 2xl:pb-0 border-b theme-transition", theme.metadataBg, theme.border, theme.textMuted, ((order.isFullRemake ?? order.isRemake) || order.isRecalled || order.isModified) ? "-mt-4 pt-0 2xl:-mt-5 2xl:pt-0" : "pt-1.5 2xl:pt-2")}>
+        <div className={cn("px-2 pb-0 2xl:px-3 2xl:pb-0 border-b theme-transition", theme.metadataBg, theme.border, theme.textMuted, ((order.isFullRemake ?? order.isRemake) || order.isRecalled || order.isModified || (order.prepGroup != null && order.prepGroup !== "main")) ? "-mt-4 pt-0 2xl:-mt-5 2xl:pt-0" : "pt-1.5 2xl:pt-2")}>
           <div className={cn("grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-sm 2xl:text-base leading-snug -translate-y-0.5", theme.textMuted)}>
             <span className="min-w-0 flex items-center gap-1.5 shrink-0">
               <span className={cn("shrink-0 opacity-80", theme.textMuted)} aria-label={orderTypeBadge.label} title={orderTypeBadge.label}>{orderTypeBadge.icon}</span>
@@ -581,16 +604,19 @@ export function KDSTicket({
           {order.items.map((item) => {
             const isVoided = Boolean(item.voidedAt);
             const canRefire = Boolean(onRefire && !item.refiredAt && !isVoided);
+            const canSplit = allowSplitUnsplit && (order.prepGroup == null || order.prepGroup === "main") && Boolean(onSplitToNewTicket);
+            const canUnsplit = allowSplitUnsplit && order.prepGroup != null && order.prepGroup !== "main" && Boolean(onUnsplitToMain);
+            const canShowItemMenu = !isVoided && (canRefire || onVoidItem || canSplit || canUnsplit);
             const itemAllergenLabel = getItemAllergenLabel(item, order.specialInstructions);
             const itemKey = `${item.name}|${item.variant ?? ""}`;
             const isBatchItem = Boolean(batchItemKey && batchItemKey === itemKey);
             const onLongPress = () => {
-              if (!canRefire) return;
+              if (!canShowItemMenu) return;
               setRefireContextItem(item);
             };
             const onTouchStart = (e: React.TouchEvent) => {
               e.stopPropagation();
-              if (!canRefire) return;
+              if (!canShowItemMenu) return;
               longPressTargetRef.current = item;
               longPressRef.current = setTimeout(onLongPress, 300);
             };
@@ -604,7 +630,7 @@ export function KDSTicket({
             };
             const onMouseDown = (e: React.MouseEvent) => {
               e.stopPropagation();
-              if (!canRefire) return;
+              if (!canShowItemMenu) return;
               longPressTargetRef.current = item;
               longPressRef.current = setTimeout(onLongPress, 300);
             };
@@ -748,6 +774,34 @@ export function KDSTicket({
                       <RotateCcw className="h-4 w-4 mr-2 inline-block" aria-hidden />
                       Re-fire
                     </Button>
+                    {allowSplitUnsplit && (order.prepGroup == null || order.prepGroup === "main") && onSplitToNewTicket && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="justify-start font-medium w-full"
+                        onClick={() => {
+                          setRefireContextItem(null);
+                          onSplitToNewTicket(order.id, item.id);
+                        }}
+                      >
+                        <SplitSquareVertical className="h-4 w-4 mr-2 inline-block" aria-hidden />
+                        Split to new ticket
+                      </Button>
+                    )}
+                    {allowSplitUnsplit && order.prepGroup != null && order.prepGroup !== "main" && onUnsplitToMain && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="justify-start font-medium w-full"
+                        onClick={() => {
+                          setRefireContextItem(null);
+                          onUnsplitToMain(order.id, item.id);
+                        }}
+                      >
+                        <Merge className="h-4 w-4 mr-2 inline-block" aria-hidden />
+                        Move back to main ticket
+                      </Button>
+                    )}
                     <Button
                       variant="outline"
                       size="sm"
@@ -802,6 +856,9 @@ export function KDSTicket({
               </div>
             ) : (
               <div className="flex flex-col gap-2">
+                <p className={cn("text-[11px] 2xl:text-xs opacity-80", theme.textMuted)}>
+                  Some lanes ready, others still preparing.
+                </p>
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-xs 2xl:text-sm font-semibold text-emerald-600 dark:text-emerald-400 shrink-0">
                     Ready:

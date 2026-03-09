@@ -21,9 +21,11 @@ interface OrderItem {
   quantity: number;
   customizations: string[];
   stationId?: string;
+  status?: "pending" | "preparing" | "ready" | "served";
   sentToKitchenAt?: string | null;
   startedAt?: string | null;
   readyAt?: string | null;
+  prepGroup?: string | null;
 }
 
 interface Order {
@@ -43,6 +45,10 @@ interface Order {
   snoozedAt?: string;
   snoozeUntil?: string;
   wasSnoozed?: boolean;
+  /** Work group for split tickets. Set for NEW work-group entries. */
+  prepGroup?: string | null;
+  /** Order-level station statuses (for waiting-on when order is work-group entry). */
+  stationStatusesFull?: Record<string, OrderStatus>;
 }
 
 interface KDSColumnProps {
@@ -57,6 +63,9 @@ interface KDSColumnProps {
   onClearModified?: (orderId: string) => void;
   onSnooze?: (orderId: string, durationSeconds: number) => void;
   onWakeUp?: (orderId: string) => void;
+  onSplitToNewTicket?: (orderId: string, itemId: string) => void;
+  onUnsplitToMain?: (orderId: string, itemId: string) => void;
+  allowSplitUnsplit?: boolean;
   highlightedTicketId?: string | null;
   currentStationId?: string;
   stations?: Station[];
@@ -76,10 +85,47 @@ interface KDSColumnProps {
   allOrdersForQueue?: Order[];
   /** Optional message for empty state. Default derived from status if not provided. */
   emptyStateMessage?: string;
+  /** Use composite key (orderId::prepGroup) for work-group tickets in NEW. */
+  useWorkGroupKey?: boolean;
 }
 
 function getElapsedMinutes(ts: string): number {
   return Math.floor((Date.now() - new Date(ts).getTime()) / 60000);
+}
+
+/** Group aggregate status for work-group scoping. */
+function statusFromItems(items: { status?: string }[]): "pending" | "preparing" | "ready" | "served" {
+  if (items.length === 0) return "pending";
+  const hasPending = items.some((i) => i.status === "pending");
+  const hasPreparing = items.some((i) => i.status === "preparing");
+  const hasReady = items.some((i) => i.status === "ready");
+  if (hasPending && !hasPreparing && !hasReady) return "pending";
+  if (hasPending && (hasReady || hasPreparing)) return "preparing";
+  if (hasPreparing) return "preparing";
+  if (hasReady) return "ready";
+  return "served";
+}
+
+/** READY: items that are ready/served AND belong to a work-group that is ready or served. */
+function getReadyWorkGroupScopedItems(items: OrderItem[]): OrderItem[] {
+  const MAIN = "main";
+  const byGroup = new Map<string, OrderItem[]>();
+  for (const item of items) {
+    const g = item.prepGroup && String(item.prepGroup).trim() ? item.prepGroup : MAIN;
+    const list = byGroup.get(g) ?? [];
+    list.push(item);
+    byGroup.set(g, list);
+  }
+  const readyOrServedGroups = new Set<string>();
+  for (const [g, groupItems] of byGroup) {
+    const st = statusFromItems(groupItems);
+    if (st === "ready" || st === "served") readyOrServedGroups.add(g);
+  }
+  return items.filter((i) => {
+    const g = i.prepGroup && String(i.prepGroup).trim() ? i.prepGroup : MAIN;
+    if (!readyOrServedGroups.has(g)) return false;
+    return i.status === "ready" || i.status === "served";
+  });
 }
 
 function sortByUrgency(orders: Order[]): Order[] {
@@ -135,6 +181,9 @@ export function KDSColumn({
   onClearModified,
   onSnooze,
   onWakeUp,
+  onSplitToNewTicket,
+  onUnsplitToMain,
+  allowSplitUnsplit = false,
   highlightedTicketId,
   currentStationId,
   stations = [],
@@ -147,6 +196,7 @@ export function KDSColumn({
   hideHeader = false,
   allOrdersForQueue,
   emptyStateMessage,
+  useWorkGroupKey = false,
 }: KDSColumnProps) {
   const ordersForQueue = allOrdersForQueue ?? orders;
   const { theme } = useDisplayMode();
@@ -305,6 +355,9 @@ export function KDSColumn({
         <div className={isMobile ? "flex flex-col gap-4" : "flex flex-col gap-4 2xl:gap-5"}>
           <AnimatePresence mode="popLayout">
             {visibleOrders.map((order) => {
+                const ticketKey = useWorkGroupKey && order.prepGroup != null
+                  ? `${order.id}::${order.prepGroup}`
+                  : order.id;
                 const queuePosition = getQueuePosition(order, ordersForQueue);
                 const ageTimestamp = getAgeTimestampForColumn(
                   order,
@@ -319,13 +372,16 @@ export function KDSColumn({
                 
                 const isStationComplete = stationStatus === "ready";
                 
-                // Find stations that are still pending/preparing
-                const waitingStations = currentStationId && order.stationStatuses && stations.length > 0
-                  ? stations.filter(s => {
-                      const status = order.stationStatuses?.[s.id];
-                      return s.id !== currentStationId && status !== "ready";
-                    })
-                  : [];
+                // Find stations that are still pending/preparing (order-level for waiting-on)
+                const statusesForWaiting = order.stationStatusesFull ?? order.stationStatuses;
+                const waitingStations =
+                  currentStationId && statusesForWaiting
+                    ? stations.filter((s) => {
+                        if (s.id === currentStationId) return false;
+                        const status = statusesForWaiting[s.id];
+                        return status === "pending" || status === "preparing";
+                      })
+                    : [];
                 
                 // Check if this ticket just transitioned to this column
                 const transition = transitioningTickets.get(order.id);
@@ -338,12 +394,29 @@ export function KDSColumn({
                     ? getReadySubstationSummary(order)
                     : undefined;
 
+                // READY column: work-group scoped — only items from ready/served groups, and only ready/served items
+                const displayOrder =
+                  status === "ready"
+                    ? {
+                        ...order,
+                        items: getReadyWorkGroupScopedItems(order.items),
+                      }
+                    : order;
+
+                // When work-group tickets (NEW split), bind onAction so Start only affects this ticket's items
+                const groupItemIds = order.items.map((i) => i.id);
+                const effectiveOnAction =
+                  useWorkGroupKey
+                    ? (oid: string, s: OrderStatus | "served", ids?: string[]) =>
+                        onAction(oid, s, ids ?? groupItemIds)
+                    : onAction;
+
                 return (
                   <KDSTicket
-                    key={order.id}
-                    order={order}
+                    key={ticketKey}
+                    order={displayOrder}
                     ageTimestamp={ageTimestamp}
-                    onAction={onAction}
+                    onAction={effectiveOnAction}
                     onRefire={onRefire}
                     onVoidItem={onVoidItem}
                     onClearModified={onClearModified}
@@ -362,6 +435,9 @@ export function KDSColumn({
                     isBatchHighlighted={isInBatch}
                     onSnooze={onSnooze}
                     onWakeUp={onWakeUp}
+                    onSplitToNewTicket={onSplitToNewTicket}
+                    onUnsplitToMain={onUnsplitToMain}
+                    allowSplitUnsplit={allowSplitUnsplit}
                     readySubstationSummary={readySubstationSummary ?? undefined}
                   />
                 );

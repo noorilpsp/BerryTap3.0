@@ -32,6 +32,7 @@ import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
 import { useKdsView } from "@/lib/hooks/useKdsView";
 import { useKdsMutations } from "@/lib/hooks/useKdsMutations";
+import { KdsPageSkeleton } from "@/components/kds/KdsPageSkeleton";
 import type { KdsView } from "@/lib/kds/kdsView";
 import { resolveItemStation as resolveItemStationShared } from "@/lib/kds/resolveItemStation";
 
@@ -108,6 +109,8 @@ interface OrderItem {
   isNew?: boolean;
   isModified?: boolean;
   changeDetails?: string;
+  /** Work group for split tickets. null = main. */
+  prepGroup?: string | null;
 }
 
 interface Order {
@@ -139,6 +142,8 @@ interface Order {
   wasSnoozed?: boolean;
   /** Kitchen lane for preparing view (grill, fryer, cold_prep, unassigned). */
   subStation?: string;
+  /** Work group for split tickets. Set for NEW/PREPARING work-group entries. */
+  prepGroup?: string | null;
 }
 
 /**
@@ -217,6 +222,7 @@ function kdsViewToOrders(
         readyAt: i.readyAt ?? null,
         voidedAt: i.voidedAt ?? null,
         refiredAt: i.refiredAt ?? null,
+        prepGroup: i.prepGroup ?? null,
       }));
       if (items.length === 0) return null;
       if (rawItems.length === 0) return null;
@@ -307,7 +313,7 @@ const DEFAULT_STATIONS: Station[] = [
   { id: "dessert", name: "Dessert", icon: "🍰", color: "#ec4899" },
 ];
 
-function stationsFromView(view: KdsView | null): Station[] {
+function stationsFromView(view: KdsView | null): Array<Station & { substations?: Array<{ id: string; key: string; name: string; displayOrder: number }> }> {
   // Only use DEFAULT_STATIONS when view has not loaded. Once we have view data, use it (may be empty).
   if (view === null || view === undefined) return DEFAULT_STATIONS;
   return view.stations.map((s) => {
@@ -317,6 +323,7 @@ function stationsFromView(view: KdsView | null): Station[] {
       name: s.name.charAt(0).toUpperCase() + s.name.slice(1),
       icon: known?.icon ?? "📋",
       color: known?.color ?? "#64748b",
+      substations: s.substations ?? [],
     };
   });
 }
@@ -389,8 +396,12 @@ function deriveCompletedOrdersFromView(view: KdsView | null): CompletedOrder[] {
 
 export default function KDSPage() {
   const [locationId, setLocationId] = useState<string | null>(null);
+  const [locationIdResolved, setLocationIdResolved] = useState(false);
   useEffect(() => {
-    getCurrentLocationId().then(setLocationId);
+    getCurrentLocationId().then((id) => {
+      setLocationId(id);
+      setLocationIdResolved(true);
+    });
   }, []);
 
   const { view, loading: kdsLoading, error: kdsError, staleError: kdsStaleError, refresh, patch } = useKdsView(locationId);
@@ -512,6 +523,8 @@ export default function KDSPage() {
     handleVoidItem,
     handleRecallOrder,
     handleRefireItem,
+    handleSplitToNewTicket,
+    handleUnsplitToMain,
     handleSnooze,
     handleWakeUp,
   } = useKdsMutations({
@@ -909,7 +922,14 @@ export default function KDSPage() {
 
   const activeCount = filteredOrders.length;
 
-  if (!locationId && !kdsLoading) {
+  const isLoading =
+    !locationIdResolved || (locationId !== null && view === null && kdsError === null);
+
+  if (isLoading) {
+    return <KdsPageSkeleton />;
+  }
+
+  if (locationIdResolved && !locationId) {
     return (
       <DisplayModeProvider>
         <KDSPageLayout>
@@ -932,11 +952,6 @@ export default function KDSPage() {
   return (
     <DisplayModeProvider>
       <KDSPageLayout>
-      {kdsLoading && (
-        <div className="absolute inset-0 bg-black/20 flex items-center justify-center z-10">
-          <span className="text-white font-medium">Loading KDS…</span>
-        </div>
-      )}
       {kdsStaleError && <KDSStaleBanner onRetry={() => refresh()} />}
       <KDSHeader
         stations={STATIONS}
@@ -979,6 +994,8 @@ export default function KDSPage() {
                 onAction={handleAction}
                 onRefire={handleRefire}
                 onVoidItem={handleVoidItemForOrder}
+                onSplitToNewTicket={handleSplitToNewTicket}
+                onUnsplitToMain={handleUnsplitToMain}
                 onClearModified={handleClearModified}
                 onSnooze={handleSnooze}
                 onWakeUp={handleWakeUp}

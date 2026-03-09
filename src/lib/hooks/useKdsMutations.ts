@@ -29,6 +29,10 @@ export type UseKdsMutationsResult = {
   handleRecallOrder: (orderId: string, stationId: string) => Promise<boolean>;
   /** Refire (remake) an item: sets refiredAt, resets to pending. */
   handleRefireItem: (orderId: string, itemId: string, reason: string) => Promise<boolean>;
+  /** Split item to a new work-group ticket. */
+  handleSplitToNewTicket: (orderId: string, itemId: string) => Promise<void>;
+  /** Move item back to main ticket (unsplit). */
+  handleUnsplitToMain: (orderId: string, itemId: string) => Promise<void>;
   /** Snooze order for durationSeconds. */
   handleSnooze: (orderId: string, durationSeconds: number) => Promise<void>;
   /** Wake order (clear snooze, set wasSnoozed). */
@@ -41,9 +45,41 @@ const STATUS_TRANSITIONS: Record<string, "pending" | "preparing" | "ready" | "se
   served: "ready",
 };
 
+function snapshotView(v: KdsView): KdsView {
+  return structuredClone(v);
+}
+
+/**
+ * Optimistic helper: apply patch immediately, run request, rollback on failure.
+ * Same spirit as table page fireAndReconcile.
+ */
+async function kdsFireAndReconcile<T>(opts: {
+  snapshot: KdsView;
+  optimisticPatch: (prev: KdsView) => KdsView;
+  patch: (updater: (prev: KdsView) => KdsView) => void;
+  requestFn: () => Promise<T>;
+  onSuccessPatch?: (result: T) => (prev: KdsView) => KdsView;
+  onSuccess?: () => void;
+  onFailure: () => void;
+}): Promise<T | null> {
+  opts.patch(opts.optimisticPatch);
+  opts.onSuccess?.();
+  try {
+    const result = await opts.requestFn();
+    if (opts.onSuccessPatch) {
+      opts.patch(opts.onSuccessPatch(result));
+    }
+    return result;
+  } catch {
+    opts.patch(() => opts.snapshot);
+    opts.onFailure();
+    return null;
+  }
+}
+
 /**
  * KDS mutation handlers: mark preparing, ready, served.
- * Uses fetchPos, patches view on success, toasts and refresh(true) on failure.
+ * Uses optimistic updates, patches immediately, rollback on failure.
  */
 export function useKdsMutations({
   patch,
@@ -66,8 +102,6 @@ export function useKdsMutations({
       const itemStation = (i: { stationOverride: string | null }) =>
         resolveItemStation(i, order ?? { station: null }, fallbackStationId);
 
-      // Only ever update items in the correct current status (fromStatus). This ensures READY
-      // actions never advance pending or preparing items when we mean to bump only ready items.
       let itemsToUpdate = view.orderItems.filter(
         (i) => i.orderId === orderId && i.voidedAt == null && i.status === fromStatus
       );
@@ -80,45 +114,77 @@ export function useKdsMutations({
       }
       if (itemsToUpdate.length === 0) return;
 
-      let anyFailed = false;
-      for (const item of itemsToUpdate) {
-        try {
-          const res = await fetchPos(`/api/orders/${orderId}/items/${item.id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: newStatus, eventSource: "kds" }),
-          });
-          const p = await res.json().catch(() => ({}));
-          if (!res.ok || !p?.ok) {
-            anyFailed = true;
-            continue;
+      const snapshot = snapshotView(view);
+      const optimisticPatch: (prev: KdsView) => KdsView = (prev) => {
+        const itemIdSet = new Set(itemsToUpdate.map((i) => i.id));
+        const actionsForStatus = (s: typeof newStatus) => {
+          switch (s) {
+            case "preparing":
+              return {
+                canMarkPreparing: true,
+                canMarkReady: false,
+                canMarkServed: false,
+              } as const;
+            case "ready":
+              return {
+                canMarkPreparing: false,
+                canMarkReady: false,
+                canMarkServed: true,
+              } as const;
+            case "served":
+              return {
+                canMarkPreparing: false,
+                canMarkReady: false,
+                canMarkServed: false,
+              } as const;
           }
-          const data = p?.data ?? p;
-          const itemId = data?.itemId ?? item.id;
-          const status = data?.status ?? newStatus;
-          patch((prev) => ({
-            ...prev,
-            orderItems: prev.orderItems.map((it) =>
-              it.id === itemId ? { ...it, status: status as typeof it.status } : it
+        };
+        return {
+          ...prev,
+          orderItems: prev.orderItems.map((it) =>
+            itemIdSet.has(it.id) ? { ...it, status: newStatus } : it
+          ),
+          actions: {
+            ...prev.actions,
+            ...Object.fromEntries(
+              itemsToUpdate.map((i) => [i.id, actionsForStatus(newStatus)])
             ),
-            actions: {
-              ...prev.actions,
-              [itemId]: {
-                canMarkPreparing: status === "pending",
-                canMarkReady: status === "preparing",
-                canMarkServed: status === "ready",
-              } as const,
-            },
-          }));
-          onLocalAction?.(orderId);
-        } catch {
-          anyFailed = true;
-        }
-      }
-      if (anyFailed) {
-        toast.error("Failed to update item status");
-        refresh(true);
-      } else if (
+          },
+        };
+      };
+
+      const requestFn = async () => {
+        const results = await Promise.all(
+          itemsToUpdate.map(async (item) => {
+            const res = await fetchPos(`/api/orders/${orderId}/items/${item.id}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ status: newStatus, eventSource: "kds" }),
+            });
+            const p = await res.json().catch(() => ({}));
+            if (!res.ok || !p?.ok) {
+              throw new Error(p?.error?.message ?? "Request failed");
+            }
+            return p;
+          })
+        );
+        return results;
+      };
+
+      const ok = await kdsFireAndReconcile({
+        snapshot,
+        optimisticPatch,
+        patch,
+        requestFn,
+        onSuccess: () => onLocalAction?.(orderId),
+        onFailure: () => {
+          toast.error("Failed to update item status");
+          void refresh(true);
+        },
+      });
+
+      if (
+        ok != null &&
         newStatus === "served" &&
         onOrderServed &&
         currentStationId &&
@@ -163,46 +229,63 @@ export function useKdsMutations({
       );
       if (itemsToUpdate.length === 0) return true;
 
-      let anyFailed = false;
-      for (const item of itemsToUpdate) {
-        try {
-          const res = await fetchPos(`/api/orders/${orderId}/items/${item.id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: "ready", recall: true, eventSource: "kds" }),
-          });
-          const p = await res.json().catch(() => ({}));
-          if (!res.ok || !p?.ok) {
-            anyFailed = true;
-            continue;
-          }
-          const data = p?.data ?? p;
-          const itemId = data?.itemId ?? item.id;
-          patch((prev) => ({
-            ...prev,
-            orderItems: prev.orderItems.map((it) =>
-              it.id === itemId ? { ...it, status: "ready" as const } : it
+      const snapshot = snapshotView(view);
+      const optimisticPatch: (prev: KdsView) => KdsView = (prev) => {
+        const itemIdSet = new Set(itemsToUpdate.map((i) => i.id));
+        return {
+          ...prev,
+          orderItems: prev.orderItems.map((it) =>
+            itemIdSet.has(it.id) ? { ...it, status: "ready" as const } : it
+          ),
+          actions: {
+            ...prev.actions,
+            ...Object.fromEntries(
+              itemsToUpdate.map((i) => [
+                i.id,
+                {
+                  canMarkPreparing: false,
+                  canMarkReady: false,
+                  canMarkServed: true,
+                } as const,
+              ])
             ),
-            actions: {
-              ...prev.actions,
-              [itemId]: {
-                canMarkPreparing: false,
-                canMarkReady: false,
-                canMarkServed: true,
-              } as const,
-            },
-          }));
-          onLocalAction?.(orderId);
-        } catch {
-          anyFailed = true;
-        }
-      }
-      if (anyFailed) {
-        toast.error("Failed to recall order");
-        refresh(true);
-        return false;
-      }
-      return true;
+          },
+        };
+      };
+
+      const requestFn = async () => {
+        await Promise.all(
+          itemsToUpdate.map(async (item) => {
+            const res = await fetchPos(`/api/orders/${orderId}/items/${item.id}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                status: "ready",
+                recall: true,
+                eventSource: "kds",
+              }),
+            });
+            const p = await res.json().catch(() => ({}));
+            if (!res.ok || !p?.ok) {
+              throw new Error(p?.error?.message ?? "Request failed");
+            }
+            return p;
+          })
+        );
+      };
+
+      const ok = await kdsFireAndReconcile({
+        snapshot,
+        optimisticPatch,
+        patch,
+        requestFn,
+        onSuccess: () => onLocalAction?.(orderId),
+        onFailure: () => {
+          toast.error("Failed to recall order");
+          void refresh(true);
+        },
+      });
+      return ok != null;
     },
     [view, patch, refresh, fallbackStationId, onLocalAction]
   );
@@ -215,49 +298,149 @@ export function useKdsMutations({
       );
       if (!item) return false;
 
-      try {
-        const res = await fetchPos(`/api/orders/${orderId}/items/${itemId}/refire`, {
-          method: "POST",
+      const snapshot = snapshotView(view);
+      const refiredAt = new Date().toISOString();
+      const optimisticPatch: (prev: KdsView) => KdsView = (prev) => ({
+        ...prev,
+        orderItems: prev.orderItems.map((it) =>
+          it.id === itemId
+            ? {
+                ...it,
+                status: "pending" as const,
+                startedAt: null,
+                readyAt: null,
+                servedAt: null,
+                refiredAt,
+              }
+            : it
+        ),
+        actions: {
+          ...prev.actions,
+          [itemId]: {
+            canMarkPreparing: true,
+            canMarkReady: false,
+            canMarkServed: false,
+          } as const,
+        },
+      });
+
+      const requestFn = async () => {
+        const res = await fetchPos(
+          `/api/orders/${orderId}/items/${itemId}/refire`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ reason, eventSource: "kds" }),
+          }
+        );
+        const p = await res.json().catch(() => ({}));
+        if (!res.ok || !p?.ok) {
+          throw new Error(p?.error?.message ?? "Request failed");
+        }
+        return p;
+      };
+
+      const ok = await kdsFireAndReconcile({
+        snapshot,
+        optimisticPatch,
+        patch,
+        requestFn,
+        onSuccess: () => onLocalAction?.(orderId),
+        onFailure: () => {
+          toast.error("Failed to refire item");
+          void refresh(true);
+        },
+      });
+      return ok != null;
+    },
+    [view, patch, refresh, onLocalAction]
+  );
+
+  const handleSplitToNewTicket = useCallback(
+    async (orderId: string, itemId: string) => {
+      if (!view) return;
+      const item = view.orderItems.find(
+        (i) => i.orderId === orderId && i.id === itemId && i.voidedAt == null
+      );
+      if (!item) return;
+
+      const newGroup = "split" + Date.now().toString(36).slice(-6);
+      const snapshot = snapshotView(view);
+      const optimisticPatch: (prev: KdsView) => KdsView = (prev) => ({
+        ...prev,
+        orderItems: prev.orderItems.map((it) =>
+          it.id === itemId ? { ...it, prepGroup: newGroup } : it
+        ),
+      });
+
+      const requestFn = async () => {
+        const res = await fetchPos(`/api/orders/${orderId}/items/${itemId}`, {
+          method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason, eventSource: "kds" }),
+          body: JSON.stringify({ prepGroup: newGroup, eventSource: "kds" }),
         });
         const p = await res.json().catch(() => ({}));
         if (!res.ok || !p?.ok) {
-          toast.error("Failed to refire item");
-          refresh(true);
-          return false;
+          throw new Error(p?.error?.message ?? "Request failed");
         }
-        const refiredAt = new Date().toISOString();
-        patch((prev) => ({
-          ...prev,
-          orderItems: prev.orderItems.map((it) =>
-            it.id === itemId
-              ? {
-                  ...it,
-                  status: "pending" as const,
-                  startedAt: null,
-                  readyAt: null,
-                  servedAt: null,
-                  refiredAt,
-                }
-              : it
-          ),
-          actions: {
-            ...prev.actions,
-            [itemId]: {
-              canMarkPreparing: true,
-              canMarkReady: false,
-              canMarkServed: false,
-            } as const,
-          },
-        }));
-        onLocalAction?.(orderId);
-        return true;
-      } catch {
-        toast.error("Failed to refire item");
-        refresh(true);
-        return false;
-      }
+        return p;
+      };
+
+      await kdsFireAndReconcile({
+        snapshot,
+        optimisticPatch,
+        patch,
+        requestFn,
+        onSuccess: () => onLocalAction?.(orderId),
+        onFailure: () => {
+          toast.error("Failed to split item");
+          void refresh(true);
+        },
+      });
+    },
+    [view, patch, refresh, onLocalAction]
+  );
+
+  const handleUnsplitToMain = useCallback(
+    async (orderId: string, itemId: string) => {
+      if (!view) return;
+      const item = view.orderItems.find(
+        (i) => i.orderId === orderId && i.id === itemId && i.voidedAt == null
+      );
+      if (!item) return;
+
+      const snapshot = snapshotView(view);
+      const optimisticPatch: (prev: KdsView) => KdsView = (prev) => ({
+        ...prev,
+        orderItems: prev.orderItems.map((it) =>
+          it.id === itemId ? { ...it, prepGroup: null } : it
+        ),
+      });
+
+      const requestFn = async () => {
+        const res = await fetchPos(`/api/orders/${orderId}/items/${itemId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prepGroup: null, eventSource: "kds" }),
+        });
+        const p = await res.json().catch(() => ({}));
+        if (!res.ok || !p?.ok) {
+          throw new Error(p?.error?.message ?? "Request failed");
+        }
+        return p;
+      };
+
+      await kdsFireAndReconcile({
+        snapshot,
+        optimisticPatch,
+        patch,
+        requestFn,
+        onSuccess: () => onLocalAction?.(orderId),
+        onFailure: () => {
+          toast.error("Failed to move item back");
+          void refresh(true);
+        },
+      });
     },
     [view, patch, refresh, onLocalAction]
   );
@@ -270,7 +453,24 @@ export function useKdsMutations({
       );
       if (!item) return;
 
-      try {
+      const voidedAt = new Date().toISOString();
+      const snapshot = snapshotView(view);
+      const optimisticPatch: (prev: KdsView) => KdsView = (prev) => ({
+        ...prev,
+        orderItems: prev.orderItems.map((it) =>
+          it.id === itemId ? { ...it, voidedAt } : it
+        ),
+        actions: {
+          ...prev.actions,
+          [itemId]: {
+            canMarkPreparing: false,
+            canMarkReady: false,
+            canMarkServed: false,
+          } as const,
+        },
+      });
+
+      const requestFn = async () => {
         const res = await fetchPos(`/api/orders/${orderId}/items/${itemId}`, {
           method: "DELETE",
           headers: { "Content-Type": "application/json" },
@@ -278,38 +478,66 @@ export function useKdsMutations({
         });
         const p = await res.json().catch(() => ({}));
         if (!res.ok || !p?.ok) {
-          toast.error("Failed to void item");
-          refresh(true);
-          return;
+          throw new Error(p?.error?.message ?? "Request failed");
         }
         const data = p?.data ?? p;
-        const voidedAt = typeof data?.voidedAt === "string" ? data.voidedAt : new Date().toISOString();
-        patch((prev) => ({
+        return { data } as { data?: { voidedAt?: string } };
+      };
+
+      const onSuccessPatch = (result: { data?: { voidedAt?: string } }) => {
+        const serverVoidedAt =
+          typeof result?.data?.voidedAt === "string"
+            ? result.data.voidedAt
+            : voidedAt;
+        return (prev: KdsView) => ({
           ...prev,
           orderItems: prev.orderItems.map((it) =>
-            it.id === itemId ? { ...it, voidedAt } : it
+            it.id === itemId ? { ...it, voidedAt: serverVoidedAt } : it
           ),
-          actions: {
-            ...prev.actions,
-            [itemId]: {
-              canMarkPreparing: false,
-              canMarkReady: false,
-              canMarkServed: false,
-            } as const,
-          },
-        }));
-        onLocalAction?.(orderId);
-      } catch {
-        toast.error("Failed to void item");
-        refresh(true);
-      }
+        });
+      };
+
+      await kdsFireAndReconcile({
+        snapshot,
+        optimisticPatch,
+        patch,
+        requestFn,
+        onSuccessPatch,
+        onSuccess: () => onLocalAction?.(orderId),
+        onFailure: () => {
+          toast.error("Failed to void item");
+          void refresh(true);
+        },
+      });
     },
     [view, patch, refresh, onLocalAction]
   );
 
   const handleSnooze = useCallback(
     async (orderId: string, durationSeconds: number) => {
-      try {
+      const snapshot = view ? snapshotView(view) : null;
+      const now = Date.now();
+      const snoozedAt = new Date(now).toISOString();
+      const snoozeUntil = new Date(
+        now + durationSeconds * 1000
+      ).toISOString();
+
+      const optimisticPatch: (prev: KdsView) => KdsView = (prev) => ({
+        ...prev,
+        orders: prev.orders.map((o) =>
+          o.id === orderId
+            ? {
+                ...o,
+                snoozedAt,
+                snoozeUntil,
+                isSnoozed: true,
+                wasSnoozed: false,
+              }
+            : o
+        ),
+      });
+
+      const requestFn = async () => {
         const res = await fetchPos(`/api/orders/${orderId}/snooze`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -317,44 +545,92 @@ export function useKdsMutations({
         });
         const p = await res.json().catch(() => ({}));
         if (!res.ok || !p?.ok) {
-          toast.error("Failed to snooze order");
-          refresh(true);
-          return;
+          throw new Error(p?.error?.message ?? "Request failed");
         }
-        const data = p?.data ?? p;
-        const snoozedAt = data?.snoozedAt;
-        const snoozeUntil = data?.snoozeUntil;
-        if (typeof snoozedAt === "string" && typeof snoozeUntil === "string") {
-          const now = Date.now();
-          patch((prev) => ({
-            ...prev,
-            orders: prev.orders.map((o) =>
-              o.id === orderId
-                ? {
-                    ...o,
-                    snoozedAt,
-                    snoozeUntil,
-                    isSnoozed: new Date(snoozeUntil).getTime() > now,
-                    wasSnoozed: false,
-                  }
-                : o
-            ),
-          }));
+        return p;
+      };
+
+      const onSuccessPatch = (result: {
+        data?: { snoozedAt?: string; snoozeUntil?: string };
+      }) => {
+        const data = result?.data;
+        const sa =
+          typeof data?.snoozedAt === "string" ? data.snoozedAt : snoozedAt;
+        const su =
+          typeof data?.snoozeUntil === "string" ? data.snoozeUntil : snoozeUntil;
+        return (prev: KdsView) => ({
+          ...prev,
+          orders: prev.orders.map((o) =>
+            o.id === orderId
+              ? {
+                  ...o,
+                  snoozedAt: sa,
+                  snoozeUntil: su,
+                  isSnoozed: new Date(su).getTime() > Date.now(),
+                  wasSnoozed: false,
+                }
+              : o
+          ),
+        });
+      };
+
+      if (!snapshot) {
+        try {
+          const res = await fetchPos(`/api/orders/${orderId}/snooze`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ durationSeconds }),
+          });
+          const p = await res.json().catch(() => ({}));
+          if (!res.ok || !p?.ok) {
+            toast.error("Failed to snooze order");
+            void refresh(true);
+            return;
+          }
+          patch(onSuccessPatch(p));
           onLocalAction?.(orderId);
-        } else {
-          refresh(true);
+        } catch {
+          toast.error("Failed to snooze order");
+          void refresh(true);
         }
-      } catch {
-        toast.error("Failed to snooze order");
-        refresh(true);
+        return;
       }
+
+      await kdsFireAndReconcile({
+        snapshot,
+        optimisticPatch,
+        patch,
+        requestFn,
+        onSuccessPatch,
+        onSuccess: () => onLocalAction?.(orderId),
+        onFailure: () => {
+          toast.error("Failed to snooze order");
+          void refresh(true);
+        },
+      });
     },
-    [patch, refresh, onLocalAction]
+    [view, patch, refresh, onLocalAction]
   );
 
   const handleWakeUp = useCallback(
     async (orderId: string) => {
-      try {
+      const snapshot = view ? snapshotView(view) : null;
+      const optimisticPatch: (prev: KdsView) => KdsView = (prev) => ({
+        ...prev,
+        orders: prev.orders.map((o) =>
+          o.id === orderId
+            ? {
+                ...o,
+                snoozedAt: null,
+                snoozeUntil: null,
+                isSnoozed: false,
+                wasSnoozed: true,
+              }
+            : o
+        ),
+      });
+
+      const requestFn = async () => {
         const res = await fetchPos(`/api/orders/${orderId}/snooze`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -362,31 +638,46 @@ export function useKdsMutations({
         });
         const p = await res.json().catch(() => ({}));
         if (!res.ok || !p?.ok) {
-          toast.error("Failed to wake order");
-          refresh(true);
-          return;
+          throw new Error(p?.error?.message ?? "Request failed");
         }
-        patch((prev) => ({
-          ...prev,
-          orders: prev.orders.map((o) =>
-            o.id === orderId
-              ? {
-                  ...o,
-                  snoozedAt: null,
-                  snoozeUntil: null,
-                  isSnoozed: false,
-                  wasSnoozed: true,
-                }
-              : o
-          ),
-        }));
-        onLocalAction?.(orderId);
-      } catch {
-        toast.error("Failed to wake order");
-        refresh(true);
+        return p;
+      };
+
+      if (!snapshot) {
+        try {
+          const res = await fetchPos(`/api/orders/${orderId}/snooze`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ wake: true }),
+          });
+          const p = await res.json().catch(() => ({}));
+          if (!res.ok || !p?.ok) {
+            toast.error("Failed to wake order");
+            void refresh(true);
+            return;
+          }
+          patch(optimisticPatch);
+          onLocalAction?.(orderId);
+        } catch {
+          toast.error("Failed to wake order");
+          void refresh(true);
+        }
+        return;
       }
+
+      await kdsFireAndReconcile({
+        snapshot,
+        optimisticPatch,
+        patch,
+        requestFn,
+        onSuccess: () => onLocalAction?.(orderId),
+        onFailure: () => {
+          toast.error("Failed to wake order");
+          void refresh(true);
+        },
+      });
     },
-    [patch, refresh, onLocalAction]
+    [view, patch, refresh, onLocalAction]
   );
 
   return {
@@ -396,6 +687,8 @@ export function useKdsMutations({
     handleVoidItem,
     handleRecallOrder,
     handleRefireItem,
+    handleSplitToNewTicket,
+    handleUnsplitToMain,
     handleSnooze,
     handleWakeUp,
   };

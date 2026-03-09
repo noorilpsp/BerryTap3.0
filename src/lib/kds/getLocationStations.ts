@@ -1,5 +1,6 @@
 import { db } from "@/db";
 import { locationStations } from "@/lib/db/schema/location-stations";
+import { locationSubstations } from "@/lib/db/schema/location-substations";
 import { eq, and, asc } from "drizzle-orm";
 
 export type LocationStationRow = {
@@ -83,4 +84,72 @@ export async function isValidLocationStation(
   if (!stationKey?.trim()) return false;
   const stations = await getLocationStations(locationId);
   return stations.some((s) => s.key === stationKey);
+}
+
+export type LocationSubstationRow = {
+  id: string;
+  key: string;
+  name: string;
+  displayOrder: number;
+};
+
+export type LocationStationWithSubstationsRow = LocationStationRow & {
+  substations: LocationSubstationRow[];
+};
+
+/**
+ * Get active stations with substations for KDS lane rendering.
+ */
+export async function getLocationStationsWithSubstations(
+  locationId: string
+): Promise<LocationStationWithSubstationsRow[]> {
+  const stations = await db.query.locationStations.findMany({
+    where: and(
+      eq(locationStations.locationId, locationId),
+      eq(locationStations.isActive, true)
+    ),
+    columns: { id: true, key: true, name: true, displayOrder: true },
+    orderBy: [asc(locationStations.displayOrder), asc(locationStations.key)],
+    with: {
+      substations: {
+        columns: { id: true, key: true, name: true, displayOrder: true },
+        orderBy: [asc(locationSubstations.displayOrder), asc(locationSubstations.key)],
+      },
+    },
+  });
+  return stations.map((s) => ({
+    id: s.id,
+    key: s.key,
+    name: s.name,
+    displayOrder: s.displayOrder,
+    substations: (s.substations ?? []).map((ss) => ({
+      id: ss.id,
+      key: ss.key,
+      name: ss.name,
+      displayOrder: ss.displayOrder,
+    })),
+  }));
+}
+
+/**
+ * Get substation keys for a station at a location. Used to validate items.default_substation.
+ */
+export async function getSubstationKeysForStation(
+  locationId: string,
+  stationKey: string | null | undefined
+): Promise<Set<string>> {
+  if (!stationKey?.trim()) return new Set();
+  const station = await db.query.locationStations.findFirst({
+    where: and(
+      eq(locationStations.locationId, locationId),
+      eq(locationStations.key, stationKey)
+    ),
+    columns: { id: true },
+  });
+  if (!station) return new Set();
+  const subs = await db.query.locationSubstations.findMany({
+    where: eq(locationSubstations.stationId, station.id),
+    columns: { key: true },
+  });
+  return new Set(subs.map((s) => s.key));
 }

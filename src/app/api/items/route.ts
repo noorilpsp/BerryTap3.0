@@ -5,7 +5,7 @@ import { db } from "@/db";
 import { items, categoryItems, itemTags, itemAllergens, itemCustomizations } from "@/db/schema";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
 import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
-import { getLocationStations } from "@/lib/kds/getLocationStations";
+import { getLocationStations, getSubstationKeysForStation } from "@/lib/kds/getLocationStations";
 
 export const runtime = "nodejs";
 
@@ -225,13 +225,15 @@ export async function POST(request: NextRequest) {
       validatedDefaultStation = stationKey;
     }
 
-    // Validate defaultSubstation (fixed kitchen lanes for first slice)
-    const ALLOWED_SUBSTATIONS = new Set(["grill", "fryer", "cold_prep"]);
+    // Validate defaultSubstation against configured substations for the station
     let validatedDefaultSubstation: string | null = null;
-    if (defaultSubstation != null && defaultSubstation !== "") {
+    if (defaultSubstation != null && defaultSubstation !== "" && validatedDefaultStation) {
       const key = String(defaultSubstation).trim().toLowerCase();
-      if (key.length <= 50 && ALLOWED_SUBSTATIONS.has(key)) {
-        validatedDefaultSubstation = key;
+      if (key.length <= 50) {
+        const allowedKeys = await getSubstationKeysForStation(locationId, validatedDefaultStation);
+        if (allowedKeys.has(key)) {
+          validatedDefaultSubstation = key;
+        }
       }
     }
 

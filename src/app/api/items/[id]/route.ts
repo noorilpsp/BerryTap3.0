@@ -4,6 +4,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { items, categoryItems, itemTags, itemAllergens, itemCustomizations } from "@/db/schema";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
+import { getSubstationKeysForStation } from "@/lib/kds/getLocationStations";
 import { getLocationStations } from "@/lib/kds/getLocationStations";
 import { unstable_cache } from "@/lib/unstable-cache";
 
@@ -241,13 +242,15 @@ export async function PUT(
     }
 
     if (body.defaultSubstation !== undefined) {
-      const ALLOWED_SUBSTATIONS = new Set(["grill", "fryer", "cold_prep"]);
+      const locationId = existingItem.location.id;
       if (body.defaultSubstation == null || body.defaultSubstation === "") {
         updateData.defaultSubstation = null;
       } else {
+        const stationKey = updateData.defaultStation ?? existingItem.defaultStation;
         const key = String(body.defaultSubstation).trim().toLowerCase();
-        if (key.length <= 50 && ALLOWED_SUBSTATIONS.has(key)) {
-          updateData.defaultSubstation = key;
+        if (key.length <= 50 && stationKey) {
+          const allowedKeys = await getSubstationKeysForStation(locationId, stationKey);
+          updateData.defaultSubstation = allowedKeys.has(key) ? key : null;
         } else {
           updateData.defaultSubstation = null;
         }

@@ -72,11 +72,17 @@ Allow menu items in the primary station (typically kitchen) to be grouped into s
 - Orders with no substation appear in UNASSIGNED.
 - Validation: only `grill`, `fryer`, `cold_prep` allowed.
 
+## Configurable Substations (Implemented)
+
+- Substations are now configurable per station via `location_substations`.
+- KDS settings: add, edit, delete, reorder lanes per station.
+- Item drawer: lane picker shows lanes for the selected station (from configured substations).
+- KDS preparing view: lanes rendered from configured substations for the active station.
+- Migration 0010 seeds `grill`, `fryer`, `cold_prep` for kitchen stations (backward compatibility).
+
 ## Limitations (Current Model)
 
-- Fixed substation set (`grill`, `fryer`, `cold_prep`); no per-location config.
 - One lane per order per tab; no per-item lanes or multi-lane orders.
-- Only kitchen supports lanes; no per-location config yet.
 
 ## Future Model
 

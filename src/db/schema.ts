@@ -195,6 +195,8 @@ export {
   staffRelations,
   invitationsRelations,
   platformPersonnelRelations,
+  locationStationsRelations,
+  locationSubstationsRelations,
 } from "../lib/db/schema";
 
 // ============================================================================

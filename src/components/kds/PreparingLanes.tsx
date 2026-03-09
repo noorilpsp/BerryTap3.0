@@ -20,9 +20,12 @@ interface OrderItem {
   quantity: number;
   customizations: string[];
   stationId?: string;
+  status?: "pending" | "preparing" | "ready" | "served";
   sentToKitchenAt?: string | null;
   startedAt?: string | null;
   readyAt?: string | null;
+  voidedAt?: string | null;
+  prepGroup?: string | null;
 }
 
 interface Order {
@@ -40,16 +43,29 @@ interface Order {
   subStation?: string;
 }
 
+const TINTS = [
+  "bg-orange-500/5",
+  "bg-amber-500/5",
+  "bg-teal-500/5",
+  "bg-blue-500/5",
+  "bg-purple-500/5",
+  "bg-slate-500/5",
+] as const;
+
 interface PreparingLanesProps {
-  /** When false, render single column (no lane split). Only kitchen uses lanes. */
+  /** When false, render single column (no lane split). */
   useLanes?: boolean;
+  /** Configured substations for the active station. When empty, uses legacy fixed lanes. */
+  subStations?: Array<{ id: string; name: string; tint?: string }>;
   /** Full orders (used when !useLanes or as fallback). */
   orders: Order[];
-  /** Lane-split entries for kitchen. When present with useLanes, these drive lane rendering. */
+  /** Lane-split entries. When present with useLanes, these drive lane rendering. */
   laneEntries?: LaneEntry[];
   onAction: (orderId: string, newStatus: OrderStatus | "served", itemIds?: string[]) => void;
   onRefire?: (orderId: string, item: import("./KDSTicket").OrderItem, reason: string) => void;
   onVoidItem?: (orderId: string, itemId: string) => void;
+  onSplitToNewTicket?: (orderId: string, itemId: string) => void;
+  onUnsplitToMain?: (orderId: string, itemId: string) => void;
   onClearModified?: (orderId: string) => void;
   onSnooze?: (orderId: string, durationSeconds: number) => void;
   onWakeUp?: (orderId: string) => void;
@@ -62,10 +78,9 @@ interface PreparingLanesProps {
 }
 
 /**
- * Lane buckets for preparing view. When laneEntries is used, entries are grouped by lane.
- * Otherwise legacy: orders grouped by order.subStation (first item decides lane).
+ * Legacy lane buckets (used when subStations prop not provided).
  */
-const SUB_STATIONS = [
+const DEFAULT_SUB_STATIONS = [
   { id: "grill", name: "GRILL", tint: "bg-orange-500/5" },
   { id: "fryer", name: "FRYER", tint: "bg-amber-500/5" },
   { id: "cold_prep", name: "COLD PREP", tint: "bg-teal-500/5" },
@@ -107,6 +122,37 @@ function getLoadLevel(count: number): "normal" | "busy" | "overloaded" {
   return "normal";
 }
 
+const MAIN = "main";
+
+function statusFromItems(items: { status?: string }[]): "pending" | "preparing" | "ready" | "served" {
+  if (items.length === 0) return "pending";
+  const hasPending = items.some((i) => i.status === "pending");
+  const hasPreparing = items.some((i) => i.status === "preparing");
+  const hasReady = items.some((i) => i.status === "ready");
+  if (hasPending && !hasPreparing && !hasReady) return "pending";
+  if (hasPending && (hasReady || hasPreparing)) return "preparing";
+  if (hasPreparing) return "preparing";
+  if (hasReady) return "ready";
+  return "served";
+}
+
+/** True if order has at least one work-group with group-level status "preparing". */
+function hasPreparingWorkGroup(order: Order): boolean {
+  const items = order.items.filter((i) => i.voidedAt == null);
+  if (items.length === 0) return false;
+  const byGroup = new Map<string, OrderItem[]>();
+  for (const item of items) {
+    const g = item.prepGroup && String(item.prepGroup).trim() ? item.prepGroup : MAIN;
+    const list = byGroup.get(g) ?? [];
+    list.push(item);
+    byGroup.set(g, list);
+  }
+  for (const groupItems of byGroup.values()) {
+    if (statusFromItems(groupItems) === "preparing") return true;
+  }
+  return false;
+}
+
 /** Convert LaneEntry to order-like shape for KDSTicket. */
 function laneEntryToOrderLike(entry: LaneEntry): Order & { ageTimestamp: string } {
   return {
@@ -134,16 +180,20 @@ function laneEntryToOrderLike(entry: LaneEntry): Order & { ageTimestamp: string 
     snoozeUntil: entry.snoozeUntil,
     snoozeDurationSeconds: entry.snoozeDurationSeconds,
     wasSnoozed: entry.wasSnoozed,
+    prepGroup: entry.prepGroup,
   };
 }
 
 export function PreparingLanes({
   useLanes = true,
+  subStations = [],
   orders,
   laneEntries = [],
   onAction,
   onRefire,
   onVoidItem,
+  onSplitToNewTicket,
+  onUnsplitToMain,
   onClearModified,
   onSnooze,
   onWakeUp,
@@ -155,6 +205,21 @@ export function PreparingLanes({
   highlightedBatch = null,
 }: PreparingLanesProps) {
   const { theme } = useDisplayMode();
+
+  const SUB_STATIONS = useMemo(() => {
+    if (subStations.length > 0) {
+      return [
+        ...subStations.map((s, i) => ({
+          id: s.id,
+          name: s.name,
+          tint: (s.tint ?? TINTS[i % TINTS.length]) as string,
+        })),
+        { id: "unassigned", name: "UNASSIGNED", tint: "bg-slate-500/5" },
+      ];
+    }
+    return [...DEFAULT_SUB_STATIONS];
+  }, [subStations]);
+
   // Track tickets that are in "staged" position (at top, before sliding to final position)
   const [stagedTickets, setStagedTickets] = useState<Set<string>>(new Set());
   const stagedTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
@@ -166,7 +231,7 @@ export function PreparingLanes({
   const useLaneEntries = useLanes; // Kitchen uses lane-based rendering (laneEntries from parent)
   const LANE_KEY_SEP = "::";
   const currentTicketIds = useLaneEntries
-    ? new Set(laneEntries.map((e) => `${e.orderId}${LANE_KEY_SEP}${e.lane}`))
+    ? new Set(laneEntries.map((e) => `${e.orderId}${LANE_KEY_SEP}${e.prepGroup}${LANE_KEY_SEP}${e.lane}`))
     : new Set(orders.map((o) => o.id));
 
   // Detect newly arrived tickets and stage them at top
@@ -260,7 +325,7 @@ export function PreparingLanes({
       m[ss.id] = new Set(
         laneEntries
           .filter((e) => e.lane === ss.id)
-          .map((e) => `${e.orderId}${LANE_KEY_SEP}${e.lane}`)
+          .map((e) => `${e.orderId}${LANE_KEY_SEP}${e.prepGroup}${LANE_KEY_SEP}${e.lane}`)
       );
     });
     return m;
@@ -325,15 +390,24 @@ export function PreparingLanes({
   }, [useLaneEntries, countByLaneKey]);
 
   if (!useLanes) {
+    const noLaneOrders =
+      laneEntries.length > 0
+        ? laneEntries.map(laneEntryToOrderLike)
+        : allOrders.filter(hasPreparingWorkGroup);
     return (
       <KDSColumn
         title="PREPARING"
         titleIcon="🍳"
         status="preparing"
-        orders={allOrders}
+        orders={noLaneOrders}
+        allOrdersForQueue={allOrders}
+        useWorkGroupKey={laneEntries.length > 0}
         onAction={onAction}
         onRefire={onRefire}
         onVoidItem={onVoidItem}
+        onSplitToNewTicket={onSplitToNewTicket}
+        onUnsplitToMain={onUnsplitToMain}
+        allowSplitUnsplit={true}
         onClearModified={onClearModified}
         onSnooze={onSnooze}
         onWakeUp={onWakeUp}
@@ -353,8 +427,8 @@ export function PreparingLanes({
         const laneEntriesForLane = useLaneEntries
           ? (laneEntries.filter((e) => e.lane === subStation.id)
               .sort((a, b) => {
-                const aKey = `${a.orderId}${LANE_KEY_SEP}${a.lane}`;
-                const bKey = `${b.orderId}${LANE_KEY_SEP}${b.lane}`;
+                const aKey = `${a.orderId}${LANE_KEY_SEP}${a.prepGroup}${LANE_KEY_SEP}${a.lane}`;
+                const bKey = `${b.orderId}${LANE_KEY_SEP}${b.prepGroup}${LANE_KEY_SEP}${b.lane}`;
                 const aIsStaged = stagedTickets.has(aKey);
                 const bIsStaged = stagedTickets.has(bKey);
                 if (aIsStaged && !bIsStaged) return -1;
@@ -433,9 +507,9 @@ export function PreparingLanes({
               <div className="flex flex-col gap-4 2xl:gap-5">
                 <AnimatePresence mode="sync">
                   {useLaneEntries
-                    ? laneEntriesForLane.map((entry) => {
+                    ?                       laneEntriesForLane.map((entry) => {
                         const orderLike = laneEntryToOrderLike(entry);
-                        const entryKey = `${entry.orderId}${LANE_KEY_SEP}${entry.lane}`;
+                        const entryKey = `${entry.orderId}${LANE_KEY_SEP}${entry.prepGroup}${LANE_KEY_SEP}${entry.lane}`;
                         const fullOrder = allOrders.find((o) => o.id === entry.orderId);
                         const queuePosition = fullOrder
                           ? getQueuePosition(fullOrder, allOrders)
@@ -443,10 +517,11 @@ export function PreparingLanes({
                         const stationStatus = entry.stationStatuses[currentStationId ?? ""];
                         const isStationComplete = stationStatus === "ready";
                         const waitingStations =
-                          currentStationId && entry.stationStatusesFull && stations.length > 0
+                          currentStationId && entry.stationStatusesFull
                             ? stations.filter((s) => {
+                                if (s.id === currentStationId) return false;
                                 const status = entry.stationStatusesFull?.[s.id];
-                                return s.id !== currentStationId && status !== "ready";
+                                return status === "pending" || status === "preparing";
                               })
                             : [];
                         const transition = transitioningTickets.get(entry.orderId);
@@ -470,6 +545,9 @@ export function PreparingLanes({
                             onAction={boundOnAction}
                             onRefire={onRefire}
                             onVoidItem={onVoidItem}
+                            onSplitToNewTicket={onSplitToNewTicket}
+                            onUnsplitToMain={onUnsplitToMain}
+                            allowSplitUnsplit={true}
                             onClearModified={onClearModified}
                             priority={queuePosition > 0 ? queuePosition : undefined}
                             isHighlighted={entry.orderId === highlightedTicketId}
@@ -501,10 +579,11 @@ export function PreparingLanes({
                             : undefined;
                         const isStationComplete = stationStatus === "ready";
                         const waitingStations =
-                          currentStationId && order.stationStatuses && stations.length > 0
+                          currentStationId && order.stationStatuses
                             ? stations.filter((s) => {
+                                if (s.id === currentStationId) return false;
                                 const status = order.stationStatuses?.[s.id];
-                                return s.id !== currentStationId && status !== "ready";
+                                return status === "pending" || status === "preparing";
                               })
                             : [];
                         const transition = transitioningTickets.get(order.id);
@@ -527,6 +606,9 @@ export function PreparingLanes({
                             onAction={onAction}
                             onRefire={onRefire}
                             onVoidItem={onVoidItem}
+                            onSplitToNewTicket={onSplitToNewTicket}
+                            onUnsplitToMain={onUnsplitToMain}
+                            allowSplitUnsplit={true}
                             onClearModified={onClearModified}
                             priority={queuePosition > 0 ? queuePosition : undefined}
                             isHighlighted={order.id === highlightedTicketId}

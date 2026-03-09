@@ -25,6 +25,8 @@
     "db:migrate:0007": "npx tsx scripts/run-migration-0007.ts",
     "db:migrate:0008": "npx tsx scripts/run-migration-0008.ts",
     "db:migrate:0009": "npx tsx scripts/run-migration-0009.ts",
+    "db:migrate:0010": "npx tsx scripts/run-migration-0010.ts",
+    "db:migrate:0011": "npx tsx scripts/run-migration-0011.ts",
     "db:studio": "drizzle-kit studio",
     "seed:menu": "npx tsx scripts/seed-menu.ts",
     "seed:menu-data": "npx tsx scripts/seed-menu-data.ts",

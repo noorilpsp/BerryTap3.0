@@ -643,40 +643,52 @@ export function ItemDrawer({ item, isOpen, onClose, onSave, onDelete, categories
                   )}
                 </div>
 
-                {/* Lane (substation) - only kitchen supports lanes currently */}
-                {form.watch("defaultStation") === "kitchen" && (
-                  <>
-                    <Separator />
-                    <div className="space-y-4">
-                      <h3 className="font-semibold">Kitchen Lane</h3>
-                      <p className="text-sm text-muted-foreground">
-                        Assign to a lane within the kitchen (grill, fryer, cold prep).
-                      </p>
-                      <div className="space-y-2">
-                        <Label htmlFor="defaultSubstation">Lane</Label>
-                        <Select
-                          value={form.watch("defaultSubstation") ?? "none"}
-                          onValueChange={(v) =>
-                            form.setValue("defaultSubstation", v === "none" ? null : v, {
-                              shouldDirty: true,
-                              shouldValidate: true,
-                            })
-                          }
-                        >
-                          <SelectTrigger id="defaultSubstation">
-                            <SelectValue placeholder="Select lane (optional)" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="none">None (unassigned)</SelectItem>
-                            <SelectItem value="grill">Grill</SelectItem>
-                            <SelectItem value="fryer">Fryer</SelectItem>
-                            <SelectItem value="cold_prep">Cold Prep</SelectItem>
-                          </SelectContent>
-                        </Select>
+                {/* Lane (substation) - shown when selected station has configured lanes */}
+                {(() => {
+                  const selectedStationKey = form.watch("defaultStation");
+                  const selectedStation = activeStations.find(
+                    (s) => s.key === selectedStationKey
+                  );
+                  const substations = selectedStation?.substations ?? [];
+                  if (substations.length === 0) return null;
+                  return (
+                    <>
+                      <Separator />
+                      <div className="space-y-4">
+                        <h3 className="font-semibold">
+                          {selectedStation?.name ?? "Station"} Lane
+                        </h3>
+                        <p className="text-sm text-muted-foreground">
+                          Assign to a lane within this station.
+                        </p>
+                        <div className="space-y-2">
+                          <Label htmlFor="defaultSubstation">Lane</Label>
+                          <Select
+                            value={form.watch("defaultSubstation") ?? "none"}
+                            onValueChange={(v) =>
+                              form.setValue("defaultSubstation", v === "none" ? null : v, {
+                                shouldDirty: true,
+                                shouldValidate: true,
+                              })
+                            }
+                          >
+                            <SelectTrigger id="defaultSubstation">
+                              <SelectValue placeholder="Select lane (optional)" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="none">None (unassigned)</SelectItem>
+                              {substations.map((ss) => (
+                                <SelectItem key={ss.id} value={ss.key}>
+                                  {ss.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
                       </div>
-                    </div>
-                  </>
-                )}
+                    </>
+                  );
+                })()}
 
                 <Separator />
 

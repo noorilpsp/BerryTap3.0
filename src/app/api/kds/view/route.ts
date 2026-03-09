@@ -11,7 +11,7 @@ import { computeKdsActions } from "@/lib/kds/computeKdsActions";
 import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
 import type { KdsView, KdsOrder, KdsOrderItem, KdsStation, KdsDelay } from "@/lib/kds/kdsView";
 import { isKdsView } from "@/lib/kds/kdsView";
-import { getLocationStations } from "@/lib/kds/getLocationStations";
+import { getLocationStationsWithSubstations } from "@/lib/kds/getLocationStations";
 import { devTimer } from "@/lib/pos/devTimer";
 
 export const runtime = "nodejs";
@@ -112,6 +112,7 @@ export async function GET(request: NextRequest) {
       refiredAt: Date | null;
       stationOverride: string | null;
       seat: number | null;
+      prepGroup: string | null;
       item: { defaultSubstation: string | null } | null;
     }> = [];
     if (orderIds.length > 0) {
@@ -133,6 +134,7 @@ export async function GET(request: NextRequest) {
           refiredAt: true,
           stationOverride: true,
           seat: true,
+          prepGroup: true,
         },
         with: {
           item: { columns: { defaultSubstation: true } },
@@ -194,22 +196,46 @@ export async function GET(request: NextRequest) {
       stationOverride: row.stationOverride ?? null,
       seatNumber: row.seat,
       substation: row.item?.defaultSubstation ?? null,
+      prepGroup: row.prepGroup ?? null,
     }));
 
-    // Build station list: location_stations only (no orphan merge; routing uses first active station fallback)
-    const activeStations = await getLocationStations(locationId);
+    // Build station list with substations: location_stations + location_substations
+    const activeStations = await getLocationStationsWithSubstations(locationId);
     const stationKeyToMeta = new Map(
-      activeStations.map((s) => [s.key, { id: s.key, name: s.name, displayOrder: s.displayOrder }])
+      activeStations.map((s) => [
+        s.key,
+        {
+          id: s.key,
+          name: s.name,
+          displayOrder: s.displayOrder,
+          substations: s.substations ?? [],
+        },
+      ])
     );
 
     if (stationKeyToMeta.size === 0) {
-      stationKeyToMeta.set("kitchen", { id: "kitchen", name: "kitchen", displayOrder: 0 });
+      stationKeyToMeta.set("kitchen", {
+        id: "kitchen",
+        name: "kitchen",
+        displayOrder: 0,
+        substations: [],
+      });
       // Fallback: location has no stations; "kitchen" avoids empty KDS. Admin should add stations.
     }
 
     const stations: KdsStation[] = Array.from(stationKeyToMeta.values())
       .sort((a, b) => a.displayOrder - b.displayOrder)
-      .map(({ id, name, displayOrder }) => ({ id, name, displayOrder }));
+      .map(({ id, name, displayOrder, substations }) => ({
+        id,
+        name,
+        displayOrder,
+        substations: substations.map((ss) => ({
+          id: ss.id,
+          key: ss.key,
+          name: ss.name,
+          displayOrder: ss.displayOrder,
+        })),
+      }));
 
     if (DEV) {
       // eslint-disable-next-line no-console

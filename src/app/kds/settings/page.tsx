@@ -2,11 +2,14 @@
 
 import { useState, useCallback } from "react";
 import Link from "next/link";
-import { ChevronLeft, ChevronUp, ChevronDown, Plus } from "lucide-react";
+import { ChevronLeft, ChevronUp, ChevronDown, Plus, Trash2 } from "lucide-react";
 import { getCurrentLocationId } from "@/app/actions/location";
 import { useStationSettingsView } from "@/lib/hooks/useStationSettingsView";
 import { useStationSettingsMutations } from "@/lib/hooks/useStationSettingsMutations";
-import type { StationSettingsStation } from "@/lib/kds/stationSettingsView";
+import type {
+  StationSettingsStation,
+  StationSettingsSubstation,
+} from "@/lib/kds/stationSettingsView";
 import { DisplayModeProvider } from "@/components/kds/DisplayModeContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,7 +25,15 @@ function StationSettingsContent() {
   }, []);
 
   const { view, loading, error, refresh, patch } = useStationSettingsView(locationId);
-  const { createStation, updateStation, reorderStations } = useStationSettingsMutations({
+  const {
+    createStation,
+    updateStation,
+    reorderStations,
+    createSubstation,
+    updateSubstation,
+    deleteSubstation,
+    reorderSubstations,
+  } = useStationSettingsMutations({
     locationId,
     view,
     patch,
@@ -33,6 +44,10 @@ function StationSettingsContent() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [movingId, setMovingId] = useState<string | null>(null);
+  const [subEditingId, setSubEditingId] = useState<string | null>(null);
+  const [subEditName, setSubEditName] = useState("");
+  const [subMovingId, setSubMovingId] = useState<string | null>(null);
+  const [subNewNameByStation, setSubNewNameByStation] = useState<Record<string, string>>({});
 
   const handleAdd = useCallback(async () => {
     const name = newName.trim();
@@ -86,6 +101,62 @@ function StationSettingsContent() {
     [updateStation]
   );
 
+  const handleAddSubstation = useCallback(
+    async (stationId: string) => {
+      const name = subNewNameByStation[stationId]?.trim();
+      if (!name) return;
+      const created = await createSubstation(stationId, name);
+      if (created) {
+        setSubNewNameByStation((prev) => ({ ...prev, [stationId]: "" }));
+      }
+    },
+    [subNewNameByStation, createSubstation]
+  );
+
+  const handleStartEditSub = useCallback((ss: StationSettingsSubstation) => {
+    setSubEditingId(ss.id);
+    setSubEditName(ss.name);
+  }, []);
+
+  const handleSaveEditSub = useCallback(
+    async (id: string) => {
+      const name = subEditName.trim();
+      if (!name) return;
+      const ok = await updateSubstation(id, { name });
+      if (ok) {
+        setSubEditingId(null);
+        setSubEditName("");
+      }
+    },
+    [subEditName, updateSubstation]
+  );
+
+  const handleDeleteSub = useCallback(
+    async (id: string) => {
+      await deleteSubstation(id);
+    },
+    [deleteSubstation]
+  );
+
+  const handleMoveSub = useCallback(
+    async (stationId: string, subId: string, direction: "up" | "down") => {
+      const station = view?.stations.find((s) => s.id === stationId);
+      if (!station || subMovingId || station.substations.length < 2) return;
+      const idx = station.substations.findIndex((ss) => ss.id === subId);
+      if (idx < 0) return;
+      const targetIdx = direction === "up" ? idx - 1 : idx + 1;
+      if (targetIdx < 0 || targetIdx >= station.substations.length) return;
+      setSubMovingId(subId);
+      const reordered = [...station.substations];
+      [reordered[idx], reordered[targetIdx]] = [reordered[targetIdx], reordered[idx]];
+      const updates = reordered.map((ss, i) => ({ id: ss.id, displayOrder: i }));
+      const ok = await reorderSubstations(stationId, updates);
+      setSubMovingId(null);
+      if (!ok) void refresh(true);
+    },
+    [view, subMovingId, reorderSubstations, refresh]
+  );
+
   if (!locationId && !loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -123,10 +194,10 @@ function StationSettingsContent() {
         </div>
 
         <Card>
-          <CardHeader>
-            <CardTitle>Stations</CardTitle>
+            <CardHeader>
+            <CardTitle>Stations & Lanes</CardTitle>
             <p className="text-sm text-muted-foreground">
-              Add, rename, reorder, and activate or deactivate stations. Inactive stations are hidden from KDS.
+              Add, rename, reorder, and activate or deactivate stations. Add lanes (substations) per station for KDS preparing view. Inactive stations are hidden from KDS.
             </p>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -152,70 +223,175 @@ function StationSettingsContent() {
             ) : (
               <ul className="divide-y rounded-md border">
                 {view?.stations.map((s, idx) => (
-                  <li
-                    key={s.id}
-                    className={cn(
-                      "flex items-center gap-2 px-3 py-2",
-                      !s.isActive && "opacity-60"
-                    )}
-                  >
-                    <div className="flex flex-col gap-0">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6"
-                        disabled={movingId !== null || idx === 0}
-                        onClick={() => handleMove(s.id, "up")}
-                        aria-label="Move up"
-                      >
-                        <ChevronUp className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6"
-                        disabled={movingId !== null || idx === view.stations.length - 1}
-                        onClick={() => handleMove(s.id, "down")}
-                        aria-label="Move down"
-                      >
-                        <ChevronDown className="h-4 w-4" />
-                      </Button>
-                    </div>
-                    {editingId === s.id ? (
-                      <div className="flex flex-1 gap-2">
-                        <Input
-                          value={editName}
-                          onChange={(e) => setEditName(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") void handleSaveEdit(s.id);
-                            if (e.key === "Escape") {
-                              setEditingId(null);
-                              setEditName("");
-                            }
-                          }}
-                          autoFocus
-                        />
-                        <Button size="sm" onClick={() => handleSaveEdit(s.id)}>
-                          Save
+                  <li key={s.id} className={cn(!s.isActive && "opacity-60")}>
+                    <div className="flex items-center gap-2 px-3 py-2">
+                      <div className="flex flex-col gap-0">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          disabled={movingId !== null || idx === 0}
+                          onClick={() => handleMove(s.id, "up")}
+                          aria-label="Move up"
+                        >
+                          <ChevronUp className="h-4 w-4" />
                         </Button>
-                        <Button size="sm" variant="ghost" onClick={() => { setEditingId(null); setEditName(""); }}>
-                          Cancel
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          disabled={movingId !== null || idx === view.stations.length - 1}
+                          onClick={() => handleMove(s.id, "down")}
+                          aria-label="Move down"
+                        >
+                          <ChevronDown className="h-4 w-4" />
                         </Button>
                       </div>
-                    ) : (
-                      <button
-                        type="button"
-                        className="flex-1 text-left font-medium hover:underline"
-                        onClick={() => handleStartEdit(s)}
-                      >
-                        {s.name}
-                      </button>
-                    )}
-                    <span className="text-xs text-muted-foreground">{s.key}</span>
-                    <Switch
-                      checked={s.isActive}
-                      onCheckedChange={() => handleToggleActive(s.id, s.isActive)}
-                    />
+                      {editingId === s.id ? (
+                        <div className="flex flex-1 gap-2">
+                          <Input
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void handleSaveEdit(s.id);
+                              if (e.key === "Escape") {
+                                setEditingId(null);
+                                setEditName("");
+                              }
+                            }}
+                            autoFocus
+                          />
+                          <Button size="sm" onClick={() => handleSaveEdit(s.id)}>
+                            Save
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => { setEditingId(null); setEditName(""); }}>
+                            Cancel
+                          </Button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className="flex-1 text-left font-medium hover:underline"
+                          onClick={() => handleStartEdit(s)}
+                        >
+                          {s.name}
+                        </button>
+                      )}
+                      <span className="text-xs text-muted-foreground">{s.key}</span>
+                      <Switch
+                        checked={s.isActive}
+                        onCheckedChange={() => handleToggleActive(s.id, s.isActive)}
+                      />
+                    </div>
+                    {/* Substations (lanes) for this station */}
+                    <div className="ml-10 mr-3 mb-2 space-y-1 rounded border-l-2 border-muted pl-3">
+                      {s.substations.map((ss, ssIdx) => (
+                        <div key={ss.id} className="flex items-center gap-2 py-1">
+                          <div className="flex flex-col gap-0">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5"
+                              disabled={subMovingId !== null || ssIdx === 0}
+                              onClick={() => handleMoveSub(s.id, ss.id, "up")}
+                              aria-label="Move lane up"
+                            >
+                              <ChevronUp className="h-3 w-3" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5"
+                              disabled={
+                                subMovingId !== null ||
+                                ssIdx === s.substations.length - 1
+                              }
+                              onClick={() => handleMoveSub(s.id, ss.id, "down")}
+                              aria-label="Move lane down"
+                            >
+                              <ChevronDown className="h-3 w-3" />
+                            </Button>
+                          </div>
+                          {subEditingId === ss.id ? (
+                            <div className="flex flex-1 gap-2">
+                              <Input
+                                value={subEditName}
+                                onChange={(e) => setSubEditName(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") void handleSaveEditSub(ss.id);
+                                  if (e.key === "Escape") {
+                                    setSubEditingId(null);
+                                    setSubEditName("");
+                                  }
+                                }}
+                                className="h-8"
+                                autoFocus
+                              />
+                              <Button size="sm" className="h-8" onClick={() => handleSaveEditSub(ss.id)}>
+                                Save
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-8"
+                                onClick={() => {
+                                  setSubEditingId(null);
+                                  setSubEditName("");
+                                }}
+                              >
+                                Cancel
+                              </Button>
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                className="flex-1 text-left text-sm hover:underline"
+                                onClick={() => handleStartEditSub(ss)}
+                              >
+                                {ss.name}
+                              </button>
+                              <span className="text-xs text-muted-foreground">{ss.key}</span>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-destructive hover:text-destructive"
+                                onClick={() => handleDeleteSub(ss.id)}
+                                aria-label="Delete lane"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      ))}
+                      <div className="flex gap-2 pt-1">
+                        <Input
+                          placeholder="Add lane (e.g. Grill)"
+                          value={subNewNameByStation[s.id] ?? ""}
+                          onChange={(e) =>
+                            setSubNewNameByStation((prev) => ({
+                              ...prev,
+                              [s.id]: e.target.value,
+                            }))
+                          }
+                          onKeyDown={(e) =>
+                            e.key === "Enter" && handleAddSubstation(s.id)
+                          }
+                          className="h-8 text-sm"
+                        />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8"
+                          onClick={() => handleAddSubstation(s.id)}
+                          disabled={!subNewNameByStation[s.id]?.trim()}
+                        >
+                          <Plus className="mr-1 h-3.5 w-3.5" />
+                          Add lane
+                        </Button>
+                      </div>
+                    </div>
                   </li>
                 ))}
               </ul>

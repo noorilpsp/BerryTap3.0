@@ -18,6 +18,7 @@ import { relations } from "drizzle-orm";
 export * from "./merchants";
 export * from "./merchant-locations";
 export * from "./location-stations";
+export * from "./location-substations";
 export * from "./merchant-users";
 export * from "./staff";
 export * from "./invitations";
@@ -31,6 +32,7 @@ export * from "./pos-idempotency";
 import { merchants } from "./merchants";
 import { merchantLocations } from "./merchant-locations";
 import { locationStations } from "./location-stations";
+import { locationSubstations } from "./location-substations";
 import { merchantUsers } from "./merchant-users";
 import { staff } from "./staff";
 import { invitations } from "./invitations";
@@ -196,10 +198,18 @@ export {
 
 export { floorPlansRelations } from "./floor-plans";
 
-export const locationStationsRelations = relations(locationStations, ({ one }) => ({
+export const locationStationsRelations = relations(locationStations, ({ one, many }) => ({
   location: one(merchantLocations, {
     fields: [locationStations.locationId],
     references: [merchantLocations.id],
+  }),
+  substations: many(locationSubstations),
+}));
+
+export const locationSubstationsRelations = relations(locationSubstations, ({ one }) => ({
+  station: one(locationStations, {
+    fields: [locationSubstations.stationId],
+    references: [locationStations.id],
   }),
 }));
 

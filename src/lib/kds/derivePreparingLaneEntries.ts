@@ -5,14 +5,17 @@
 
 export type OrderStatus = "pending" | "preparing" | "ready" | "served";
 
+/** Legacy fixed lanes; used when no configured substations. */
 export type PreparingLaneId = "grill" | "fryer" | "cold_prep" | "unassigned";
 
-const PREPARING_LANES: readonly PreparingLaneId[] = [
+const DEFAULT_PREPARING_LANES: readonly string[] = [
   "grill",
   "fryer",
   "cold_prep",
   "unassigned",
 ];
+
+const MAIN = "main";
 
 export interface LaneEntryItem {
   id: string;
@@ -27,11 +30,15 @@ export interface LaneEntryItem {
   startedAt?: string | null;
   voidedAt?: string | null;
   refiredAt?: string | null;
+  prepGroup?: string | null;
 }
 
 export interface LaneEntry {
   orderId: string;
-  lane: PreparingLaneId;
+  /** Work group (main or split). */
+  prepGroup: string;
+  /** Lane key (e.g. grill, fryer, unassigned). */
+  lane: string;
   items: LaneEntryItem[];
   orderNumber: string;
   orderType: "dine_in" | "pickup";
@@ -102,49 +109,73 @@ function statusFromItems(items: { status?: string }[]): OrderStatus {
 }
 
 /**
- * Derives lane entries from preparing orders. Each (order, lane) with at least one
- * pending or preparing item yields one entry. Items in entry are only those for that lane.
+ * Derives lane entries from preparing orders. Only work-groups whose group-level status
+ * is "preparing" (or beyond) are included; purely pending groups stay in NEW only.
+ * Each (order, prepGroup, lane) yields one entry. Items in entry are only those for that lane.
+ * @param preparingLaneKeys - Configured lane keys (e.g. from location_substations). Must include "unassigned" or it is appended.
  */
 export function derivePreparingLaneEntries(
   orders: InputOrder[],
-  activeStationId: string
+  activeStationId: string,
+  preparingLaneKeys?: string[]
 ): LaneEntry[] {
+  const laneKeys =
+    preparingLaneKeys && preparingLaneKeys.length > 0
+      ? preparingLaneKeys.includes("unassigned")
+        ? preparingLaneKeys
+        : [...preparingLaneKeys, "unassigned"]
+      : [...DEFAULT_PREPARING_LANES];
+  const validKeys = new Set(laneKeys);
   const entries: LaneEntry[] = [];
   for (const order of orders) {
     const stationItems = order.items.filter((i) => i.stationId === activeStationId);
     if (stationItems.length === 0) continue;
-    const byLane = new Map<PreparingLaneId, LaneEntryItem[]>();
+
+    const byGroup = new Map<string, LaneEntryItem[]>();
     for (const item of stationItems) {
-      const lane: PreparingLaneId =
-        item.substation && PREPARING_LANES.includes(item.substation as PreparingLaneId)
-          ? (item.substation as PreparingLaneId)
-          : "unassigned";
-      const list = byLane.get(lane) ?? [];
+      const group = item.prepGroup && String(item.prepGroup).trim() ? item.prepGroup : MAIN;
+      const list = byGroup.get(group) ?? [];
       list.push(item);
-      byLane.set(lane, list);
+      byGroup.set(group, list);
     }
-    for (const lane of PREPARING_LANES) {
-      const laneItems = byLane.get(lane) ?? [];
-      const activeItems = laneItems.filter((i) => i.voidedAt == null);
-      const hasWork = activeItems.some(
-        (i) => i.status === "pending" || i.status === "preparing"
-      );
-      if (!hasWork) continue;
-      const laneStatus = statusFromItems(activeItems);
-      if (laneStatus === "ready") continue;
-      const timestamps: string[] = [];
-      for (const i of activeItems) {
-        if (i.startedAt) timestamps.push(i.startedAt);
-        if (i.sentToKitchenAt) timestamps.push(i.sentToKitchenAt);
+
+    for (const [prepGroup, groupItems] of byGroup) {
+      // Only emit PREPARING entries for work-groups whose group-level status is preparing (or beyond).
+      // Skip purely pending groups so they stay in NEW only (mutual exclusivity).
+      const groupStatus = statusFromItems(groupItems);
+      if (groupStatus === "pending") continue;
+
+      const byLane = new Map<string, LaneEntryItem[]>();
+      for (const item of groupItems) {
+        const lane =
+          item.substation && validKeys.has(item.substation) ? item.substation : "unassigned";
+        const list = byLane.get(lane) ?? [];
+        list.push(item);
+        byLane.set(lane, list);
       }
-      const ageTimestamp =
-        timestamps.length > 0
-          ? timestamps.reduce((a, b) => (a < b ? a : b))
-          : order.firedAt ?? order.createdAt;
-      entries.push({
-        orderId: order.id,
-        lane,
-        items: laneItems,
+      for (const lane of laneKeys) {
+        const laneItems = byLane.get(lane) ?? [];
+        const activeItems = laneItems.filter((i) => i.voidedAt == null);
+        const hasWork = activeItems.some(
+          (i) => i.status === "pending" || i.status === "preparing"
+        );
+        if (!hasWork) continue;
+        const laneStatus = statusFromItems(activeItems);
+        if (laneStatus === "ready") continue;
+        const timestamps: string[] = [];
+        for (const i of activeItems) {
+          if (i.startedAt) timestamps.push(i.startedAt);
+          if (i.sentToKitchenAt) timestamps.push(i.sentToKitchenAt);
+        }
+        const ageTimestamp =
+          timestamps.length > 0
+            ? timestamps.reduce((a, b) => (a < b ? a : b))
+            : order.firedAt ?? order.createdAt;
+        entries.push({
+          orderId: order.id,
+          prepGroup,
+          lane,
+          items: laneItems,
         orderNumber: order.orderNumber,
         orderType: order.orderType as "dine_in" | "pickup",
         tableNumber: order.tableNumber,
@@ -169,6 +200,7 @@ export function derivePreparingLaneEntries(
         snoozeDurationSeconds: order.snoozeDurationSeconds,
         wasSnoozed: order.wasSnoozed,
       });
+      }
     }
   }
   return entries;
@@ -176,72 +208,119 @@ export function derivePreparingLaneEntries(
 
 /** Substation progress for a merged READY ticket. */
 export interface ReadySubstationSummary {
-  readyLanes: PreparingLaneId[];
-  waitingLanes: PreparingLaneId[];
+  readyLanes: string[];
+  waitingLanes: string[];
   allReady: boolean;
 }
 
 /**
  * Derives substation summary for an order at the active station.
- * For kitchen: which lanes are ready vs waiting. For other stations: no lanes.
+ * Partitions by (prepGroup, lane) so split work-groups are considered separately:
+ * - A lane is "ready" if ANY work-group has that lane fully ready.
+ * - A lane is "waiting" if ANY work-group still has work in that lane.
+ * Returns null when station has no configured lanes.
  */
 export function deriveReadySubstationSummary(
   order: InputOrder,
-  activeStationId: string
+  activeStationId: string,
+  preparingLaneKeys?: string[]
 ): ReadySubstationSummary | null {
-  if (activeStationId !== "kitchen") return null;
+  if (!preparingLaneKeys || preparingLaneKeys.length === 0) return null;
+
+  const laneKeys = preparingLaneKeys.includes("unassigned")
+    ? preparingLaneKeys
+    : [...preparingLaneKeys, "unassigned"];
+
   const stationItems = order.items.filter((i) => i.stationId === activeStationId);
   const activeItems = stationItems.filter((i) => i.voidedAt == null);
   if (activeItems.length === 0) return null;
 
-  const byLane = new Map<PreparingLaneId, LaneEntryItem[]>();
+  const validKeys = new Set(laneKeys);
+  const byGroupAndLane = new Map<string, LaneEntryItem[]>();
   for (const item of activeItems) {
-    const lane: PreparingLaneId =
-      item.substation && PREPARING_LANES.includes(item.substation as PreparingLaneId)
-        ? (item.substation as PreparingLaneId)
-        : "unassigned";
-    const list = byLane.get(lane) ?? [];
+    const group = item.prepGroup && String(item.prepGroup).trim() ? item.prepGroup : MAIN;
+    const lane =
+      item.substation && validKeys.has(item.substation) ? item.substation : "unassigned";
+    const key = `${group}\0${lane}`;
+    const list = byGroupAndLane.get(key) ?? [];
     list.push(item);
-    byLane.set(lane, list);
+    byGroupAndLane.set(key, list);
   }
 
-  const readyLanes: PreparingLaneId[] = [];
-  const waitingLanes: PreparingLaneId[] = [];
-  for (const lane of PREPARING_LANES) {
-    const laneItems = byLane.get(lane) ?? [];
-    if (laneItems.length === 0) continue;
-    const laneStatus = statusFromItems(laneItems);
+  const laneHasReady = new Set<string>();
+  const laneHasWaiting = new Set<string>();
+  for (const key of byGroupAndLane.keys()) {
+    const lane = key.split("\0")[1];
+    const items = byGroupAndLane.get(key)!;
+    const laneStatus = statusFromItems(items);
     if (laneStatus === "ready") {
-      readyLanes.push(lane);
+      laneHasReady.add(lane);
     } else {
-      waitingLanes.push(lane);
+      laneHasWaiting.add(lane);
     }
   }
+
+  const readyLanes = laneKeys.filter((l) => laneHasReady.has(l));
+  const waitingLanes = laneKeys.filter((l) => laneHasWaiting.has(l));
+  const allReady = laneHasWaiting.size === 0;
+
   return {
     readyLanes,
     waitingLanes,
-    allReady: waitingLanes.length === 0,
+    allReady,
   };
 }
 
 /**
+ * Returns true if any work-group at the station has all its items ready.
+ * Used for READY inclusion when the station has no lane config.
+ */
+function hasAnyWorkGroupReadyAtStation(
+  order: InputOrder,
+  activeStationId: string
+): boolean {
+  const stationItems = order.items.filter(
+    (i) => i.stationId === activeStationId && i.voidedAt == null
+  );
+  if (stationItems.length === 0) return false;
+  const byGroup = new Map<string, LaneEntryItem[]>();
+  for (const item of stationItems) {
+    const group = item.prepGroup && String(item.prepGroup).trim() ? item.prepGroup : MAIN;
+    const list = byGroup.get(group) ?? [];
+    list.push(item);
+    byGroup.set(group, list);
+  }
+  for (const groupItems of byGroup.values()) {
+    if (statusFromItems(groupItems) === "ready") return true;
+  }
+  return false;
+}
+
+/**
  * Orders that belong in the READY column for the active station.
- * Kitchen: orders with at least one substation ready (merged ticket with summary).
- * Other stations: orders with station status ready.
+ * READY remains merged by order (one ticket per order).
+ * Inclusion: show order as soon as ANY split work-group is ready at the station.
+ * When station has lanes: uses (prepGroup, lane) partitioning; includes when any (group, lane) is ready.
+ * When no lanes: includes when any work-group at the station is ready.
  */
 export function getOrdersForReadyColumn(
   orders: InputOrder[],
-  activeStationId: string
+  activeStationId: string,
+  preparingLaneKeys?: string[]
 ): InputOrder[] {
-  if (activeStationId !== "kitchen") {
-    return orders.filter(
-      (o) => o.stationStatuses?.[activeStationId] === "ready"
-    );
+  if (!preparingLaneKeys || preparingLaneKeys.length === 0) {
+    return orders.filter((o) => hasAnyWorkGroupReadyAtStation(o, activeStationId));
   }
   return orders.filter((order) => {
-    const stationItems = order.items.filter((i) => i.stationId === activeStationId && i.voidedAt == null);
+    const stationItems = order.items.filter(
+      (i) => i.stationId === activeStationId && i.voidedAt == null
+    );
     if (stationItems.length === 0) return false;
-    const summary = deriveReadySubstationSummary(order, activeStationId);
+    const summary = deriveReadySubstationSummary(
+      order,
+      activeStationId,
+      preparingLaneKeys
+    );
     return summary != null && summary.readyLanes.length > 0;
   });
 }

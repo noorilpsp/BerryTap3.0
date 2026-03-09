@@ -59,7 +59,7 @@ export async function PUT(
     }
 
     const body = await request.json().catch(() => ({}));
-    const { quantity, notes, status, recall, eventSource } = body;
+    const { quantity, notes, status, recall, eventSource, prepGroup } = body;
     const source = normalizeEventSource(eventSource);
 
     const requestHash = computeRequestHash({ ...body, id, itemId });
@@ -274,6 +274,16 @@ export async function PUT(
         });
         return posFailure("BAD_REQUEST", msg, { status: 400, correlationId: idempotencyKey });
       }
+    }
+
+    if (prepGroup !== undefined) {
+      const val = prepGroup === null ? null : (typeof prepGroup === "string" && prepGroup.trim().length > 0
+        ? String(prepGroup).trim().slice(0, 50)
+        : null);
+      await db
+        .update(orderItems)
+        .set({ prepGroup: val })
+        .where(eq(orderItems.id, itemId));
     }
 
     const successBody = { ok: true as const, data: { itemId }, correlationId: idempotencyKey };
