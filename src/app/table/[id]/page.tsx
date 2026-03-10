@@ -59,6 +59,7 @@ import { fetchPos, getPosCorrelationId, makeIdempotencyKey } from "@/lib/pos/fet
 import { fireAndForget } from "@/lib/pos/fireAndForget"
 import { posDebugError } from "@/lib/pos/posDebugError"
 import { TablePageSkeleton } from "@/components/table-detail/TablePageSkeleton"
+import { getTableCache, setTableCache } from "@/lib/view-cache"
 
 function getAutoSelectedOptions(item: MenuItem): Record<string, string> {
   const options: Record<string, string> = {}
@@ -492,7 +493,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   const [armedWaveDelete, setArmedWaveDelete] = useState<number | null>(null)
   const [armedSeatDelete, setArmedSeatDelete] = useState<number | null>(null)
   const [seatRenameState, setSeatRenameState] = useState<{ seatNumber: number; input: string } | null>(null)
-  const [tableViewLoading, setTableViewLoading] = useState(true)
+  const [tableViewLoading, setTableViewLoading] = useState(() => !getTableCache(id))
   const [tableViewError, setTableViewError] = useState<string | null>(null)
   const [kitchenDelayDismissed, setKitchenDelayDismissed] = useState(false)
   const waveHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -504,7 +505,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     targetLabel: string
     waveLabel: string
   } | null>(null)
-  const [tableView, setTableView] = useState<TableView | null>(null)
+  const [tableView, setTableView] = useState<TableView | null>(() => getTableCache(id) ?? null)
   const {
     table,
     tableItems,
@@ -622,7 +623,9 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       if (process.env.NODE_ENV !== "production") {
         console.time("[perf] refresh apply state")
       }
-      applyTableView(payload.data)
+      const data = payload.data
+      applyTableView(data)
+      setTableCache(id, data)
       setKitchenDelayDismissed(false)
       if (!options?.silent) setTableViewError(null)
       if (process.env.NODE_ENV !== "production") {
@@ -743,7 +746,10 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   useEffect(() => {
     if (prevTableIdRef.current !== id) {
       prevTableIdRef.current = id
-      setTableView(null)
+      const cached = getTableCache(id)
+      if (!cached) {
+        setTableView(null)
+      }
       setSelectedWaveNumber(1)
       setOptimisticSeatOps({ added: [], deleted: [], renamed: {} })
       setOptimisticWavesAdded([])
@@ -758,8 +764,16 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       itemOrderIdsRef.current = new Map()
       seatIdByNumberRef.current = new Map()
     }
-    refreshTableView()
-  }, [id, refreshTableView])
+    const cached = getTableCache(id)
+    if (cached) {
+      applyTableView(cached)
+      setTableViewLoading(false)
+      setTableViewError(null)
+      void refreshTableView({ silent: true })
+    } else {
+      void refreshTableView()
+    }
+  }, [id, refreshTableView, applyTableView])
 
   useEffect(() => {
     itemOrderIdsRef.current = itemOrderIds

@@ -1,0 +1,187 @@
+/**
+ * Floor Map view contract — shape returned by GET /api/floor-map/view.
+ * Matches Floor Map Architecture spec §3.1.
+ */
+
+import type { PlacedElement } from "@/lib/floorplan-types";
+
+export type FloorMapTableStatus =
+  | "free"
+  | "active"
+  | "urgent"
+  | "billing"
+  | "closed";
+
+export type FloorMapTableStage =
+  | "drinks"
+  | "food"
+  | "dessert"
+  | "bill"
+  | null;
+
+export interface FloorMapTable {
+  id: string;
+  number: number;
+  section: string;
+  status: FloorMapTableStatus;
+  capacity: number;
+  guests: number;
+  stage: FloorMapTableStage;
+  position: { x: number; y: number };
+  shape: string;
+  serverId: string | null;
+  serverName: string | null;
+  seatedAt: string | null;
+  alerts: string[];
+  width?: number;
+  height?: number;
+  rotation?: number;
+  waves?: { type: string; status: string }[];
+  billTotal?: number;
+}
+
+export interface FloorMapView {
+  tables: FloorMapTable[];
+  sections: { id: string; name: string }[];
+  /** All floor plans for the location (for selector). */
+  allFloorplans: { id: string; name: string }[];
+  floorplan: {
+    id: string | null;
+    elements: PlacedElement[];
+    activeId: string | null;
+  };
+  statusCounts: {
+    free: number;
+    active: number;
+    urgent: number;
+    billing: number;
+    closed: number;
+  };
+  currentServer: {
+    id: string;
+    name: string;
+    section: string;
+    assignedTableIds: string[];
+  } | null;
+}
+
+function isRecord(x: unknown): x is Record<string, unknown> {
+  return typeof x === "object" && x !== null;
+}
+
+function isString(x: unknown): x is string {
+  return typeof x === "string";
+}
+
+function isNumber(x: unknown): x is number {
+  return typeof x === "number" && Number.isFinite(x);
+}
+
+function isArray(x: unknown): x is unknown[] {
+  return Array.isArray(x);
+}
+
+export function isFloorMapView(x: unknown): x is FloorMapView {
+  if (!isRecord(x)) return false;
+  if (!isArray(x.tables) || !isArray(x.sections) || !isArray(x.allFloorplans)) return false;
+  const fp = x.floorplan;
+  if (!isRecord(fp)) return false;
+  if (fp.id !== null && !isString(fp.id)) return false;
+  if (!isArray(fp.elements)) return false;
+  if (fp.activeId !== null && !isString(fp.activeId)) return false;
+  const sc = x.statusCounts;
+  if (!isRecord(sc)) return false;
+  const requiredCounts = ["free", "active", "urgent", "billing", "closed"];
+  for (const k of requiredCounts) {
+    if (typeof (sc as Record<string, unknown>)[k] !== "number") return false;
+  }
+  const cs = x.currentServer;
+  if (cs !== null && !isRecord(cs)) return false;
+  if (cs && (!isString(cs.id) || !isString(cs.name) || !isArray(cs.assignedTableIds)))
+    return false;
+  return true;
+}
+
+/** Map FloorMapTable[] to StoreTable format for store sync (live detail needs store tables). */
+export function viewTablesToStoreTables(
+  tables: FloorMapTable[]
+): Array<{
+  id: string;
+  number: number;
+  section: string;
+  capacity: number;
+  status: FloorMapTableStatus;
+  shape: string;
+  position: { x: number; y: number };
+  guests?: number;
+  serverId?: string | null;
+  seatedAt?: string | null;
+  stage?: FloorMapTableStage;
+  alerts?: string[];
+  width?: number;
+  height?: number;
+  rotation?: number;
+}> {
+  return tables.map((t) => ({
+    id: t.id,
+    number: t.number,
+    section: t.section,
+    capacity: t.capacity,
+    status: t.status,
+    shape: t.shape,
+    position: t.position,
+    guests: t.guests,
+    serverId: t.serverId,
+    seatedAt: t.seatedAt ?? undefined,
+    stage: t.stage ?? undefined,
+    alerts: t.alerts,
+    width: t.width,
+    height: t.height,
+    rotation: t.rotation,
+  }));
+}
+
+/** Map FloorMapTable[] to FloorTable format for MapCanvas/GridView. Includes optional waves/billTotal/serverId for live detail. */
+export function viewTablesToFloorTables(
+  tables: FloorMapTable[]
+): Array<{
+  id: string;
+  number: number;
+  section: string;
+  status: FloorMapTableStatus;
+  capacity: number;
+  guests: number;
+  stage: FloorMapTableStage;
+  position: { x: number; y: number };
+  shape: string;
+  server: string | null;
+  serverId?: string | null;
+  seatedAt?: string;
+  alerts?: string[];
+  waves?: { type: string; status: string }[];
+  billTotal?: number;
+  width?: number;
+  height?: number;
+  rotation?: number;
+}> {
+  return tables.map((t) => ({
+    id: t.id,
+    number: t.number,
+    section: t.section,
+    status: t.status,
+    capacity: t.capacity,
+    guests: t.guests,
+    stage: t.stage,
+    position: t.position,
+    shape: t.shape,
+    server: t.serverName ?? t.serverId ?? null,
+    serverId: t.serverId ?? null,
+    seatedAt: t.seatedAt ?? undefined,
+    alerts: t.alerts,
+    waves: t.waves,
+    billTotal: t.billTotal,
+    width: t.width,
+    height: t.height,
+    rotation: t.rotation,
+  }));
+}

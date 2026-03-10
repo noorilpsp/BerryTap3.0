@@ -4,14 +4,29 @@ import { useTenant } from '@/lib/contexts/TenantContext'
 import { useState, useEffect } from 'react'
 import type { MerchantLocation } from '@/lib/db/schema/merchant-locations'
 
+let locationsCache: { merchantId: string; data: MerchantLocation[] } | null = null
+
+function getLocationsCache(merchantId: string | null): MerchantLocation[] | null {
+  if (!merchantId || !locationsCache || locationsCache.merchantId !== merchantId) return null
+  return locationsCache.data
+}
+
+function setLocationsCache(merchantId: string, data: MerchantLocation[]): void {
+  locationsCache = { merchantId, data }
+}
+
 /**
  * Hook to fetch locations for the current merchant
  * Uses the current merchant ID from TenantContext
  */
 export function useLocations() {
   const { currentMerchantId, loading: tenantLoading } = useTenant()
-  const [locations, setLocations] = useState<MerchantLocation[]>([])
-  const [loading, setLoading] = useState(false)
+  const [locations, setLocations] = useState<MerchantLocation[]>(() =>
+    getLocationsCache(currentMerchantId ?? null) ?? []
+  )
+  const [loading, setLoading] = useState(
+    () => !!currentMerchantId && !tenantLoading && !getLocationsCache(currentMerchantId)
+  )
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -28,13 +43,20 @@ export function useLocations() {
       return
     }
 
-    // Fetch locations
+    const cached = getLocationsCache(currentMerchantId)
+    if (cached) {
+      setLocations(cached)
+      setLoading(false)
+    }
+
     let cancelled = false
 
-    async function fetchLocations() {
+    async function fetchLocations(silent: boolean) {
       try {
-        setLoading(true)
-        setError(null)
+        if (!silent) {
+          setLoading(true)
+          setError(null)
+        }
 
         const validMerchantId = currentMerchantId?.trim()
         if (!validMerchantId) {
@@ -65,6 +87,7 @@ export function useLocations() {
         }
 
         const data: MerchantLocation[] = await response.json()
+        setLocationsCache(validMerchantId, data)
 
         if (!cancelled) {
           setLocations(data)
@@ -81,7 +104,7 @@ export function useLocations() {
       }
     }
 
-    fetchLocations()
+    void fetchLocations(!cached)
 
     return () => {
       cancelled = true

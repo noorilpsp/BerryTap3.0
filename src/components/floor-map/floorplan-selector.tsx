@@ -8,6 +8,8 @@ import {
   type SavedFloorplan,
 } from "@/lib/floorplan-storage-db"
 import { useLocation } from "@/lib/contexts/LocationContext"
+
+export type FloorplanOption = { id: string; name: string }
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,18 +22,26 @@ import { Button } from "@/components/ui/button"
 import { Map, Check, LayoutGrid, Users, Plus } from "lucide-react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
+import type { PlacedElement } from "@/lib/floorplan-types"
 
 interface FloorplanSelectorProps {
   onFloorplanChange: (floorplan: SavedFloorplan | null) => void
+  /** When provided, use these instead of loading. Used when page gets data from FloorMapView API. */
+  allFloorplans?: FloorplanOption[]
+  activeFloorplanId?: string | null
 }
 
-export function FloorplanSelector({ onFloorplanChange }: FloorplanSelectorProps) {
+export function FloorplanSelector({
+  onFloorplanChange,
+  allFloorplans: allFloorplansProp,
+  activeFloorplanId: activeIdProp,
+}: FloorplanSelectorProps) {
   const { currentLocationId } = useLocation()
-  const [floorplans, setFloorplans] = useState<SavedFloorplan[]>([])
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [floorplansLegacy, setFloorplansLegacy] = useState<SavedFloorplan[]>([])
+  const [activeIdLegacy, setActiveIdLegacy] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!currentLocationId) return
+    if (!currentLocationId || allFloorplansProp) return
     let cancelled = false
     async function load() {
       const [all, active] = await Promise.all([
@@ -39,20 +49,27 @@ export function FloorplanSelector({ onFloorplanChange }: FloorplanSelectorProps)
         getActiveFloorplanDb(currentLocationId!),
       ])
       if (cancelled) return
-      setFloorplans(all)
-      setActiveId(active?.id ?? null)
+      setFloorplansLegacy(all)
+      setActiveIdLegacy(active?.id ?? null)
     }
     load()
     return () => { cancelled = true }
-  }, [currentLocationId])
+  }, [currentLocationId, allFloorplansProp])
+
+  const floorplans = allFloorplansProp
+    ? allFloorplansProp.map((fp) => ({ id: fp.id, name: fp.name, elements: [] as PlacedElement[], totalSeats: 0 }))
+    : floorplansLegacy
+  const activeId = activeIdProp ?? activeIdLegacy
 
   const activePlan = floorplans.find((f) => f.id === activeId)
 
-  const handleSelect = async (floorplan: SavedFloorplan) => {
+  const handleSelect = async (floorplan: SavedFloorplan | { id: string; name: string }) => {
     if (!currentLocationId) return
-    await setActiveFloorplanIdDb(currentLocationId, floorplan.id)
-    setActiveId(floorplan.id)
-    onFloorplanChange(floorplan)
+    if (!allFloorplansProp) {
+      await setActiveFloorplanIdDb(currentLocationId, floorplan.id)
+    }
+    const full = "elements" in floorplan && Array.isArray(floorplan.elements) ? floorplan : null
+    onFloorplanChange(full ?? { id: floorplan.id, name: floorplan.name, elements: [], totalSeats: 0 } as SavedFloorplan)
   }
 
   if (floorplans.length === 0) return null
@@ -79,15 +96,16 @@ export function FloorplanSelector({ onFloorplanChange }: FloorplanSelectorProps)
 
         {/* Saved floorplans */}
         {floorplans.map((fp) => {
-          const tableCount = fp.elements.filter(
-            (el) => (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
+          const elements = "elements" in fp ? fp.elements : []
+          const tableCount = elements.filter(
+            (el: PlacedElement) => (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
           ).length
           const isActive = fp.id === activeId
 
           return (
             <DropdownMenuItem
               key={fp.id}
-              onClick={() => handleSelect(fp)}
+              onClick={() => handleSelect(fp as SavedFloorplan)}
               className={cn("gap-3 py-2.5", isActive && "bg-accent/50")}
             >
               <div className={cn(

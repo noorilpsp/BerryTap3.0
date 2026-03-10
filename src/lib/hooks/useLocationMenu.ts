@@ -114,13 +114,34 @@ function mapItem(
   };
 }
 
+let menuCache: {
+  locationId: string;
+  menuItems: MenuItem[];
+  categories: Category[];
+} | null = null;
+
+function getMenuCache(locationId: string | null): { menuItems: MenuItem[]; categories: Category[] } | null {
+  if (!locationId || !menuCache || menuCache.locationId !== locationId) return null;
+  return { menuItems: menuCache.menuItems, categories: menuCache.categories };
+}
+
+function setMenuCache(locationId: string, menuItems: MenuItem[], categories: Category[]): void {
+  menuCache = { locationId, menuItems, categories };
+}
+
 export function useLocationMenu(locationId: string | null) {
-  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>(
+    () => getMenuCache(locationId)?.menuItems ?? []
+  );
+  const [categories, setCategories] = useState<Category[]>(
+    () => getMenuCache(locationId)?.categories ?? []
+  );
+  const [loading, setLoading] = useState(
+    () => !!locationId && !getMenuCache(locationId)
+  );
   const [error, setError] = useState<string | null>(null);
 
-  const fetchMenu = useCallback(async () => {
+  const fetchMenu = useCallback(async (silent = false) => {
     if (!locationId) {
       setMenuItems([]);
       setCategories([]);
@@ -129,8 +150,10 @@ export function useLocationMenu(locationId: string | null) {
       return;
     }
 
-    setLoading(true);
-    setError(null);
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const [itemsRes, categoriesRes, customizationsRes] = await Promise.all([
         fetch(`/api/items?locationId=${encodeURIComponent(locationId)}`, {
@@ -183,21 +206,33 @@ export function useLocationMenu(locationId: string | null) {
       }
 
       const mappedItems = (itemsList ?? []).map((item) => mapItem(item, groupMap));
+      setMenuCache(locationId, mappedItems, mappedCategories);
 
       setCategories(mappedCategories);
       setMenuItems(mappedItems);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load menu");
-      setMenuItems([]);
-      setCategories([]);
+      if (!silent) {
+        setError(err instanceof Error ? err.message : "Failed to load menu");
+        setMenuItems([]);
+        setCategories([]);
+      }
     } finally {
       setLoading(false);
     }
   }, [locationId]);
 
   useEffect(() => {
-    fetchMenu();
-  }, [fetchMenu]);
+    if (!locationId) return;
+    const cached = getMenuCache(locationId);
+    if (cached) {
+      setMenuItems(cached.menuItems);
+      setCategories(cached.categories);
+      setLoading(false);
+      void fetchMenu(true);
+    } else {
+      void fetchMenu(false);
+    }
+  }, [fetchMenu, locationId]);
 
   return {
     menuItems,

@@ -3,22 +3,37 @@
 import { useEffect, useState } from 'react'
 import type { SessionPermissions } from '@/lib/types/permissions'
 
+let permissionsCache: SessionPermissions | null = null
+
+function getPermissionsCache(): SessionPermissions | null {
+  return permissionsCache
+}
+
+function setPermissionsCache(data: SessionPermissions | null): void {
+  permissionsCache = data
+}
+
 /**
  * Hook to fetch session permissions (lightweight initial load)
  * This replaces the old usePermissions hook with a more efficient approach
  */
 export function useSessionPermissions() {
-  const [permissions, setPermissions] = useState<SessionPermissions | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [permissions, setPermissions] = useState<SessionPermissions | null>(
+    () => getPermissionsCache()
+  )
+  const [loading, setLoading] = useState(() => !getPermissionsCache())
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
+    const cached = getPermissionsCache()
 
-    async function fetchPermissions() {
+    async function fetchPermissions(silent: boolean) {
       try {
-        setLoading(true)
-        setError(null)
+        if (!silent) {
+          setLoading(true)
+          setError(null)
+        }
 
         const response = await fetch('/api/session/permissions', {
           credentials: 'include',
@@ -31,8 +46,9 @@ export function useSessionPermissions() {
 
         if (!response.ok) {
           if (response.status === 401) {
-            setError('Unauthorized - Please log in')
+            setPermissionsCache(null)
             if (!cancelled) {
+              setError('Unauthorized - Please log in')
               setPermissions(null)
             }
             return
@@ -42,9 +58,9 @@ export function useSessionPermissions() {
         }
 
         const data: SessionPermissions = await response.json()
+        setPermissionsCache(data)
 
         if (!cancelled) {
-          // Debug: Log permissions data to help diagnose issues
           if (typeof window !== 'undefined') {
             console.log('[useSessionPermissions] Loaded permissions:', {
               userId: data.userId,
@@ -66,9 +82,9 @@ export function useSessionPermissions() {
       }
     }
 
-    // Defer to next tick to avoid blocking initial render
+    const silent = Boolean(cached)
     const timeoutId = setTimeout(() => {
-      fetchPermissions()
+      void fetchPermissions(silent)
     }, 0)
 
     return () => {
@@ -93,6 +109,7 @@ export function useSessionPermissions() {
 
       if (!response.ok) {
         if (response.status === 401) {
+          setPermissionsCache(null)
           setError('Unauthorized - Please log in')
           setPermissions(null)
           return
@@ -102,6 +119,7 @@ export function useSessionPermissions() {
       }
 
       const data: SessionPermissions = await response.json()
+      setPermissionsCache(data)
       setPermissions(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch permissions')

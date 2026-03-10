@@ -25,9 +25,9 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import type { FloorTable, SectionId, DietaryId, OccasionId, SeatPartyForm } from "@/lib/floor-map-data"
+import type { CurrentServer, FloorTable, SectionId, DietaryId, OccasionId, SeatPartyForm } from "@/lib/floor-map-data"
 import {
-  currentServer,
+  currentServer as defaultCurrentServer,
   defaultSectionConfig,
   dietaryOptions,
   occasionOptions,
@@ -43,6 +43,8 @@ type ModalState = "form" | "seating" | "success"
 
 interface SeatPartyModalProps {
   sectionConfig?: Record<string, { name: string }>
+  /** Real server from FloorMapView. Falls back to floor-map-data default when omitted (e.g. table page). */
+  currentServer?: CurrentServer
   open: boolean
   tables: FloorTable[]
   preSelectedTableId?: string | null
@@ -71,7 +73,8 @@ const occasionIcons: Record<OccasionId, typeof Cake> = {
 
 // ── Main Component ───────────────────────────────────────────────────────────
 
-export function SeatPartyModal({ sectionConfig = defaultSectionConfig, open, tables, preSelectedTableId, onClose, onSeated }: SeatPartyModalProps) {
+export function SeatPartyModal({ sectionConfig = defaultSectionConfig, currentServer: currentServerProp, open, tables, preSelectedTableId, onClose, onSeated }: SeatPartyModalProps) {
+  const currentServer = currentServerProp ?? defaultCurrentServer
   const isMobile = useIsMobile()
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -397,6 +400,7 @@ export function SeatPartyModal({ sectionConfig = defaultSectionConfig, open, tab
         {step === "table" && (
           <StepTableSelection
             sectionConfig={sectionConfig}
+            currentServer={currentServer}
             available={filteredAvailable}
             selectedTableId={form.tableId}
             partySize={form.partySize}
@@ -408,6 +412,7 @@ export function SeatPartyModal({ sectionConfig = defaultSectionConfig, open, tab
         {step === "review" && (
           <StepReview
             sectionConfig={sectionConfig}
+            currentServer={currentServer}
             form={form}
             selectedTable={selectedTable}
             showDietary={showDietary}
@@ -650,6 +655,7 @@ function StepPartySize({
 
 function StepTableSelection({
   sectionConfig,
+  currentServer,
   available,
   selectedTableId,
   partySize,
@@ -658,6 +664,7 @@ function StepTableSelection({
   onSectionFilter,
 }: {
   sectionConfig: Record<string, { name: string }>
+  currentServer: CurrentServer
   available: (FloorTable & { suggested: boolean; reason: string })[]
   selectedTableId: string | null
   partySize: number
@@ -726,6 +733,7 @@ function StepTableSelection({
                   <TablePickCard
                     key={t.id}
                     sectionConfig={sectionConfig}
+                    currentServer={currentServer}
                     table={t}
                     selected={selectedTableId === t.id}
                     suggested
@@ -747,6 +755,7 @@ function StepTableSelection({
                   <TablePickCard
                     key={t.id}
                     sectionConfig={sectionConfig}
+                    currentServer={currentServer}
                     table={t}
                     selected={selectedTableId === t.id}
                     suggested={false}
@@ -766,12 +775,14 @@ function StepTableSelection({
 
 function TablePickCard({
   sectionConfig,
+  currentServer,
   table,
   selected,
   suggested,
   onSelect,
 }: {
   sectionConfig: Record<string, { name: string }>
+  currentServer: CurrentServer
   table: FloorTable & { reason: string }
   selected: boolean
   suggested: boolean
@@ -827,6 +838,7 @@ function TablePickCard({
 
 function StepReview({
   sectionConfig,
+  currentServer,
   form,
   selectedTable,
   showDietary,
@@ -843,6 +855,7 @@ function StepReview({
   onEditStep,
 }: {
   sectionConfig: Record<string, { name: string }>
+  currentServer: CurrentServer
   form: SeatPartyForm
   selectedTable: FloorTable | null
   showDietary: boolean

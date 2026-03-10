@@ -26,15 +26,15 @@ import {
   floorStatusConfig,
   minutesAgo,
   defaultSectionConfig,
-  currentServer,
 } from "@/lib/floor-map-data"
 import type { Wave, WaveStatus, DetailAlert } from "@/lib/table-detail-data"
-import { useRestaurantStore } from "@/store/restaurantStore"
-import { buildFloorMapLiveDetail, type FloorMapLiveDetail } from "@/lib/floor-map-live-detail"
+import type { FloorMapLiveDetail } from "@/lib/floor-map-live-detail"
 
 interface GridViewProps {
   sectionConfig?: Record<string, { name: string }>
   tables: FloorTable[]
+  liveDetailByTableId: Map<string, FloorMapLiveDetail | null>
+  currentServerId: string
   ownTableIds: string[]
   onTableTap: (tableId: string) => void
 }
@@ -233,6 +233,7 @@ function WaveProgress({ waves, compact = false }: { waves: Wave[]; compact?: boo
 const TableCard = React.memo(function TableCard({
   table,
   detail,
+  currentServerId,
   isOwn,
   onTap,
   cardIndex,
@@ -240,6 +241,7 @@ const TableCard = React.memo(function TableCard({
 }: {
   table: FloorTable
   detail: FloorMapLiveDetail | null
+  currentServerId: string
   isOwn: boolean
   onTap: () => void
   cardIndex: number
@@ -254,7 +256,7 @@ const TableCard = React.memo(function TableCard({
   const alerts = detail?.alerts ?? []
   const billTotal = detail?.billTotal ?? 0
   const serverName = detail?.server?.name ?? null
-  const serverIsYou = detail?.server?.id === currentServer.id
+  const serverIsYou = detail?.server?.id === currentServerId
   const hasDietary = detail?.seats.some((s) => s.dietary.length > 0)
   const hasSpecial = detail?.seats.some((s) => s.specialOccasion)
   const quickActions = getQuickActions(table, waves)
@@ -442,40 +444,13 @@ function UrgentBanner({
 
 // ── Main GridView ──────────────────────────────────────────────────────────
 export function GridView({
-  sectionConfig = defaultSectionConfig, tables, ownTableIds, onTableTap }: GridViewProps) {
-  const storeTables = useRestaurantStore((s) => s.tables)
-  const storeOrders = useRestaurantStore((s) => s.orders)
-  const storeById = useMemo(
-    () => new Map(storeTables.map((table) => [table.id, table])),
-    [storeTables]
-  )
-  const orderById = useMemo(
-    () => new Map(storeOrders.map((order) => [order.id, order])),
-    [storeOrders]
-  )
-  const openOrderByTableId = useMemo(() => {
-    const map = new Map<string, (typeof storeOrders)[number]>()
-    for (const order of storeOrders) {
-      if (order.status !== "open" || map.has(order.tableId)) continue
-      map.set(order.tableId, order)
-    }
-    return map
-  }, [storeOrders])
-  const liveDetailByTableId = useMemo(() => {
-    const detailMap = new Map<string, FloorMapLiveDetail | null>()
-    for (const table of tables) {
-      const storeTable = storeById.get(table.id) ?? storeById.get(table.id.toLowerCase())
-      const linkedOrder =
-        storeTable?.orderId ? orderById.get(storeTable.orderId) : undefined
-      const openOrder =
-        linkedOrder?.status === "open"
-          ? linkedOrder
-          : openOrderByTableId.get(table.id) ?? openOrderByTableId.get(table.id.toLowerCase())
-      detailMap.set(table.id, buildFloorMapLiveDetail(table, storeTable, openOrder))
-    }
-    return detailMap
-  }, [openOrderByTableId, orderById, storeById, tables])
-
+  sectionConfig = defaultSectionConfig,
+  tables,
+  liveDetailByTableId,
+  currentServerId,
+  ownTableIds,
+  onTableTap,
+}: GridViewProps) {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<FloorTableStatus>>(() => {
     const initial = new Set<FloorTableStatus>()
     for (const s of statusOrder) {
@@ -606,6 +581,7 @@ export function GridView({
                           key={table.id}
                           table={table}
                           detail={liveDetailByTableId.get(table.id) ?? null}
+                          currentServerId={currentServerId}
                           isOwn={isOwn}
                           onTap={() => onTableTap(table.id)}
                           cardIndex={idx}

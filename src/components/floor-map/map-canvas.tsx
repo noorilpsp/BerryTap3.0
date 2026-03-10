@@ -6,10 +6,9 @@ import { useState, useCallback, useEffect } from "react"
 import { cn } from "@/lib/utils"
 import { FloorplanScene, type TableStatusInfo } from "@/components/shared/floorplan-scene"
 import type { FloorTable, SectionId } from "@/lib/floor-map-data"
-import { getSectionBounds, minutesAgo, currentServer } from "@/lib/floor-map-data"
+import { getSectionBounds, minutesAgo } from "@/lib/floor-map-data"
 import type { WaveStatus } from "@/lib/table-detail-data"
-import { useRestaurantStore } from "@/store/restaurantStore"
-import { buildFloorMapLiveDetail, type FloorMapLiveDetail } from "@/lib/floor-map-live-detail"
+import type { FloorMapLiveDetail } from "@/lib/floor-map-live-detail"
 import { Users, Clock, AlertTriangle, Flame, Wine, UtensilsCrossed, Cake } from "lucide-react"
 import {
   ZOOM_LEVELS,
@@ -25,6 +24,8 @@ import { convertElementsToStoreTables } from "@/lib/floorplan-convert"
 interface MapCanvasProps {
   sectionConfig: Record<string, { name: string }>
   tables: FloorTable[]
+  liveDetailByTableId: Map<string, FloorMapLiveDetail | null>
+  currentServerId: string
   ownTableIds: string[]
   filterMode: string
   highlightedTableId: string | null
@@ -48,6 +49,8 @@ interface MapCanvasProps {
 export function MapCanvas({
   sectionConfig,
   tables,
+  liveDetailByTableId,
+  currentServerId,
   ownTableIds,
   highlightedTableId,
   highlightType,
@@ -123,39 +126,6 @@ export function MapCanvas({
     const priority: Record<string, number> = { urgent: 0, active: 1, billing: 2, free: 3, closed: 4 }
     return (priority[a.status] ?? 5) - (priority[b.status] ?? 5)
   })
-  const storeTables = useRestaurantStore((s) => s.tables)
-  const storeOrders = useRestaurantStore((s) => s.orders)
-  const storeById = React.useMemo(
-    () => new Map(storeTables.map((table) => [table.id, table])),
-    [storeTables]
-  )
-  const orderById = React.useMemo(
-    () => new Map(storeOrders.map((order) => [order.id, order])),
-    [storeOrders]
-  )
-  const openOrderByTableId = React.useMemo(() => {
-    const map = new Map<string, (typeof storeOrders)[number]>()
-    for (const order of storeOrders) {
-      if (order.status !== "open" || map.has(order.tableId)) continue
-      map.set(order.tableId, order)
-    }
-    return map
-  }, [storeOrders])
-  const liveDetailByTableId = React.useMemo(() => {
-    const detailMap = new Map<string, FloorMapLiveDetail | null>()
-    for (const table of tables) {
-      const storeTable = storeById.get(table.id) ?? storeById.get(table.id.toLowerCase())
-      const linkedOrder =
-        storeTable?.orderId ? orderById.get(storeTable.orderId) : undefined
-      const openOrder =
-        linkedOrder?.status === "open"
-          ? linkedOrder
-          : openOrderByTableId.get(table.id) ?? openOrderByTableId.get(table.id.toLowerCase())
-      detailMap.set(table.id, buildFloorMapLiveDetail(table, storeTable, openOrder))
-    }
-    return detailMap
-  }, [openOrderByTableId, orderById, storeById, tables])
-
   // ── Build FloorplanScene props from FloorTable data ───────────────────
   // Match elements to tables by table number (t1, t2, …), not by index.
   // DB returns tables in createdAt order; element order comes from the floorplan.
@@ -288,6 +258,7 @@ export function MapCanvas({
             elements={floorplanElements}
             mode="view"
             tableStatuses={tableStatuses}
+            currentServerId={currentServerId}
             ownTableIds={ownTableIds}
             highlightedId={highlightedTableId}
             dimmedIds={dimmedTableIds}
@@ -362,6 +333,7 @@ export function MapCanvas({
                   key={table.id}
                   table={table}
                   detail={liveDetailByTableId.get(table.id) ?? null}
+                  currentServerId={currentServerId}
                   isOwn={isOwn}
                   dimmed={dimmedByStatus || dimmedByFocus}
                   highlighted={isHighlighted}
@@ -486,6 +458,7 @@ function WaveDot({ type, status }: { type: string; status: WaveStatus }) {
 function DefaultTableNode({
   table,
   detail,
+  currentServerId,
   isOwn,
   dimmed,
   highlighted,
@@ -496,6 +469,7 @@ function DefaultTableNode({
 }: {
   table: FloorTable
   detail: FloorMapLiveDetail | null
+  currentServerId: string
   isOwn: boolean
   dimmed: boolean
   highlighted: boolean
@@ -512,7 +486,7 @@ function DefaultTableNode({
   const waves = detail?.waves ?? []
   const alerts = detail?.alerts ?? []
   const serverName = detail?.server?.name ?? null
-  const serverIsYou = detail?.server?.id === currentServer.id
+  const serverIsYou = detail?.server?.id === currentServerId
   const hasAlert = alerts.length > 0
 
   // Size: give enough room for info

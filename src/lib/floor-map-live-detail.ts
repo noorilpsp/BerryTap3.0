@@ -232,20 +232,41 @@ function buildAlerts(storeTable: StoreTable, waves: Wave[]): DetailAlert[] {
   ]
 }
 
+/** Floor table with optional view enrichment (waves, billTotal, serverId). */
+type FloorTableWithEnrichment = FloorTable & {
+  waves?: { type: string; status: string }[]
+  billTotal?: number
+  serverId?: string | null
+}
+
 export function buildFloorMapLiveDetail(
-  floorTable: FloorTable,
+  floorTable: FloorTableWithEnrichment,
   storeTable?: StoreTable,
   storeOrder?: StoreOrder
 ): FloorMapLiveDetail | null {
   const source = storeTable
   if (!source) {
-    const fallbackWaves = buildFallbackWaves(floorTable.stage, floorTable.alerts?.includes("food_ready") ?? false)
+    const waves =
+      floorTable.waves && floorTable.waves.length > 0
+        ? floorTable.waves.map((w) => ({ type: w.type, status: w.status }))
+        : buildFallbackWaves(floorTable.stage, floorTable.alerts?.includes("food_ready") ?? false)
+    const billTotal =
+      typeof floorTable.billTotal === "number" && Number.isFinite(floorTable.billTotal)
+        ? floorTable.billTotal
+        : 0
+    const displayName = floorTable.server ?? floorTable.serverId ?? null
+    const server =
+      floorTable.serverId
+        ? { id: floorTable.serverId, name: displayName ?? floorTable.serverId }
+        : displayName
+          ? { id: displayName, name: displayName }
+          : null
     return {
-      server: floorTable.server ? { id: floorTable.server, name: floorTable.server } : null,
+      server,
       seats: [],
-      waves: fallbackWaves,
+      waves,
       alerts: (floorTable.alerts ?? []).map(mapFloorAlertToDetail),
-      billTotal: 0,
+      billTotal,
     }
   }
 

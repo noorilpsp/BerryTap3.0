@@ -57,6 +57,8 @@ interface FloorplanSceneProps {
   mode: "edit" | "view"
   /** Table status info for view mode - maps element IDs to live table data */
   tableStatuses?: TableStatusInfo[]
+  /** Current server id for "serverIsYou" styling. When provided, used instead of floor-map-data default. */
+  currentServerId?: string
   /** Which table IDs are "own" (assigned to current server) */
   ownTableIds?: string[]
   /** Currently highlighted table */
@@ -77,6 +79,7 @@ export function FloorplanScene({
   elements,
   mode,
   tableStatuses = [],
+  currentServerId: currentServerIdProp,
   ownTableIds = [],
   highlightedId,
   dimmedIds,
@@ -89,6 +92,7 @@ export function FloorplanScene({
   for (const s of tableStatuses) {
     statusMap.set(s.elementId, s)
   }
+  const effectiveCurrentServerId = currentServerIdProp ?? currentServer.id
 
   // Separate elements: non-tables render first (background), tables on top
   const backgroundElements = elements.filter(
@@ -106,12 +110,24 @@ export function FloorplanScene({
     <>
       {/* Layer 1: Walls, fixtures, decor (non-interactive) */}
       {backgroundElements.map((el) => (
-        <SceneElement key={el.id} element={el} mode={mode} appeared={appeared} />
+        <SceneElement
+          key={el.id}
+          element={el}
+          mode={mode}
+          currentServerId={effectiveCurrentServerId}
+          appeared={appeared}
+        />
       ))}
 
       {/* Layer 2: Decorative tables (coffee tables, etc.) */}
       {decorativeTableElements.map((el) => (
-        <SceneElement key={el.id} element={el} mode={mode} appeared={appeared} />
+        <SceneElement
+          key={el.id}
+          element={el}
+          mode={mode}
+          currentServerId={effectiveCurrentServerId}
+          appeared={appeared}
+        />
       ))}
 
       {/* Layer 3: Seating */}
@@ -121,6 +137,7 @@ export function FloorplanScene({
           element={el}
           mode={mode}
           statusInfo={statusMap.get(el.id)}
+          currentServerId={effectiveCurrentServerId}
           isOwn={ownTableIds.includes(el.id)}
           isHighlighted={highlightedId === el.id}
           isDimmed={dimmedIds?.has(el.id)}
@@ -137,6 +154,7 @@ export function FloorplanScene({
           element={el}
           mode={mode}
           statusInfo={statusMap.get(el.id)}
+          currentServerId={effectiveCurrentServerId}
           isOwn={ownTableIds.includes(el.id)}
           isHighlighted={highlightedId === el.id}
           isDimmed={dimmedIds?.has(el.id)}
@@ -155,6 +173,7 @@ function SceneElement({
   element,
   mode,
   statusInfo,
+  currentServerId,
   isOwn,
   isHighlighted,
   isDimmed,
@@ -165,6 +184,7 @@ function SceneElement({
   element: PlacedElement
   mode: "edit" | "view"
   statusInfo?: TableStatusInfo
+  currentServerId: string
   isOwn?: boolean
   isHighlighted?: boolean
   isDimmed?: boolean
@@ -261,7 +281,11 @@ function SceneElement({
 
       {/* Rich status overlay (view mode only) */}
       {isInteractive && statusInfo && !isDimmed && (
-        <RichTableOverlay element={element} statusInfo={statusInfo} />
+        <RichTableOverlay
+          element={element}
+          statusInfo={statusInfo}
+          currentServerId={currentServerId}
+        />
       )}
     </Tag>
   )
@@ -325,9 +349,11 @@ function getUsableDims(w: number, h: number, rotation: number, isRound: boolean)
 function RichTableOverlay({
   element,
   statusInfo,
+  currentServerId,
 }: {
   element: PlacedElement
   statusInfo: TableStatusInfo
+  currentServerId: string
 }) {
   const { width: w, height: h, rotation, shape } = element
   const status = statusInfo.status
@@ -336,7 +362,7 @@ function RichTableOverlay({
   const waves = statusInfo.waves ?? []
   const alerts = statusInfo.alerts ?? []
   const hasAlert = alerts.length > 0
-  const serverIsYou = statusInfo.serverId === currentServer.id
+  const serverIsYou = statusInfo.serverId === currentServerId
   const isRound = shape === "circle" || shape === "ellipse"
 
   // Compute usable content area after rotation and shape constraints

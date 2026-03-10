@@ -3,6 +3,10 @@
 import React from "react"
 
 import { useState, useCallback, useEffect } from "react"
+import { FloorMapPageSkeleton } from "@/components/floor-map/FloorMapPageSkeleton"
+import { FloorMapNoLocationState } from "@/components/floor-map/FloorMapNoLocationState"
+import { FloorMapErrorState } from "@/components/floor-map/FloorMapErrorState"
+import { FloorMapStaleBanner } from "@/components/floor-map/FloorMapStaleBanner"
 import { MapTopBar } from "@/components/floor-map/map-top-bar"
 import { MapStatsBar } from "@/components/floor-map/map-stats-bar"
 import { MapCanvas } from "@/components/floor-map/map-canvas"
@@ -10,28 +14,24 @@ import { GridView } from "@/components/floor-map/grid-view"
 import { QuickActionsMenu } from "@/components/floor-map/quick-actions-menu"
 import { SeatPartyModal } from "@/components/floor-map/seat-party-modal"
 import {
-  currentServer,
   getStatusCounts,
   filterTablesByMode,
   filterTablesByStatus,
   buildSectionConfig,
   floorStatusConfig,
   getSectionBounds,
-  storeTablesToFloorTables,
 } from "@/lib/floor-map-data"
-import { useRestaurantStore } from "@/store/restaurantStore"
+import { buildFloorMapLiveDetail, type FloorMapLiveDetail } from "@/lib/floor-map-live-detail"
+import { getActiveFloorplanDb, setActiveFloorplanIdDb } from "@/lib/floorplan-storage-db"
+import type { SavedFloorplan } from "@/lib/floorplan-storage-db"
+import { useFloorMapView } from "@/lib/hooks/useFloorMapView"
+import { useFloorMapMutations } from "@/lib/hooks/useFloorMapMutations"
 import {
-  getAllFloorplansDb,
-  getActiveFloorplanDb,
-  setActiveFloorplanIdDb,
-  getTablesForFloorplanDb,
-  type SavedFloorplan,
-} from "@/lib/floorplan-storage-db"
+  viewTablesToFloorTables,
+  viewTablesToStoreTables,
+} from "@/lib/floor-map/floorMapView"
 import { useLocation } from "@/lib/contexts/LocationContext"
 import { FloorplanSelector } from "@/components/floor-map/floorplan-selector"
-import { fetchPos } from "@/lib/pos/fetchPos"
-import { fireAndForget } from "@/lib/pos/fireAndForget"
-import { toast } from "sonner"
 import type { FilterMode, ViewMode, FloorTableStatus, SectionId, SeatPartyForm } from "@/lib/floor-map-data"
 import { Plus, Hammer } from "lucide-react"
 import Link from "next/link"
@@ -48,83 +48,80 @@ import { useRouter } from "next/navigation"
 
 export default function FloorMapPage() {
   const router = useRouter()
-  const { currentLocationId } = useLocation()
+  const { currentLocationId, loading: locationLoading } = useLocation()
+  const locationIdResolved = !locationLoading
+  const [initialFloorplanId, setInitialFloorplanId] = React.useState<string | null>(null)
+  React.useEffect(() => {
+    if (!currentLocationId) {
+      setInitialFloorplanId(null)
+      return
+    }
+    let cancelled = false
+    getActiveFloorplanDb(currentLocationId).then((fp) => {
+      if (!cancelled) setInitialFloorplanId(fp?.id ?? null)
+    })
+    return () => { cancelled = true }
+  }, [currentLocationId])
   const isMobile = useIsMobile()
   const reducedMotion = usePrefersReducedMotion()
   const windowWidth = typeof window !== "undefined" ? window.innerWidth : 1024
 
-  // ── Tables: single source from store; loading a floorplan applies it to the store ──
-  const storeTables = useRestaurantStore((s) => s.tables)
-  const tables = React.useMemo(
-    () => storeTablesToFloorTables(storeTables),
-    [storeTables]
+  // ── Primary data from FloorMapView API ──
+  const { view, loading: viewLoading, error: viewError, staleError, refresh, patch } = useFloorMapView(
+    currentLocationId,
+    initialFloorplanId
   )
-  const [floorplanElements, setFloorplanElements] = useState<any[]>([])
-  const [allFloorplans, setAllFloorplans] = useState<SavedFloorplan[]>([])
-  const [activeFloorplanId, setActiveFloorplanIdState] = useState<string | null>(null)
-  const [activeFloorplanSections, setActiveFloorplanSections] = useState<{ id: string; name: string }[] | undefined>()
-  const [initialLoadDone, setInitialLoadDone] = useState(false)
+  const { seatParty } = useFloorMapMutations({ patch, refresh, view })
 
-  const sectionConfig = buildSectionConfig(activeFloorplanSections)
+  // Normalize currentServer for floor-map-data (expects assignedTables)
+  const currentServer = React.useMemo(() => {
+    const cs = view?.currentServer
+    if (!cs) return { id: "s1", name: "Sarah", section: "main", assignedTables: [] as string[] }
+    return { ...cs, assignedTables: cs.assignedTableIds }
+  }, [view?.currentServer])
 
-  useEffect(() => {
-    if (!currentLocationId) {
-      setInitialLoadDone(false)
-      return
-    }
-    let cancelled = false
-    setInitialLoadDone(false)
-    async function load() {
-      try {
-        const [all, active] = await Promise.all([
-          getAllFloorplansDb(currentLocationId!),
-          getActiveFloorplanDb(currentLocationId!),
-        ])
-        if (cancelled) return
-        setAllFloorplans(all)
-        setActiveFloorplanIdState(active?.id ?? null)
-        setActiveFloorplanSections(active?.sections)
-        if (active?.elements?.length && active?.id) {
-          const storeTablesFromPlan = await getTablesForFloorplanDb(currentLocationId!, active.id)
-          if (storeTablesFromPlan.length > 0) {
-            useRestaurantStore.getState().setTables(storeTablesFromPlan)
-            setFloorplanElements(active.elements)
-          }
-        }
-      } finally {
-        if (!cancelled) setInitialLoadDone(true)
-      }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [currentLocationId])
+  const tables = React.useMemo(
+    () => (view ? viewTablesToFloorTables(view.tables) : []),
+    [view]
+  )
+  const sectionConfig = buildSectionConfig(view?.sections)
+  const floorplanElements = view?.floorplan.elements ?? []
+  const allFloorplans = React.useMemo(
+    () =>
+      (view?.allFloorplans ?? []).map((fp) => ({
+        id: fp.id,
+        name: fp.name,
+        elements: [],
+        totalSeats: 0,
+      })) as SavedFloorplan[],
+    [view?.allFloorplans]
+  )
+  const activeFloorplanId = view?.floorplan.activeId ?? null
 
-  const handleFloorplanChange = useCallback(async (floorplan: SavedFloorplan | null) => {
-    if (!currentLocationId) return
-    if (floorplan?.elements?.length && floorplan?.id) {
-      const storeTablesFromPlan = await getTablesForFloorplanDb(currentLocationId, floorplan.id)
-      if (storeTablesFromPlan.length > 0) {
-        useRestaurantStore.getState().setTables(storeTablesFromPlan)
-        setFloorplanElements(floorplan.elements)
-        setActiveFloorplanIdState(floorplan.id)
-        setActiveFloorplanSections(floorplan.sections)
-        await setActiveFloorplanIdDb(currentLocationId, floorplan.id)
-        return
-      }
+  // Live detail derived from FloorMapView only (no store). Fallback waves/alerts from stage.
+  const liveDetailByTableId = React.useMemo(() => {
+    const map = new Map<string, FloorMapLiveDetail | null>()
+    for (const t of tables) {
+      map.set(t.id, buildFloorMapLiveDetail(t, undefined, undefined))
     }
-    setFloorplanElements([])
-    setActiveFloorplanIdState(null)
-    setActiveFloorplanSections(undefined)
-    await setActiveFloorplanIdDb(currentLocationId, null)
-  }, [currentLocationId])
-  
-  // ── Tab Change Handler ─────────────────────────────────────────────────
-  const handleTabChange = useCallback((tabId: string) => {
-    const floorplan = allFloorplans.find(fp => fp.id === tabId)
-    if (floorplan) {
-      handleFloorplanChange(floorplan)
-    }
-  }, [allFloorplans, handleFloorplanChange])
+    return map
+  }, [tables])
+
+  const handleFloorplanChange = useCallback(
+    async (floorplan: SavedFloorplan | null) => {
+      if (!currentLocationId) return
+      await setActiveFloorplanIdDb(currentLocationId, floorplan?.id ?? null)
+      void refresh()
+    },
+    [currentLocationId, refresh]
+  )
+
+  const handleFloorplanIdChange = useCallback(
+    (floorplanId: string) => {
+      void setActiveFloorplanIdDb(currentLocationId!, floorplanId).then(() => refresh())
+    },
+    [currentLocationId, refresh]
+  )
 
   // ── Core Filter State ────────────────────────────────────────────────────
   const [filterMode, setFilterMode] = useState<FilterMode>("all")
@@ -351,62 +348,23 @@ export default function FloorMapPage() {
   }, [])
 
   const handlePartySeated = useCallback(
-    (formData: SeatPartyForm) => {
-      if (!formData.tableId) return
+    async (formData: SeatPartyForm) => {
+      if (!formData.tableId || !currentLocationId) return
 
-      const store = useRestaurantStore.getState()
-      store.updateTable(formData.tableId, {
-        status: "active",
-        guests: formData.partySize,
-        stage: "drinks",
+      const ok = await seatParty({
+        tableId: formData.tableId,
+        partySize: formData.partySize,
+        locationId: currentLocationId,
         serverId: currentServer.id,
-        seatedAt: new Date().toISOString(),
       })
-      store.openOrderForTable(formData.tableId, formData.partySize)
-
-      if (currentLocationId) {
-        fetchPos("/api/sessions/ensure", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            tableUuid: formData.tableId,
-            locationId: currentLocationId,
-            guestCount: formData.partySize,
-            eventSource: "table_page",
-          }),
-        })
-          .then(async (res) => {
-            const payload = await res.json()
-            if (!payload.ok) throw new Error(payload.error?.message ?? "Failed to ensure session")
-            return payload.data
-          })
-          .then((data) => {
-            if (data?.sessionId) {
-              store.updateTable(formData.tableId, { sessionId: data.sessionId })
-              fireAndForget(
-                fetchPos(`/api/sessions/${encodeURIComponent(data.sessionId)}/events`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    type: "guest_seated",
-                    payload: { guestCount: formData.partySize },
-                    eventSource: "table_page",
-                  }),
-                }),
-                "record guest_seated event (floor-map)"
-              )
-            }
-          })
-          .catch((err) => {
-            toast.error(err instanceof Error ? err.message : "Failed to create session")
-          })
+      if (ok) {
+        setSeatPartyOpen(false)
+        setSeatPartyPreSelect(null)
       }
-
-      setSeatPartyOpen(false)
-      setSeatPartyPreSelect(null)
     },
-    [currentLocationId]
+    [currentLocationId, currentServer.id, seatParty]
   )
+
 
   // ── Long Press ───────────────────────────────────────────────────────────
   const handleTableLongPress = useCallback(
@@ -560,18 +518,36 @@ export default function FloorMapPage() {
   const showGridExiting = viewTransition === "grid-exit" || viewTransition === "map-enter"
   const showMapExiting = viewTransition === "map-exit" || viewTransition === "grid-enter"
 
-  const isReady = Boolean(currentLocationId && initialLoadDone)
+  const showSkeleton =
+    !locationIdResolved ||
+    (locationIdResolved &&
+      currentLocationId &&
+      (viewLoading || (view === null && !viewError)))
+  const showNoLocation = locationIdResolved && !currentLocationId
+  const showError = Boolean(viewError)
+  const isReady =
+    locationIdResolved && Boolean(currentLocationId) && view !== null && !viewError
 
-  if (!isReady) {
+  if (showSkeleton) {
+    return <FloorMapPageSkeleton />
+  }
+  if (showNoLocation) {
+    return <FloorMapNoLocationState />
+  }
+  if (showError) {
     return (
-      <div className="flex h-full flex-col bg-background overflow-hidden items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-      </div>
+      <FloorMapErrorState
+        message={viewError ?? "Failed to load floor map"}
+        onRetry={() => void refresh()}
+      />
     )
   }
 
   return (
     <div className="flex h-full flex-col bg-background overflow-hidden">
+      {staleError && (
+        <FloorMapStaleBanner message={staleError} onRetry={() => void refresh()} />
+      )}
       {/* Top Bar */}
       <MapTopBar
         sectionConfig={sectionConfig}
@@ -591,7 +567,7 @@ export default function FloorMapPage() {
         onStatusFilterChange={setStatusFilter}
         onSectionFilterChange={setSectionFilter}
         onClearAllFilters={handleClearAllFilters}
-        onFloorplanChange={handleTabChange}
+        onFloorplanChange={handleFloorplanIdChange}
       />
 
       {/* Stats Bar */}
@@ -617,6 +593,8 @@ export default function FloorMapPage() {
               <MapCanvas
                 sectionConfig={sectionConfig}
                 tables={displayTables}
+                liveDetailByTableId={liveDetailByTableId}
+                currentServerId={currentServer.id}
                 ownTableIds={currentServer.assignedTables}
                 filterMode={filterMode}
                 highlightedTableId={highlightedTableId}
@@ -651,6 +629,8 @@ export default function FloorMapPage() {
             <GridView
               sectionConfig={sectionConfig}
               tables={displayTables}
+              liveDetailByTableId={liveDetailByTableId}
+              currentServerId={currentServer.id}
               ownTableIds={currentServer.assignedTables}
               onTableTap={handleTableTap}
             />
@@ -673,7 +653,11 @@ export default function FloorMapPage() {
 
       {/* Floorplan Selector */}
       <div className="fixed top-20 left-4 z-50">
-        <FloorplanSelector onFloorplanChange={handleFloorplanChange} />
+        <FloorplanSelector
+          allFloorplans={view?.allFloorplans}
+          activeFloorplanId={activeFloorplanId}
+          onFloorplanChange={handleFloorplanChange}
+        />
       </div>
 
       {/* Section Focus Banner */}
@@ -721,6 +705,7 @@ export default function FloorMapPage() {
       {/* Seat Party Modal */}
       <SeatPartyModal
         sectionConfig={sectionConfig}
+        currentServer={currentServer}
         open={seatPartyOpen}
         tables={tables}
         preSelectedTableId={seatPartyPreSelect}
