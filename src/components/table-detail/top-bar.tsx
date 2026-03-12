@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import Link from "next/link"
+import { Link } from "@/components/ui/link"
 import { ArrowLeft, Clock, Info, MessageSquare, MoreHorizontal, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -40,7 +40,7 @@ export function TopBar({
     <header className="flex items-center gap-2 border-b border-border bg-card px-3 py-2.5 md:px-4 md:py-3">
       {/* Back button */}
       <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" aria-label="Back to Floor Plan" asChild>
-        <Link href="/floor-map">
+        <Link prefetch={true} href="/floor-map">
           <ArrowLeft className="h-4 w-4" />
         </Link>
       </Button>
@@ -116,7 +116,7 @@ export function TopBar({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem asChild>
-            <Link href={`/fire-control/${table.id}`}>Fire Control</Link>
+            <Link prefetch={true} href={`/fire-control/${table.id}`}>Fire Control</Link>
           </DropdownMenuItem>
           <DropdownMenuItem>Move Table</DropdownMenuItem>
           <DropdownMenuItem>Transfer Server</DropdownMenuItem>

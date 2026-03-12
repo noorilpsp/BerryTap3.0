@@ -18,6 +18,7 @@ import {
   zoomToPoint,
 } from "@/lib/animation-config"
 import { useMapGestures, usePrefersReducedMotion } from "@/hooks/use-map-gestures"
+import { useViewportPrefetch } from "@/hooks/use-viewport-prefetch"
 import type { PlacedElement } from "@/lib/floorplan-types"
 import { convertElementsToStoreTables } from "@/lib/floorplan-convert"
 
@@ -32,6 +33,7 @@ interface MapCanvasProps {
   highlightType: "search" | "alert" | null
   statusFilter: string | null
   onTableTap: (tableId: string) => void
+  onTablePrefetch?: (tableId: string) => void
   onTableLongPress: (tableId: string, e: React.MouseEvent | React.TouchEvent) => void
   onScaleChange: (scale: number) => void
   scale: number
@@ -56,6 +58,7 @@ export function MapCanvas({
   highlightType,
   statusFilter,
   onTableTap,
+  onTablePrefetch,
   onTableLongPress,
   onScaleChange,
   scale,
@@ -213,6 +216,14 @@ export function MapCanvas({
     [elementToTableId, onTableLongPress]
   )
 
+  const prefetchForElement = useCallback(
+    (elementId: string) => {
+      const tableId = elementToTableId.get(elementId)
+      if (tableId) onTablePrefetch?.(tableId)
+    },
+    [elementToTableId, onTablePrefetch]
+  )
+
   return (
     <div
       ref={gestureState.containerRef}
@@ -263,6 +274,7 @@ export function MapCanvas({
             highlightedId={highlightedTableId}
             dimmedIds={dimmedTableIds}
             onTableTap={handleSceneTableTap}
+            onTablePrefetch={prefetchForElement}
             onTableLongPress={handleSceneTableLongPress}
             appeared={appeared}
           />
@@ -338,6 +350,7 @@ export function MapCanvas({
                   dimmed={dimmedByStatus || dimmedByFocus}
                   highlighted={isHighlighted}
                   onTap={onTableTap}
+                  onPrefetch={onTablePrefetch}
                   onLongPress={onTableLongPress}
                   entryIndex={i}
                   appeared={appeared}
@@ -463,6 +476,7 @@ function DefaultTableNode({
   dimmed,
   highlighted,
   onTap,
+  onPrefetch,
   onLongPress,
   entryIndex,
   appeared,
@@ -474,11 +488,13 @@ function DefaultTableNode({
   dimmed: boolean
   highlighted: boolean
   onTap: (tableId: string) => void
+  onPrefetch?: (tableId: string) => void
   onLongPress: (tableId: string, e: React.MouseEvent | React.TouchEvent) => void
   entryIndex: number
   appeared: boolean
 }) {
   const longPressTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const prefetchTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   const isFree = table.status === "free"
   const isUrgent = table.status === "urgent"
   const elapsed = table.seatedAt ? minutesAgo(table.seatedAt) : null
@@ -516,11 +532,39 @@ function DefaultTableNode({
     closed: "from-muted-foreground/40 to-muted-foreground/10",
   }
 
+  const viewportPrefetchRef = useViewportPrefetch(
+    table.id,
+    (id) => onPrefetch?.(id),
+    !dimmed && !!onPrefetch
+  )
+
+  const handlePointerEnter = React.useCallback(() => {
+    if (dimmed || !onPrefetch) return
+    if (prefetchTimer.current) clearTimeout(prefetchTimer.current)
+    prefetchTimer.current = setTimeout(() => {
+      prefetchTimer.current = null
+      onPrefetch(table.id)
+    }, 100)
+  }, [dimmed, onPrefetch, table.id])
+
+  const handlePointerLeave = React.useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current)
+      longPressTimer.current = null
+    }
+    if (prefetchTimer.current) {
+      clearTimeout(prefetchTimer.current)
+      prefetchTimer.current = null
+    }
+  }, [])
+
   return (
     <button
+      ref={viewportPrefetchRef}
       type="button"
       onClick={() => onTap(table.id)}
       onPointerDown={(e) => {
+        onPrefetch?.(table.id)
         longPressTimer.current = setTimeout(() => {
           onLongPress(table.id, e as unknown as React.MouseEvent)
         }, 500)
@@ -528,9 +572,8 @@ function DefaultTableNode({
       onPointerUp={() => {
         if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null }
       }}
-      onPointerLeave={() => {
-        if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null }
-      }}
+      onPointerEnter={handlePointerEnter}
+      onPointerLeave={handlePointerLeave}
       className={cn(
         "absolute border status-transitioning gpu-layer group",
         shapeClasses[table.shape],

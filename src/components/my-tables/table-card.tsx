@@ -3,7 +3,7 @@
 import React from "react"
 
 import { useState, useEffect } from "react"
-import Link from "next/link"
+import { Link } from "@/components/ui/link"
 import {
   Users,
   Clock,
@@ -121,6 +121,7 @@ export function TableCard({ table }: TableCardProps) {
 
   return (
     <Link
+      prefetch={true}
       href={`/table/${table.id}`}
       className={cn(
         "group block rounded-xl border-l-4 border border-border shadow-sm transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",

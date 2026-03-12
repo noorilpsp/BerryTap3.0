@@ -25,6 +25,43 @@ export interface FloorPlanResult {
   totalSeats: number;
 }
 
+function mapFloorPlanRowToResult(r: (typeof floorPlans.$inferSelect)): FloorPlanResult {
+  return {
+    id: r.id,
+    name: r.name,
+    version: 1,
+    createdAt: r.createdAt.toISOString(),
+    updatedAt: r.updatedAt.toISOString(),
+    canvas: { gridSize: r.gridSize },
+    elements: (r.elements as PlacedElement[]) ?? [],
+    sections: (r.sections as FloorSection[] | null) ?? undefined,
+    totalSeats: r.totalSeats,
+  };
+}
+
+/** Internal: get floor plans and active plan for a location in one query. Caller must have validated access. */
+export async function getFloorPlansWithActiveTrusted(
+  locationId: string
+): Promise<{ allPlans: FloorPlanResult[]; activePlan: FloorPlanResult | null }> {
+  const rows = await db.query.floorPlans.findMany({
+    where: eq(floorPlans.locationId, locationId),
+  });
+  const allPlans = rows.map(mapFloorPlanRowToResult);
+  const activeRow = rows.find((r) => r.isActive);
+  const activePlan = activeRow ? mapFloorPlanRowToResult(activeRow) : null;
+  return { allPlans, activePlan };
+}
+
+/** Internal: get floor plans for a location. Caller must have validated access. */
+export async function getFloorPlansForLocationTrusted(
+  locationId: string
+): Promise<FloorPlanResult[]> {
+  const rows = await db.query.floorPlans.findMany({
+    where: eq(floorPlans.locationId, locationId),
+  });
+  return rows.map(mapFloorPlanRowToResult);
+}
+
 /**
  * Get all floor plans for a location
  */
@@ -35,36 +72,14 @@ export async function getFloorPlansForLocation(
   if (!location) {
     throw new Error("Unauthorized or location not found");
   }
-
-  const rows = await db.query.floorPlans.findMany({
-    where: eq(floorPlans.locationId, locationId),
-  });
-
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    version: 1,
-    createdAt: r.createdAt.toISOString(),
-    updatedAt: r.updatedAt.toISOString(),
-    canvas: { gridSize: r.gridSize },
-    elements: (r.elements as PlacedElement[]) ?? [],
-    sections: (r.sections as FloorSection[] | null) ?? undefined,
-    totalSeats: r.totalSeats,
-  }));
+  return getFloorPlansForLocationTrusted(locationId);
 }
 
-/**
- * Get converted StoreTables for a floor plan, with table numbers unique across all floor plans.
- */
-export async function getConvertedTablesForFloorPlan(
+/** Internal: get converted StoreTables for a floor plan. Caller must have validated access. */
+export async function getConvertedTablesForFloorPlanTrusted(
   locationId: string,
   floorPlanId: string
 ): Promise<StoreTable[]> {
-  const location = await verifyLocationAccess(locationId);
-  if (!location) {
-    throw new Error("Unauthorized or location not found");
-  }
-
   const row = await db.query.floorPlans.findFirst({
     where: and(
       eq(floorPlans.id, floorPlanId),
@@ -85,6 +100,20 @@ export async function getConvertedTablesForFloorPlan(
     (row.sections as FloorSection[] | null) ?? undefined,
     usedTableNumbers
   );
+}
+
+/**
+ * Get converted StoreTables for a floor plan, with table numbers unique across all floor plans.
+ */
+export async function getConvertedTablesForFloorPlan(
+  locationId: string,
+  floorPlanId: string
+): Promise<StoreTable[]> {
+  const location = await verifyLocationAccess(locationId);
+  if (!location) {
+    throw new Error("Unauthorized or location not found");
+  }
+  return getConvertedTablesForFloorPlanTrusted(locationId, floorPlanId);
 }
 
 /**
@@ -124,24 +153,16 @@ export async function getUsedTableNumbersForPlan(
   return Array.from(used);
 }
 
-/**
- * Get the active floor plan for a location
- */
-export async function getActiveFloorPlan(
+/** Internal: get active floor plan for a location. Caller must have validated access. */
+export async function getActiveFloorPlanTrusted(
   locationId: string
 ): Promise<FloorPlanResult | null> {
-  const location = await verifyLocationAccess(locationId);
-  if (!location) {
-    throw new Error("Unauthorized or location not found");
-  }
-
   const row = await db.query.floorPlans.findFirst({
     where: and(
       eq(floorPlans.locationId, locationId),
       eq(floorPlans.isActive, true)
     ),
   });
-
   if (!row) return null;
 
   return {
@@ -155,6 +176,19 @@ export async function getActiveFloorPlan(
     sections: (row.sections as FloorSection[] | null) ?? undefined,
     totalSeats: row.totalSeats,
   };
+}
+
+/**
+ * Get the active floor plan for a location
+ */
+export async function getActiveFloorPlan(
+  locationId: string
+): Promise<FloorPlanResult | null> {
+  const location = await verifyLocationAccess(locationId);
+  if (!location) {
+    throw new Error("Unauthorized or location not found");
+  }
+  return getActiveFloorPlanTrusted(locationId);
 }
 
 /**

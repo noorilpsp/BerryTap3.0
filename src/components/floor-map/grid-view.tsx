@@ -29,6 +29,7 @@ import {
 } from "@/lib/floor-map-data"
 import type { Wave, WaveStatus, DetailAlert } from "@/lib/table-detail-data"
 import type { FloorMapLiveDetail } from "@/lib/floor-map-live-detail"
+import { useViewportPrefetch } from "@/hooks/use-viewport-prefetch"
 
 interface GridViewProps {
   sectionConfig?: Record<string, { name: string }>
@@ -37,6 +38,7 @@ interface GridViewProps {
   currentServerId: string
   ownTableIds: string[]
   onTableTap: (tableId: string) => void
+  onTablePrefetch?: (tableId: string) => void
 }
 
 // ── Urgency ordering ───────────────────────────────────────────────────────
@@ -230,12 +232,15 @@ function WaveProgress({ waves, compact = false }: { waves: Wave[]; compact?: boo
 }
 
 // ── Table Card ─────────────────────────────────────────────────────────────
+const PREFETCH_INTENT_MS = 100
+
 const TableCard = React.memo(function TableCard({
   table,
   detail,
   currentServerId,
   isOwn,
   onTap,
+  onPrefetch,
   cardIndex,
   sectionConfig,
 }: {
@@ -244,10 +249,12 @@ const TableCard = React.memo(function TableCard({
   currentServerId: string
   isOwn: boolean
   onTap: () => void
+  onPrefetch?: () => void
   cardIndex: number
   sectionConfig?: Record<string, { name: string }>
 }) {
   const [hovered, setHovered] = useState(false)
+  const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const elapsed = table.seatedAt ? minutesAgo(table.seatedAt) : null
   const isUrgent = table.status === "urgent"
   const isFree = table.status === "free"
@@ -261,8 +268,33 @@ const TableCard = React.memo(function TableCard({
   const hasSpecial = detail?.seats.some((s) => s.specialOccasion)
   const quickActions = getQuickActions(table, waves)
 
+  const viewportPrefetchRef = useViewportPrefetch(
+    table.id,
+    () => onPrefetch?.(),
+    !!onPrefetch
+  )
+
+  const handlePointerEnter = useCallback(() => {
+    setHovered(true)
+    if (!onPrefetch) return
+    if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current)
+    prefetchTimerRef.current = setTimeout(() => {
+      prefetchTimerRef.current = null
+      onPrefetch()
+    }, PREFETCH_INTENT_MS)
+  }, [onPrefetch])
+
+  const handlePointerLeave = useCallback(() => {
+    setHovered(false)
+    if (prefetchTimerRef.current) {
+      clearTimeout(prefetchTimerRef.current)
+      prefetchTimerRef.current = null
+    }
+  }, [])
+
   return (
     <div
+      ref={viewportPrefetchRef}
       role="button"
       tabIndex={0}
       onClick={onTap}
@@ -272,8 +304,9 @@ const TableCard = React.memo(function TableCard({
           onTap()
         }
       }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onPointerDown={() => onPrefetch?.()}
+      onPointerEnter={handlePointerEnter}
+      onPointerLeave={handlePointerLeave}
       className={cn(
         "group flex flex-col rounded-xl border-l-[3px] border border-white/[0.06] text-left cursor-pointer",
         "bg-card/60 backdrop-blur-sm transition-all duration-200",
@@ -450,6 +483,7 @@ export function GridView({
   currentServerId,
   ownTableIds,
   onTableTap,
+  onTablePrefetch,
 }: GridViewProps) {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<FloorTableStatus>>(() => {
     const initial = new Set<FloorTableStatus>()
@@ -584,6 +618,7 @@ export function GridView({
                           currentServerId={currentServerId}
                           isOwn={isOwn}
                           onTap={() => onTableTap(table.id)}
+                          onPrefetch={onTablePrefetch ? () => onTablePrefetch(table.id) : undefined}
                           cardIndex={idx}
                           sectionConfig={sectionConfig}
                         />

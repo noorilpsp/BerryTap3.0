@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 import { Map, Check, LayoutGrid, Users, Plus } from "lucide-react"
-import Link from "next/link"
+import { Link } from "@/components/ui/link"
 import { cn } from "@/lib/utils"
 import type { PlacedElement } from "@/lib/floorplan-types"
 
@@ -139,7 +139,7 @@ export function FloorplanSelector({
 
         {/* Create new */}
         <DropdownMenuItem asChild>
-          <Link href="/builder" className="gap-3 py-2.5 cursor-pointer">
+          <Link prefetch={true} href="/builder" className="gap-3 py-2.5 cursor-pointer">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
               <Plus className="h-4 w-4 text-primary" />
             </div>

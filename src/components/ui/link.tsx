@@ -65,6 +65,24 @@ const seen = new Set<string>();
 const imageCache = new Map<string, PrefetchImage[]>();
 const routePrefetchCache = new Set<string>();
 
+/**
+ * Prefetch a route for instant navigation. Reuses the same cache as Link.
+ * Use for non-Link navigation (e.g. floor map table taps).
+ */
+export function prefetchRoute(
+  href: string,
+  router: { prefetch: (href: string) => void }
+): void {
+  if (!routePrefetchCache.has(href)) {
+    routePrefetchCache.add(href);
+    if (isProtectedPath(href)) {
+      prefetchWithCredentials(href).then(() => router.prefetch(href));
+    } else {
+      router.prefetch(href);
+    }
+  }
+}
+
 export const Link: typeof NextLink = (({ children, ...props }) => {
   const linkRef = useRef<HTMLAnchorElement>(null);
   const router = useRouter();

@@ -172,16 +172,11 @@ export async function getTablesForLocation(
   });
 }
 
-/** Get tables for a specific floor plan from DB. Status derived from sessions via computeTableStatus. */
-export async function getTablesForFloorPlan(
+/** Internal: get tables for a floor plan. Caller must have validated access. */
+export async function getTablesForFloorPlanTrusted(
   locationId: string,
   floorPlanId: string
 ): Promise<StoreTable[]> {
-  const location = await verifyLocationAccess(locationId);
-  if (!location) {
-    throw new Error("Unauthorized or location not found");
-  }
-
   const [rows, computedStatuses] = await Promise.all([
     db.query.tables.findMany({
       where: and(
@@ -202,6 +197,19 @@ export async function getTablesForFloorPlan(
       alerts: r.alerts,
     });
   });
+}
+
+/** Get tables for a specific floor plan from DB. Status derived from sessions via computeTableStatus. */
+export async function getTablesForFloorPlan(
+  locationId: string,
+  floorPlanId: string
+): Promise<StoreTable[]> {
+  const location = await verifyLocationAccess(locationId);
+  if (!location) {
+    throw new Error("Unauthorized or location not found");
+  }
+
+  return getTablesForFloorPlanTrusted(locationId, floorPlanId);
 }
 
 /** Update table status, guests, seatedAt, stage, alerts in DB. These are denormalized from session for quick reads; canonical state is in sessions. */

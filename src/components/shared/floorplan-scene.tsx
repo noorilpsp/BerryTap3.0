@@ -6,6 +6,7 @@ import { ElementRenderer } from "@/components/builder/element-renderer"
 import type { PlacedElement } from "@/lib/floorplan-types"
 import type { FloorTableStatus, MealStage } from "@/lib/floor-map-data"
 import { minutesAgo, currentServer } from "@/lib/floor-map-data"
+import { useViewportPrefetch } from "@/hooks/use-viewport-prefetch"
 import type { Wave, WaveStatus, DetailAlert } from "@/lib/table-detail-data"
 import { Users, Flame, Wine, UtensilsCrossed, Cake } from "lucide-react"
 
@@ -67,6 +68,8 @@ interface FloorplanSceneProps {
   dimmedIds?: Set<string>
   /** Click handler for tables in view mode */
   onTableTap?: (elementId: string) => void
+  /** Prefetch on pointer intent (elementId). Resolved to tableId by parent. */
+  onTablePrefetch?: (elementId: string) => void
   /** Long press handler for tables in view mode */
   onTableLongPress?: (elementId: string, e: React.MouseEvent | React.TouchEvent) => void
   /** Whether entry animation has completed */
@@ -84,6 +87,7 @@ export function FloorplanScene({
   highlightedId,
   dimmedIds,
   onTableTap,
+  onTablePrefetch,
   onTableLongPress,
   appeared = true,
 }: FloorplanSceneProps) {
@@ -142,6 +146,7 @@ export function FloorplanScene({
           isHighlighted={highlightedId === el.id}
           isDimmed={dimmedIds?.has(el.id)}
           onTap={onTableTap}
+          onPrefetch={onTablePrefetch}
           onLongPress={onTableLongPress}
           appeared={appeared}
         />
@@ -159,6 +164,7 @@ export function FloorplanScene({
           isHighlighted={highlightedId === el.id}
           isDimmed={dimmedIds?.has(el.id)}
           onTap={onTableTap}
+          onPrefetch={onTablePrefetch}
           onLongPress={onTableLongPress}
           appeared={appeared}
         />
@@ -178,6 +184,7 @@ function SceneElement({
   isHighlighted,
   isDimmed,
   onTap,
+  onPrefetch,
   onLongPress,
   appeared,
 }: {
@@ -189,6 +196,7 @@ function SceneElement({
   isHighlighted?: boolean
   isDimmed?: boolean
   onTap?: (id: string) => void
+  onPrefetch?: (id: string) => void
   onLongPress?: (id: string, e: React.MouseEvent | React.TouchEvent) => void
   appeared?: boolean
 }) {
@@ -199,8 +207,10 @@ function SceneElement({
 
   // Long press handling
   const longPressTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const prefetchTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
   function handlePointerDown(e: React.PointerEvent) {
+    if (isInteractive && onPrefetch && !isDimmed) onPrefetch(element.id)
     if (!isInteractive || !onLongPress) return
     longPressTimer.current = setTimeout(() => {
       onLongPress(element.id, e as unknown as React.MouseEvent)
@@ -214,8 +224,33 @@ function SceneElement({
     }
   }
 
+  function handlePointerEnter() {
+    setIsHovered(true)
+    if (!isInteractive || !onPrefetch || isDimmed) return
+    if (prefetchTimer.current) clearTimeout(prefetchTimer.current)
+    prefetchTimer.current = setTimeout(() => {
+      prefetchTimer.current = null
+      onPrefetch(element.id)
+    }, 100)
+  }
+
+  function handlePointerLeave(e: React.PointerEvent) {
+    handlePointerUp()
+    setIsHovered(false)
+    if (prefetchTimer.current) {
+      clearTimeout(prefetchTimer.current)
+      prefetchTimer.current = null
+    }
+  }
+
   const Tag = isInteractive ? "button" : "div"
   const [isHovered, setIsHovered] = React.useState(false)
+
+  const viewportPrefetchRef = useViewportPrefetch(
+    element.id,
+    (id) => onPrefetch?.(id),
+    isInteractive && !isDimmed && !!onPrefetch
+  )
 
   // When occupied, show only as many chairs as seated guests; when free/closed, use capacity
   const chairCountOverride =
@@ -225,14 +260,15 @@ function SceneElement({
 
   return (
     <Tag
+      ref={viewportPrefetchRef}
       {...(isInteractive
         ? {
             type: "button" as const,
             onClick: () => onTap?.(element.id),
             onPointerDown: handlePointerDown,
             onPointerUp: handlePointerUp,
-            onPointerLeave: (e: React.PointerEvent) => { handlePointerUp(); setIsHovered(false) },
-            onPointerEnter: () => setIsHovered(true),
+            onPointerLeave: handlePointerLeave,
+            onPointerEnter: handlePointerEnter,
             "aria-label": `Table ${statusInfo?.tableNumber ?? ""}, ${status}${statusInfo?.guests ? `, ${statusInfo.guests} guests` : ""}`,
           }
         : {

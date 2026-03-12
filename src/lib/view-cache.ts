@@ -42,11 +42,19 @@ export function setFloorMapCache(
 export function getTableCache(tableId: string): TableView | null {
   if (!tableCache) return null;
   if (tableCache.tableId !== tableId) return null;
-  if (tableCache.view.table?.id !== tableId) return null;
   return tableCache.view;
 }
 
+function tableMatchesRequestId(view: TableView, tableId: string): boolean {
+  if (!view.table) return false;
+  return (
+    view.table.id === tableId ||
+    (view.table.displayId != null &&
+      view.table.displayId.toLowerCase() === tableId.toLowerCase())
+  );
+}
+
 export function setTableCache(tableId: string, view: TableView): void {
-  if (view.table?.id !== tableId) return;
+  if (!tableMatchesRequestId(view, tableId)) return;
   tableCache = { tableId, view };
 }

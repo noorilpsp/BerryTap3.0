@@ -1,6 +1,6 @@
 "use client"
 
-import Link from "next/link"
+import { Link } from "@/components/ui/link"
 import { usePathname } from "next/navigation"
 import { Bell, CalendarDays, Clock, Combine, ClipboardList, LayoutGrid, PencilRuler, ShoppingBasket, Table2, Users } from "lucide-react"
 
@@ -87,6 +87,7 @@ export function OpsBottomNav() {
           return (
             <Link
               key={item.href}
+              prefetch={true}
               href={item.href}
               className={cn(
                 "group flex min-w-0 flex-1 basis-0 items-center justify-center gap-1.5 rounded-xl border px-1 text-sm font-semibold transition-all sm:gap-2 sm:px-2",

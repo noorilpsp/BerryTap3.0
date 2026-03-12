@@ -1,4 +1,4 @@
-import Link from "next/link"
+import { Link } from "@/components/ui/link"
 
 import { Button } from "@/components/ui/button"
 
@@ -13,10 +13,10 @@ export default function TablesHubPage() {
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <Button asChild>
-              <Link href="/floor-map">Open Floor Map</Link>
+              <Link prefetch={true} href="/floor-map">Open Floor Map</Link>
             </Button>
             <Button variant="outline" asChild>
-              <Link href="/builder">Layout Builder</Link>
+              <Link prefetch={true} href="/builder">Layout Builder</Link>
             </Button>
           </div>
         </section>
@@ -26,7 +26,7 @@ export default function TablesHubPage() {
           <div className="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-6 lg:grid-cols-8">
             {Array.from({ length: 12 }, (_, index) => index + 1).map((n) => (
               <Button key={n} variant="outline" className="h-9 bg-transparent px-0" asChild>
-                <Link href={`/table/t${n}`}>T{n}</Link>
+                <Link prefetch={true} href={`/table/t${n}`}>T{n}</Link>
               </Button>
             ))}
           </div>

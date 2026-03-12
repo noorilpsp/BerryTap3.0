@@ -2,7 +2,7 @@
 
 import React from "react"
 import { useRef, useState, useCallback, useEffect } from "react"
-import Link from "next/link"
+import { Link } from "@/components/ui/link"
 import { useFloorplanBuilder } from "@/hooks/use-floorplan-builder"
 import { BuilderCanvas } from "@/components/builder/builder-canvas"
 import { ElementPalette } from "@/components/builder/element-palette"
@@ -227,6 +227,7 @@ export default function BuilderPage() {
   return (
     <div className="flex flex-col h-screen bg-background overflow-hidden">
       <Link
+        prefetch={true}
         href="/floor-map"
         className="fixed top-16 left-4 z-50 flex items-center gap-2 px-3 py-2 rounded-lg bg-card border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-all shadow-sm"
       >

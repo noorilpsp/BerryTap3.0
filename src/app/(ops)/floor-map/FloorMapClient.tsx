@@ -28,7 +28,6 @@ import { useFloorMapView } from "@/lib/hooks/useFloorMapView"
 import { useFloorMapMutations } from "@/lib/hooks/useFloorMapMutations"
 import {
   viewTablesToFloorTables,
-  viewTablesToStoreTables,
 } from "@/lib/floor-map/floorMapView"
 import { useLocation } from "@/lib/contexts/LocationContext"
 import { FloorplanSelector } from "@/components/floor-map/floorplan-selector"
@@ -38,15 +37,20 @@ import Link from "next/link"
 import {
   ZOOM_LEVELS,
   DURATIONS,
-  EASING,
   getAnimatedDuration,
   getTableCenter,
 } from "@/lib/animation-config"
 import { usePrefersReducedMotion } from "@/hooks/use-map-gestures"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useRouter } from "next/navigation"
+import { prefetchRoute } from "@/components/ui/link"
+import type { FloorMapView } from "@/lib/floor-map/floorMapView"
 
-export default function FloorMapPage() {
+type FloorMapClientProps = {
+  initialFloorMapView: FloorMapView | null;
+};
+
+export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
   const router = useRouter()
   const { currentLocationId, loading: locationLoading } = useLocation()
   const locationIdResolved = !locationLoading
@@ -66,14 +70,13 @@ export default function FloorMapPage() {
   const reducedMotion = usePrefersReducedMotion()
   const windowWidth = typeof window !== "undefined" ? window.innerWidth : 1024
 
-  // ── Primary data from FloorMapView API ──
   const { view, loading: viewLoading, error: viewError, staleError, refresh, patch } = useFloorMapView(
     currentLocationId,
-    initialFloorplanId
+    initialFloorplanId,
+    { initialData: initialFloorMapView }
   )
   const { seatParty } = useFloorMapMutations({ patch, refresh, view })
 
-  // Normalize currentServer for floor-map-data (expects assignedTables)
   const currentServer = React.useMemo(() => {
     const cs = view?.currentServer
     if (!cs) return { id: "s1", name: "Sarah", section: "main", assignedTables: [] as string[] }
@@ -98,7 +101,6 @@ export default function FloorMapPage() {
   )
   const activeFloorplanId = view?.floorplan.activeId ?? null
 
-  // Live detail derived from FloorMapView only (no store). Fallback waves/alerts from stage.
   const liveDetailByTableId = React.useMemo(() => {
     const map = new Map<string, FloorMapLiveDetail | null>()
     for (const t of tables) {
@@ -123,45 +125,37 @@ export default function FloorMapPage() {
     [currentLocationId, refresh]
   )
 
-  // ── Core Filter State ────────────────────────────────────────────────────
   const [filterMode, setFilterMode] = useState<FilterMode>("all")
   const [viewMode, setViewMode] = useState<ViewMode>("map")
   const [statusFilter, setStatusFilter] = useState<FloorTableStatus | null>(null)
   const [sectionFilter, setSectionFilter] = useState<SectionId | null>(null)
 
-  // ── Continuous Zoom State ────────────────────────────────────────────────
   const [scale, setScale] = useState(ZOOM_LEVELS.level1.scale)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [isTransitioning, setIsTransitioning] = useState(false)
 
-  // ── Highlight State ──────────────────────────────────────────────────────
   const [highlightedTableId, setHighlightedTableId] = useState<string | null>(null)
   const [highlightType, setHighlightType] = useState<"search" | "alert" | null>(null)
   const [focusedSection, setFocusedSection] = useState<SectionId | null>(null)
 
-  // ── Quick Actions ────────────────────────────────────────────────────────
   const [quickAction, setQuickAction] = useState<{
     tableId: string
     tableNumber: number
     position: { x: number; y: number }
   } | null>(null)
 
-  // ── Seat Party State ──────────────────────────────────────────────────────
   const [seatPartyOpen, setSeatPartyOpen] = useState(false)
   const [seatPartyPreSelect, setSeatPartyPreSelect] = useState<string | null>(null)
 
-  // ── View Switch Animation State ──────────────────────────────────────────
   const [viewTransition, setViewTransition] = useState<
     "none" | "grid-exit" | "map-enter" | "map-exit" | "grid-enter"
   >("none")
   const [mapEntering, setMapEntering] = useState(true)
 
-  // Default to grid on mobile
   useEffect(() => {
     if (isMobile) setViewMode("grid")
   }, [isMobile])
 
-  // Initial map entry animation
   useEffect(() => {
     if (viewMode === "map") {
       setMapEntering(true)
@@ -171,18 +165,15 @@ export default function FloorMapPage() {
       )
       return () => clearTimeout(timer)
     }
-  }, []) // only on mount
+  }, [])
 
-  // ── Derived Data ─────────────────────────────────────────────────────────
   let filteredByMode = filterTablesByMode(tables, filterMode, currentServer)
-  // Apply section filter
   if (sectionFilter) {
     filteredByMode = filteredByMode.filter((t) => t.section === sectionFilter)
   }
   const displayTables = filterTablesByStatus(filteredByMode, statusFilter)
   const counts = getStatusCounts(filteredByMode)
 
-  // ── Active Filter Chips ──────────────────────────────────────────────────
   const activeFilterChips: string[] = []
   if (filterMode !== "all") {
     activeFilterChips.push(
@@ -204,7 +195,6 @@ export default function FloorMapPage() {
     setSectionFilter(null)
   }, [])
 
-  // ── Transition Helper ────────────────────────────────────────────────────
   const animateTransition = useCallback(
     (
       targetScale: number,
@@ -224,11 +214,9 @@ export default function FloorMapPage() {
     [windowWidth, reducedMotion]
   )
 
-  // ── Fit to Screen (Maximizes scale while keeping all elements visible) ──
   const handleFitToScreen = useCallback(() => {
     const PADDING = 32
     const containerWidth = windowWidth
-    // The map container takes up the full height minus TopBar + StatsBar (~104px)
     const containerHeight = typeof window !== "undefined" ? window.innerHeight - 104 : 600
 
     let minX: number, minY: number, maxX: number, maxY: number
@@ -253,27 +241,10 @@ export default function FloorMapPage() {
 
     if (contentWidth <= 0 || contentHeight <= 0) return
 
-    // Available viewport after padding on each side
     const viewW = containerWidth - PADDING * 2
     const viewH = containerHeight - PADDING * 2
 
-    // Choose the BIGGEST scale that fits both axes
     const targetScale = Math.min(viewW / contentWidth, viewH / contentHeight)
-
-    // The CSS transform is: translate(offset) scale(targetScale)
-    // with transformOrigin: "center center".
-    //
-    // With center-origin, a point at world coordinate (wx, wy) ends up at
-    // screen position:
-    //   sx = offset.x + containerCenter.x + (wx - containerCenter.x) * scale
-    //   sy = offset.y + containerCenter.y + (wy - containerCenter.y) * scale
-    //
-    //   ... which simplifies to:
-    //   sx = offset.x + containerCenter.x * (1 - scale) + wx * scale
-    //
-    // We want the content center to land at the screen center:
-    //   screenCenter = offset + containerCenter * (1 - scale) + contentCenter * scale
-    //   offset = screenCenter - containerCenter * (1 - scale) - contentCenter * scale
 
     const containerCenterX = containerWidth / 2
     const containerCenterY = containerHeight / 2
@@ -288,7 +259,6 @@ export default function FloorMapPage() {
     animateTransition(targetScale, targetOffset, DURATIONS.zoomIn)
   }, [floorplanElements, tables, windowWidth, animateTransition])
 
-  // Auto-fit when we have tables or floorplan elements
   useEffect(() => {
     if (floorplanElements.length > 0 || tables.length > 0) {
       const timer = setTimeout(() => handleFitToScreen(), 100)
@@ -296,7 +266,6 @@ export default function FloorMapPage() {
     }
   }, [floorplanElements, tables, handleFitToScreen])
 
-  // Re-fit on window resize
   useEffect(() => {
     if (floorplanElements.length === 0 && tables.length === 0) return
     const onResize = () => handleFitToScreen()
@@ -304,7 +273,6 @@ export default function FloorMapPage() {
     return () => window.removeEventListener("resize", onResize)
   }, [floorplanElements, tables, handleFitToScreen])
 
-  // ── Zoom In/Out ──────────────────────────────────────────────────────────
   const handleZoomIn = useCallback(() => {
     if (scale < ZOOM_LEVELS.level2.scale) {
       animateTransition(ZOOM_LEVELS.level2.scale, { x: 0, y: 0 }, DURATIONS.zoomIn)
@@ -326,17 +294,23 @@ export default function FloorMapPage() {
     []
   )
 
-  // ── Table Tap ───────────────────────────────────────────────────────────
   const handleTableTap = useCallback(
     (tableId: string) => {
       const table = tables.find((t) => t.id === tableId)
       if (!table) return
+      prefetchRoute(`/table/${tableId}`, router)
       router.push(`/table/${tableId}`)
     },
     [tables, router]
   )
 
-  // ── Seat Party ──────────────────────────────────────────────────────────
+  const prefetchTable = useCallback(
+    (tableId: string) => {
+      prefetchRoute(`/table/${tableId}`, router)
+    },
+    [router]
+  )
+
   const handleOpenSeatParty = useCallback((preSelectTableId?: string) => {
     setSeatPartyPreSelect(preSelectTableId ?? null)
     setSeatPartyOpen(true)
@@ -365,8 +339,6 @@ export default function FloorMapPage() {
     [currentLocationId, currentServer.id, seatParty]
   )
 
-
-  // ── Long Press ───────────────────────────────────────────────────────────
   const handleTableLongPress = useCallback(
     (tableId: string, e: React.MouseEvent | React.TouchEvent) => {
       const table = tables.find((t) => t.id === tableId)
@@ -385,11 +357,9 @@ export default function FloorMapPage() {
     []
   )
 
-  // ── Section Focus ────────────────────────────────────────────────────────
   const handleSectionFocus = useCallback(
     (sectionId: SectionId | null) => {
       if (sectionId === focusedSection) {
-        // Double-tap to clear
         setFocusedSection(null)
         animateTransition(ZOOM_LEVELS.level1.scale, { x: 0, y: 0 }, DURATIONS.zoomOut)
         return
@@ -407,7 +377,6 @@ export default function FloorMapPage() {
       setFocusedSection(sectionId)
       setViewMode("map")
 
-      // Calculate zoom level to fit section with padding
       const windowHeight = typeof window !== "undefined" ? window.innerHeight : 800
       const sectionWidth = bounds.width + 100
       const sectionHeight = bounds.height + 100
@@ -415,7 +384,6 @@ export default function FloorMapPage() {
       const scaleY = ((windowHeight - 200) * 0.85) / sectionHeight
       const targetScale = Math.min(scaleX, scaleY, ZOOM_LEVELS.level2.scale)
 
-      // Pan to section center
       const sectionCenterX = bounds.x + bounds.width / 2
       const sectionCenterY = bounds.y + bounds.height / 2
       const targetOffset = {
@@ -428,7 +396,6 @@ export default function FloorMapPage() {
     [windowWidth, animateTransition, focusedSection]
   )
 
-  // ── Search Jump ──────────────────────────────────────────────────────────
   const handleSearchSelect = useCallback(
     (tableId: string) => {
       setViewMode("map")
@@ -451,7 +418,6 @@ export default function FloorMapPage() {
     [windowWidth, animateTransition]
   )
 
-  // ── View Mode Switch ─────────────────────────────────────────────────────
   const handleViewModeChange = useCallback(
     (newMode: ViewMode) => {
       if (newMode === viewMode) return
@@ -482,29 +448,22 @@ export default function FloorMapPage() {
     [viewMode, reducedMotion]
   )
 
-  // ── Keyboard Shortcuts ───────────────────────────────────────────────────
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      // Don't capture when typing in an input
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === "INPUT" || tag === "TEXTAREA") return
 
-      // Zoom
       if (e.key === "=" || e.key === "+") { e.preventDefault(); handleZoomIn() }
       else if (e.key === "-") { e.preventDefault(); handleZoomOut() }
-      // Reset zoom
       else if (e.key === "0") {
         e.preventDefault()
         animateTransition(ZOOM_LEVELS.level1.scale, { x: 0, y: 0 }, DURATIONS.zoomOut)
       }
-      // View toggle
       else if (e.key === "g" || e.key === "G") { e.preventDefault(); handleViewModeChange("grid") }
       else if (e.key === "m" || e.key === "M") { e.preventDefault(); handleViewModeChange("map") }
-      // Quick filters
       else if (e.key === "u" || e.key === "U") { e.preventDefault(); setStatusFilter((p) => (p === "urgent" ? null : "urgent")) }
       else if (e.key === "f" || e.key === "F") { e.preventDefault(); setStatusFilter((p) => (p === "free" ? null : "free")) }
       else if (e.key === "a" || e.key === "A") { e.preventDefault(); handleClearAllFilters() }
-      // Pan
       else if (e.key === "ArrowLeft") { e.preventDefault(); setOffset((prev) => ({ ...prev, x: prev.x + 50 })) }
       else if (e.key === "ArrowRight") { e.preventDefault(); setOffset((prev) => ({ ...prev, x: prev.x - 50 })) }
       else if (e.key === "ArrowUp") { e.preventDefault(); setOffset((prev) => ({ ...prev, y: prev.y + 50 })) }
@@ -514,7 +473,6 @@ export default function FloorMapPage() {
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [handleZoomIn, handleZoomOut, handleViewModeChange, handleClearAllFilters, animateTransition])
 
-  // ── Normal Map / Grid View ───────────────────────────────────────────────
   const showGridExiting = viewTransition === "grid-exit" || viewTransition === "map-enter"
   const showMapExiting = viewTransition === "map-exit" || viewTransition === "grid-enter"
 
@@ -548,7 +506,6 @@ export default function FloorMapPage() {
       {staleError && (
         <FloorMapStaleBanner message={staleError} onRetry={() => void refresh()} />
       )}
-      {/* Top Bar */}
       <MapTopBar
         sectionConfig={sectionConfig}
         filterMode={filterMode}
@@ -570,14 +527,12 @@ export default function FloorMapPage() {
         onFloorplanChange={handleFloorplanIdChange}
       />
 
-      {/* Stats Bar */}
       <MapStatsBar
         counts={counts}
         activeStatusFilter={statusFilter}
         onStatusFilter={setStatusFilter}
       />
 
-      {/* Content */}
       <div className="relative flex-1 min-h-0">
         {viewMode === "map" ? (
           <div
@@ -601,6 +556,7 @@ export default function FloorMapPage() {
                 highlightType={highlightType}
                 statusFilter={statusFilter}
                 onTableTap={handleTableTap}
+                onTablePrefetch={prefetchTable}
                 onTableLongPress={handleTableLongPress}
                 onScaleChange={handleScaleChange}
                 scale={scale}
@@ -633,12 +589,12 @@ export default function FloorMapPage() {
               currentServerId={currentServer.id}
               ownTableIds={currentServer.assignedTables}
               onTableTap={handleTableTap}
+              onTablePrefetch={prefetchTable}
             />
           </div>
         )}
       </div>
 
-      {/* Quick Actions Menu */}
       {quickAction && (
         <QuickActionsMenu
           tableNumber={quickAction.tableNumber}
@@ -651,7 +607,6 @@ export default function FloorMapPage() {
         />
       )}
 
-      {/* Floorplan Selector */}
       <div className="fixed top-20 left-4 z-50">
         <FloorplanSelector
           allFloorplans={view?.allFloorplans}
@@ -660,7 +615,6 @@ export default function FloorMapPage() {
         />
       </div>
 
-      {/* Section Focus Banner */}
       {focusedSection && viewMode === "map" && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 animate-slide-down">
           <div className="glass-surface-strong rounded-2xl px-5 py-3 shadow-2xl border border-primary/30 backdrop-blur-xl">
@@ -683,7 +637,6 @@ export default function FloorMapPage() {
         </div>
       )}
 
-      {/* Action Buttons */}
       <div className="fixed bottom-6 right-6 z-40 flex flex-col gap-3">
         <Link
           href="/builder"
@@ -702,7 +655,6 @@ export default function FloorMapPage() {
         </button>
       </div>
 
-      {/* Seat Party Modal */}
       <SeatPartyModal
         sectionConfig={sectionConfig}
         currentServer={currentServer}

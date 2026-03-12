@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, use, useMemo, useEffect, useRef } from "react"
+import { useState, useCallback, useMemo, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { AlertTriangle, Trash2, Users } from "lucide-react"
 import { TopBar } from "@/components/table-detail/top-bar"
@@ -430,11 +430,16 @@ function projectTableView(view: TableView | null, tableId: string): {
   }
 }
 
-export default function TableDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = use(params)
+type TableDetailClientProps = {
+  initialTableView: import("@/lib/pos/tableView").TableView;
+  tableId: string;
+};
+
+export function TableDetailClient({ initialTableView, tableId }: TableDetailClientProps) {
+  const id = tableId;
   const router = useRouter()
   const { currentLocationId } = useLocation()
-  const { menuItems: locationMenuItems, categories: locationCategories, loading: menuLoading } = useLocationMenu(currentLocationId)
+  const { menuItems: locationMenuItems, categories: locationCategories, loading: menuLoading } = useLocationMenu()
   const storeTables = useRestaurantStore((s) => s.tables)
   const openOrderForTable = useRestaurantStore((s) => s.openOrderForTable)
   const closeOrder = useRestaurantStore((s) => s.closeOrder)
@@ -446,6 +451,7 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     () => storeTablesToFloorTables(storeTables),
     [storeTables]
   )
+  const initialTableViewRef = useRef(initialTableView)
   const prevTableIdRef = useRef<string | null>(null)
   const itemOrderIdsRef = useRef<Map<string, string>>(new Map())
   const seatIdByNumberRef = useRef<Map<number, string>>(new Map())
@@ -493,7 +499,9 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
   const [armedWaveDelete, setArmedWaveDelete] = useState<number | null>(null)
   const [armedSeatDelete, setArmedSeatDelete] = useState<number | null>(null)
   const [seatRenameState, setSeatRenameState] = useState<{ seatNumber: number; input: string } | null>(null)
-  const [tableViewLoading, setTableViewLoading] = useState(() => !getTableCache(id))
+  const [tableViewLoading, setTableViewLoading] = useState(() =>
+    initialTableView ? false : !getTableCache(id)
+  )
   const [tableViewError, setTableViewError] = useState<string | null>(null)
   const [kitchenDelayDismissed, setKitchenDelayDismissed] = useState(false)
   const waveHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -505,7 +513,9 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
     targetLabel: string
     waveLabel: string
   } | null>(null)
-  const [tableView, setTableView] = useState<TableView | null>(() => getTableCache(id) ?? null)
+  const [tableView, setTableView] = useState<TableView | null>(
+    () => initialTableView ?? getTableCache(id) ?? null
+  )
   const {
     table,
     tableItems,
@@ -763,6 +773,15 @@ export default function TableDetailPage({ params }: { params: Promise<{ id: stri
       setKitchenDelayDismissed(false)
       itemOrderIdsRef.current = new Map()
       seatIdByNumberRef.current = new Map()
+    }
+    const fromServer = initialTableViewRef.current
+    if (fromServer && (fromServer.table.id === id || (fromServer.table.displayId && String(fromServer.table.displayId).toLowerCase() === id.toLowerCase()))) {
+      initialTableViewRef.current = null
+      setTableCache(id, fromServer)
+      setTableViewLoading(false)
+      setTableViewError(null)
+      void refreshTableView({ silent: true })
+      return
     }
     const cached = getTableCache(id)
     if (cached) {

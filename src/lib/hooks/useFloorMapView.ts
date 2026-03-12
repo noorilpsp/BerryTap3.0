@@ -16,12 +16,21 @@ export type UseFloorMapViewResult = {
   patch: (updater: (prev: FloorMapView) => FloorMapView) => void;
 };
 
+export type UseFloorMapViewOptions = {
+  /** Server-fetched initial data. When provided and location matches, skip initial blocking fetch. */
+  initialData?: FloorMapView | null;
+};
+
 export function useFloorMapView(
   locationId: string | null,
-  floorplanId?: string | null
+  floorplanId?: string | null,
+  options?: UseFloorMapViewOptions
 ): UseFloorMapViewResult {
+  const initialData = options?.initialData;
   const [view, setView] = useState<FloorMapView | null>(
-    () => (locationId ? getFloorMapCache(locationId, floorplanId ?? null) ?? null : null)
+    () =>
+      initialData ??
+      (locationId ? getFloorMapCache(locationId, floorplanId ?? null) ?? null : null)
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,11 +100,25 @@ export function useFloorMapView(
     setView((prev) => (prev ? updater(prev) : prev));
   }, []);
 
+  const initialDataRef = useRef(initialData);
+  initialDataRef.current = initialData;
+  const consumedInitialDataRef = useRef(false);
+
   useEffect(() => {
     if (!locationId) {
       setView(null);
       setError(null);
       setStaleError(null);
+      return;
+    }
+    const fromServer = initialDataRef.current;
+    if (!consumedInitialDataRef.current && fromServer) {
+      consumedInitialDataRef.current = true;
+      setFloorMapCache(locationId, floorplanId ?? null, fromServer);
+      setLoading(false);
+      setError(null);
+      setStaleError(null);
+      void refresh(true);
       return;
     }
     const cached = getFloorMapCache(locationId, floorplanId ?? null);

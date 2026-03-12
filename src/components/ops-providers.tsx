@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { PermissionsProvider, usePermissionsContext } from "@/lib/contexts/PermissionsContext";
 import { TenantProvider } from "@/lib/contexts/TenantContext";
 import { LocationProvider } from "@/lib/contexts/LocationContext";
+import { LocationMenuProvider } from "@/lib/contexts/LocationMenuContext";
 import { RestaurantHydrationRunner } from "@/components/restaurant-hydration-runner";
 import { TablePageSkeleton } from "@/components/table-detail/TablePageSkeleton";
 
@@ -56,8 +57,10 @@ function OpsProvidersInner({ children }: { children: ReactNode }) {
   return (
     <TenantProvider initialMerchants={merchantMemberships} userId={userId}>
       <LocationProvider>
-        <RestaurantHydrationRunner />
-        {children}
+        <LocationMenuProvider>
+          <RestaurantHydrationRunner />
+          {children}
+        </LocationMenuProvider>
       </LocationProvider>
     </TenantProvider>
   );
