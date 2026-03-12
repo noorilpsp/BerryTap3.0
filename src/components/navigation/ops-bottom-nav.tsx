@@ -2,7 +2,7 @@
 
 import { Link } from "@/components/ui/link"
 import { usePathname } from "next/navigation"
-import { Bell, CalendarDays, Clock, Combine, ClipboardList, LayoutGrid, PencilRuler, ShoppingBasket, Table2, Users } from "lucide-react"
+import { Bell, CalendarDays, ChefHat, Clock, Combine, ClipboardList, LayoutGrid, PencilRuler, ShoppingBasket, Table2, Users } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
@@ -25,6 +25,12 @@ const items: OpsNavItem[] = [
     label: "Floor Plan",
     Icon: LayoutGrid,
     active: (pathname) => pathname.startsWith("/floor-map"),
+  },
+  {
+    href: "/kds",
+    label: "KDS",
+    Icon: ChefHat,
+    active: (pathname) => pathname.startsWith("/kds"),
   },
   {
     href: "/builder",

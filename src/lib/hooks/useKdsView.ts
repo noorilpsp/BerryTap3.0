@@ -24,6 +24,11 @@ function groupItemsByStation(
   return byStation;
 }
 
+export type UseKdsViewOptions = {
+  /** Initial data from server render. Skips blocking initial fetch when present. */
+  initialKdsView?: KdsView | null;
+};
+
 export type UseKdsViewResult = {
   view: KdsView | null;
   loading: boolean;
@@ -37,8 +42,12 @@ export type UseKdsViewResult = {
   orderIdToStation: Map<string, string | null>;
 };
 
-export function useKdsView(locationId: string | null): UseKdsViewResult {
-  const [view, setView] = useState<KdsView | null>(null);
+export function useKdsView(
+  locationId: string | null,
+  options?: UseKdsViewOptions
+): UseKdsViewResult {
+  const { initialKdsView } = options ?? {};
+  const [view, setView] = useState<KdsView | null>(initialKdsView ?? null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [staleError, setStaleError] = useState<string | null>(null);
@@ -102,9 +111,16 @@ export function useKdsView(locationId: string | null): UseKdsViewResult {
     lastPatchAtRef.current = Date.now();
   }, []);
 
+  // Initial fetch: skip when we have server-provided initial data for this location
+  const hasInitialFromServer =
+    initialKdsView != null &&
+    initialKdsView.location?.id != null &&
+    locationId === initialKdsView.location.id;
   useEffect(() => {
+    if (!locationId) return;
+    if (hasInitialFromServer) return; // Use server data; polling/visibility will refresh
     refresh();
-  }, [refresh]);
+  }, [locationId, refresh, hasInitialFromServer]);
 
   // Refresh when page becomes visible (e.g. returning from another tab)
   useEffect(() => {

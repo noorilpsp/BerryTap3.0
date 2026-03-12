@@ -2,7 +2,6 @@
 
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { DisplayModeProvider, useDisplayMode } from "@/components/kds/DisplayModeContext";
-import { getCurrentLocationId } from "@/app/actions/location";
 import { KDSHeader } from "@/components/kds/KDSHeader";
 import { KDSColumns } from "@/components/kds/KDSColumns";
 import { AllDayView } from "@/components/kds/AllDayView";
@@ -35,6 +34,10 @@ import { useKdsMutations } from "@/lib/hooks/useKdsMutations";
 import { KdsPageSkeleton } from "@/components/kds/KdsPageSkeleton";
 import type { KdsView } from "@/lib/kds/kdsView";
 import { resolveItemStation as resolveItemStationShared } from "@/lib/kds/resolveItemStation";
+
+type KdsClientProps = {
+  initialKdsView: KdsView | null;
+};
 
 function KDSNoLocationState() {
   const { theme } = useDisplayMode();
@@ -394,17 +397,15 @@ function deriveCompletedOrdersFromView(view: KdsView | null): CompletedOrder[] {
     .slice(0, 20);
 }
 
-export default function KDSPage() {
-  const [locationId, setLocationId] = useState<string | null>(null);
-  const [locationIdResolved, setLocationIdResolved] = useState(false);
-  useEffect(() => {
-    getCurrentLocationId().then((id) => {
-      setLocationId(id);
-      setLocationIdResolved(true);
-    });
-  }, []);
+export function KdsClient({ initialKdsView }: KdsClientProps) {
+  // Server resolves location; derive from initialKdsView or NO_LOCATION
+  const locationId = initialKdsView?.location?.id ?? null;
+  const locationIdResolved = true;
 
-  const { view, loading: kdsLoading, error: kdsError, staleError: kdsStaleError, refresh, patch } = useKdsView(locationId);
+  const { view, loading: kdsLoading, error: kdsError, staleError: kdsStaleError, refresh, patch } = useKdsView(
+    locationId,
+    { initialKdsView }
+  );
   const [activeStationId, setActiveStationId] = useState<string>("");
 
   const orders = useMemo(
@@ -444,8 +445,6 @@ export default function KDSPage() {
   const [messageHistoryOpen, setMessageHistoryOpen] = useState(false);
   const [replyToStationId, setReplyToStationId] = useState<string | null>(null);
 
-  // KDS data comes from useKdsView (GET /api/kds/view). No separate fetch.
-
   const addToast = useCallback((order: Order) => {
     const toast: NewOrderToast = {
       id: order.id,
@@ -472,29 +471,24 @@ export default function KDSPage() {
   }, []);
 
   const handleToastView = useCallback((orderId: string) => {
-    // Dismiss toast
     setToasts((prev) => prev.filter((t) => t.id !== orderId));
-    
-    // Clear timeout
+
     const timeout = toastTimeoutRefs.current.get(orderId);
     if (timeout) {
       clearTimeout(timeout);
       toastTimeoutRefs.current.delete(orderId);
     }
 
-    // Scroll to ticket
     const ticketElement = document.getElementById(`ticket-${orderId}`);
     ticketElement?.scrollIntoView({ behavior: "smooth", block: "center" });
 
-    // Highlight briefly
     setHighlightedTicketId(orderId);
     setTimeout(() => setHighlightedTicketId(null), 1000);
   }, []);
 
   const handleToastDismiss = useCallback((orderId: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== orderId));
-    
-    // Clear timeout
+
     const timeout = toastTimeoutRefs.current.get(orderId);
     if (timeout) {
       clearTimeout(timeout);
@@ -573,7 +567,6 @@ export default function KDSPage() {
     async (completed: CompletedOrder) => {
       const ok = await handleRecallOrder(completed.id, completed.bumpedFromStationId);
       if (!ok) return;
-      // Completed list is derived from view; patch will update view, so dropdown updates on next render
       if (activeStationId !== completed.bumpedFromStationId) {
         setActiveStationId(completed.bumpedFromStationId);
       }
@@ -593,7 +586,6 @@ export default function KDSPage() {
       clearTimeout(existing);
       modificationClearTimeoutsRef.current.delete(orderId);
     }
-    // First slice: no local modified state; refresh to get latest from server if needed
     refresh(true);
   }, [refresh]);
 
@@ -608,7 +600,6 @@ export default function KDSPage() {
   const handleModificationToastDismiss = useCallback((toastId: string) => {
     setModificationToasts((prev) => prev.filter((t) => t.id !== toastId));
   }, []);
-
 
   // --- New order detection: toast when orders appear (after refresh) ---
   const orderIdsForStation = useMemo(() => {
@@ -689,9 +680,9 @@ export default function KDSPage() {
       prevByOrder.set(orderId, m);
     }
 
-    const fallbackStationId = view.stations[0]?.id ?? "kitchen";
+    const fallbackStationIdSnap = view.stations[0]?.id ?? "kitchen";
     const itemStation = (i: { stationOverride: string | null }, o: { station?: string | null }) =>
-      i.stationOverride ?? o.station ?? fallbackStationId;
+      i.stationOverride ?? o.station ?? fallbackStationIdSnap;
 
     const currentByOrder = new Map<string, Map<string, string>>();
     for (const o of view.orders) {
@@ -720,8 +711,6 @@ export default function KDSPage() {
             hasChange = true;
           }
         }
-        // Do NOT treat status changes (preparing, ready, served, bump, recall) as "modified".
-        // Lifecycle transitions are normal workflow, not order modifications.
       });
       prevItems.forEach((_, itemId) => {
         if (!currentItems.has(itemId)) {
@@ -764,13 +753,11 @@ export default function KDSPage() {
     });
   }, [viewSnapshot, view, activeStationId]);
 
-  // --- Completed order recall: derive from view (survives refresh) ---
   const completedOrdersForRecall = useMemo(
     () => deriveCompletedOrdersFromView(view),
     [view]
   );
 
-  // Filter orders to only show items for current station
   const filteredOrders = useMemo(() => {
     return orders.map(order => ({
       ...order,
@@ -778,7 +765,6 @@ export default function KDSPage() {
     })).filter(order => order.items.length > 0);
   }, [orders, activeStationId]);
 
-  // All-Day: only orders in NEW for this station, and only this station's items
   const allDayOrders = useMemo(() => {
     return orders
       .filter((order) => {
@@ -794,7 +780,6 @@ export default function KDSPage() {
       }));
   }, [orders, activeStationId]);
 
-  // Batching: items that appear in 3+ NEW orders (same station as All-Day)
   const batchSuggestions = useMemo(
     () => detectBatches(allDayOrders, 3),
     [allDayOrders]
@@ -909,11 +894,10 @@ export default function KDSPage() {
     if (!open) setReplyToStationId(null);
   }, []);
 
-  // Calculate order counts per station
   const orderCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     STATIONS.forEach(station => {
-      counts[station.id] = orders.filter(order => 
+      counts[station.id] = orders.filter(order =>
         order.items.some(item => item.stationId === station.id)
       ).length;
     });
@@ -922,6 +906,7 @@ export default function KDSPage() {
 
   const activeCount = filteredOrders.length;
 
+  // With server-read: locationIdResolved is always true. Show skeleton only when we have locationId but no view and no error (should not happen with initialKdsView).
   const isLoading =
     !locationIdResolved || (locationId !== null && view === null && kdsError === null);
 
@@ -1011,14 +996,14 @@ export default function KDSPage() {
           <AllDayView orders={allDayOrders} stationId={activeStationId} />
         )}
       </div>
-      
+
       <KDSModificationToastContainer
         toasts={modificationToasts}
         onDismiss={handleModificationToastDismiss}
         onView={handleModificationToastView}
       />
 
-      <KDSToastContainer 
+      <KDSToastContainer
         toasts={toasts}
         onView={handleToastView}
         onDismiss={handleToastDismiss}
