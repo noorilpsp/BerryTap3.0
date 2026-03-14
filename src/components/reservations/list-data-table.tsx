@@ -48,6 +48,7 @@ interface ListDataTableProps {
   onSelectAll: (ids: string[]) => void
   onDeselectAll: () => void
   onOpenDetail: (reservation: ListReservation) => void
+  onCancelReservation?: (id: string, isWaitlist: boolean) => void | Promise<void>
   focusedRowId: string | null
   onFocusRow: (id: string | null) => void
 }
@@ -101,6 +102,7 @@ export function ListDataTable({
   onSelectAll,
   onDeselectAll,
   onOpenDetail,
+  onCancelReservation,
   focusedRowId,
   onFocusRow,
 }: ListDataTableProps) {
@@ -290,7 +292,7 @@ export function ListDataTable({
 
                   {/* Time */}
                   <div role="cell" className="text-xs tabular-nums font-mono text-zinc-300">
-                    {formatTimeShort(r.time)}
+                    {r.bookedDate ? `${r.bookedDate} · ${formatTimeShort(r.time)}` : formatTimeShort(r.time)}
                   </div>
 
                   {/* Guest */}
@@ -400,7 +402,12 @@ export function ListDataTable({
                         <DropdownMenuSeparator className="bg-zinc-800" />
                         <DropdownMenuItem className="text-xs text-zinc-300 focus:bg-zinc-800 focus:text-foreground">Move to Waitlist</DropdownMenuItem>
                         <DropdownMenuItem className="text-xs text-rose-400 focus:bg-zinc-800 focus:text-rose-300">Mark as No-Show</DropdownMenuItem>
-                        <DropdownMenuItem className="text-xs text-rose-400 focus:bg-zinc-800 focus:text-rose-300">Cancel Reservation</DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="text-xs text-rose-400 focus:bg-zinc-800 focus:text-rose-300"
+                          onClick={() => onCancelReservation?.(r.id, r.status === "waitlist")}
+                        >
+                          Cancel Reservation
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator className="bg-zinc-800" />
                         <DropdownMenuItem className="text-xs text-zinc-300 focus:bg-zinc-800 focus:text-foreground">View Guest Profile</DropdownMenuItem>
                         <DropdownMenuItem className="text-xs text-zinc-300 focus:bg-zinc-800 focus:text-foreground">Add Note</DropdownMenuItem>

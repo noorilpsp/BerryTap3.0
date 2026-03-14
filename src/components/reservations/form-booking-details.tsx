@@ -26,6 +26,7 @@ interface FormBookingDetailsProps {
   zonePreference: string
   fitContextLabel?: string
   timeFitByTime?: Record<string, { tone: "open" | "busy" | "tight" | "short" | "full" | "closed"; label: string; available: number; total: number; ratio: number; maxDurationMinutes?: number }>
+  totalSeats?: number
   onDateChange: (date: string) => void
   onTimeChange: (time: string) => void
   onPartySizeChange: (size: number) => void
@@ -75,12 +76,15 @@ function normalizeTime24(timeValue: string): string {
   return `${h}:${m}`
 }
 
-function getPressureTone(time24: string): {
+function getPressureTone(
+  time24: string,
+  totalSeats?: number
+): {
   itemClass: string
   dotClass: string
   pressureLabel: string | null
 } {
-  const cap = getCapacityAtTime(time24)
+  const cap = getCapacityAtTime(time24, totalSeats != null ? { totalSeats } : undefined)
   if (!cap) {
     return {
       itemClass: "text-muted-foreground",
@@ -162,6 +166,7 @@ export function FormBookingDetails({
   zonePreference,
   fitContextLabel,
   timeFitByTime = {},
+  totalSeats,
   onDateChange,
   onTimeChange,
   onPartySizeChange,
@@ -199,7 +204,7 @@ export function FormBookingDetails({
   })()
   const autoDuration = getDurationForParty(partySize)
   const isCustomDuration = duration !== autoDuration
-  const capacity = getCapacityAtTime(normalizedTime)
+  const capacity = getCapacityAtTime(normalizedTime, totalSeats != null ? { totalSeats } : undefined)
   const availableSet = new Set(availableTimes.map(normalizeTime24))
   const renderedTimeSlots = (() => {
     if (isPastDate) return []
@@ -508,7 +513,7 @@ export function FormBookingDetails({
                   : (() => {
                       if (isShortFit && slotFit) return getFitTone(slotFit)
                       if (slotFit) return getFitTone(slotFit)
-                      const base = getPressureTone(slotTime)
+                      const base = getPressureTone(slotTime, totalSeats)
                       if (base.pressureLabel) return base
                       // If no capacity snapshot exists for this time, treat open slots as low pressure.
                       return {

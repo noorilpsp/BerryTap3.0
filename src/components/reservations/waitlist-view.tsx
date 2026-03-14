@@ -5,7 +5,7 @@ import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
 import { useMediaQuery } from "@/hooks/use-media-query"
-import { useReservationsFromStore } from "@/lib/reservations-data"
+import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
 import { useRestaurantMutations } from "@/lib/hooks/useRestaurantMutations"
 import { WaitlistTopBar } from "./waitlist-top-bar"
 import { WaitlistAlertBanner } from "./waitlist-alert-banner"
@@ -16,6 +16,8 @@ import { WaitlistCompleted } from "./waitlist-completed"
 import { WaitlistAddDialog } from "./waitlist-add-dialog"
 import { WaitlistSeatDialog } from "./waitlist-seat-dialog"
 import { WaitlistDetailPanel } from "./waitlist-detail-panel"
+import { toast } from "sonner"
+import { useRestaurantStore } from "@/store/restaurantStore"
 import {
   type WaitlistEntry,
   type SortMode,
@@ -27,19 +29,24 @@ import {
 export function WaitlistView() {
   const isDesktop = useMediaQuery("(min-width: 1280px)")
   const isTablet = useMediaQuery("(min-width: 768px)")
-  const { addToWaitlist, removeFromWaitlist } = useRestaurantMutations()
+  const { addToWaitlist, removeFromWaitlist, seatFromWaitlist } = useRestaurantMutations()
+  const tables = useRestaurantStore((s) => s.tables) ?? []
 
-  const { waitlistParties } = useReservationsFromStore()
+  const { waitlistParties } = useReservationsData()
   const entries = useMemo(
-    () => waitlistParties.map(waitlistPartyToWaitlistEntry),
-    [waitlistParties]
+    () => waitlistParties.map((wp) => waitlistPartyToWaitlistEntry(wp, tables)),
+    [waitlistParties, tables]
   )
 
   const [sortMode, setSortMode] = useState<SortMode>("smart")
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [showAlert, setShowAlert] = useState(true)
   const [showAddDialog, setShowAddDialog] = useState(false)
-  const [seatDialog, setSeatDialog] = useState<{ entry: WaitlistEntry; tableId: string } | null>(null)
+  const [seatDialog, setSeatDialog] = useState<{
+    entry: WaitlistEntry
+    tableId: string
+    tableDisplayId?: string
+  } | null>(null)
   const [showMatchPanel, setShowMatchPanel] = useState(false)
   const [detailEntry, setDetailEntry] = useState<WaitlistEntry | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -74,17 +81,24 @@ export function WaitlistView() {
         if (!isDesktop) setShowMatchPanel(true)
         return
       }
-      setSeatDialog({ entry, tableId })
+      const m = entry.bestMatch?.tableId === tableId ? entry.bestMatch : entry.altMatches.find((x) => x.tableId === tableId)
+      const tableDisplayId = m?.displayId ?? (m ? `T${m.seats}` : undefined)
+      setSeatDialog({ entry, tableId, tableDisplayId })
     },
     [isDesktop],
   )
 
   const handleConfirmSeat = useCallback(async () => {
     if (!seatDialog) return
-    await removeFromWaitlist(seatDialog.entry.id)
-    setSeatDialog(null)
-    setShowAlert(false)
-  }, [seatDialog, removeFromWaitlist])
+    try {
+      await seatFromWaitlist(seatDialog.entry.id, seatDialog.tableId)
+      setSeatDialog(null)
+      setShowAlert(false)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to seat party"
+      toast.error(msg)
+    }
+  }, [seatDialog, seatFromWaitlist])
 
   const handleRemove = useCallback(async (id: string) => {
     await removeFromWaitlist(id)
@@ -273,7 +287,7 @@ export function WaitlistView() {
               <div className="text-[10px] uppercase tracking-[0.16em] text-cyan-300">Host Brain</div>
               <div className="mt-1 text-xs text-zinc-400">Live table turnover, best-fit matching, and quote calibration.</div>
             </div>
-            <WaitlistMatchingPanel entries={entries} />
+            <WaitlistMatchingPanel entries={entries} tables={tables} />
             <div className="mt-4">
               <WaitlistQrPanel />
             </div>
@@ -306,7 +320,7 @@ export function WaitlistView() {
               <SheetTitle className="text-zinc-100">Smart Matching</SheetTitle>
               <SheetDescription className="text-zinc-500">Table availability and forecasts</SheetDescription>
             </SheetHeader>
-            <WaitlistMatchingPanel entries={entries} />
+            <WaitlistMatchingPanel entries={entries} tables={tables} />
             <div className="mt-4">
               <WaitlistQrPanel />
             </div>
@@ -327,6 +341,7 @@ export function WaitlistView() {
         onOpenChange={(open) => { if (!open) setSeatDialog(null) }}
         entry={seatDialog?.entry ?? null}
         tableId={seatDialog?.tableId ?? ""}
+        tableDisplayId={seatDialog?.tableDisplayId}
         onConfirm={handleConfirmSeat}
       />
 

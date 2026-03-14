@@ -1,18 +1,18 @@
 "use client"
 
-import { useState } from "react"
-import { Calendar, Plus, TrendingUp } from "lucide-react"
+import { useState, useMemo } from "react"
+import { Calendar, Plus } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
 import type { GuestProfile, StaffNote } from "@/lib/guests-data"
-import { sarahSpendData, sarahFrequencyData, sarahStaffNotes } from "@/lib/guests-data"
 import {
-  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  AreaChart, Area, CartesianGrid, ScatterChart, Scatter, Cell,
+  AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  ScatterChart, Scatter, Cell,
 } from "recharts"
 
 interface OverviewTabProps {
   guest: GuestProfile
+  onRefresh?: () => void
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
@@ -21,13 +21,26 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 
 /* ── Visit Frequency Chart ────────────────────────────────── */
 function VisitFrequencyChart({ guest }: { guest: GuestProfile }) {
-  const data = guest.id === "guest_001" ? sarahFrequencyData : [
-    { month: "Oct", visits: 1 },
-    { month: "Nov", visits: 1 },
-    { month: "Dec", visits: 1 },
-    { month: "Jan", visits: 1 },
-  ]
-  const avgPerMonth = guest.id === "guest_001" ? 1.8 : (guest.totalVisits / 6).toFixed(1)
+  const { data, avgPerMonth } = useMemo(() => {
+    const visits = guest.visitHistory ?? []
+    const byMonth = new Map<string, number>()
+    for (const v of visits) {
+      const d = new Date(v.date)
+      const key = d.toLocaleDateString("en-US", { month: "short" })
+      byMonth.set(key, (byMonth.get(key) ?? 0) + 1)
+    }
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    const data = months
+      .filter((m) => byMonth.get(m))
+      .map((m) => ({ month: m, visits: byMonth.get(m) ?? 0 }))
+      .slice(-6)
+    const avg = visits.length > 0 && data.length > 0
+      ? (visits.length / data.length).toFixed(1)
+      : "0"
+    return { data, avgPerMonth: avg }
+  }, [guest.visitHistory])
+
+  if (data.length === 0) return null
 
   return (
     <div className="guest-profile-section rounded-xl border border-border/30 bg-card/40 p-4">
@@ -52,9 +65,6 @@ function VisitFrequencyChart({ guest }: { guest: GuestProfile }) {
       </div>
       <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
         <span>Avg: {avgPerMonth} visits/month</span>
-        <span className="flex items-center gap-0.5 text-emerald-400">
-          <TrendingUp className="h-3 w-3" /> Increasing
-        </span>
       </div>
     </div>
   )
@@ -62,11 +72,19 @@ function VisitFrequencyChart({ guest }: { guest: GuestProfile }) {
 
 /* ── Spend History Chart ──────────────────────────────────── */
 function SpendHistoryChart({ guest }: { guest: GuestProfile }) {
-  const data = guest.id === "guest_001" ? sarahSpendData : Array.from({ length: guest.totalVisits }, (_, i) => ({
-    visit: i + 1,
-    amount: Math.round(guest.avgSpend * (0.7 + Math.random() * 0.6)),
-    date: "",
-  }))
+  const data = useMemo(() => {
+    const visits = guest.visitHistory ?? []
+    return visits
+      .filter((v) => v.status === "completed")
+      .map((v, i) => ({
+        visit: i + 1,
+        amount: v.total,
+        date: v.date,
+      }))
+      .reverse()
+  }, [guest.visitHistory])
+
+  if (data.length === 0) return null
 
   return (
     <div className="guest-profile-section rounded-xl border border-border/30 bg-card/40 p-4">
@@ -91,11 +109,6 @@ function SpendHistoryChart({ guest }: { guest: GuestProfile }) {
           </AreaChart>
         </ResponsiveContainer>
       </div>
-      {guest.id === "guest_001" && (
-        <div className="mt-2 flex items-center gap-0.5 text-xs text-emerald-400">
-          <TrendingUp className="h-3 w-3" /> Spending increasing (+12% over last 6 visits)
-        </div>
-      )}
     </div>
   )
 }
@@ -159,9 +172,40 @@ function KeyDates({ guest }: { guest: GuestProfile }) {
 }
 
 /* ── Staff Notes ──────────────────────────────────────────── */
-function StaffNotesSection({ guest }: { guest: GuestProfile }) {
+function StaffNotesSection({
+  guest,
+  onNoteAdded,
+}: {
+  guest: GuestProfile
+  onNoteAdded?: () => void
+}) {
   const [showAdd, setShowAdd] = useState(false)
-  const notes: StaffNote[] = guest.id === "guest_001" ? sarahStaffNotes : []
+  const [noteText, setNoteText] = useState("")
+  const [saving, setSaving] = useState(false)
+  const notes: StaffNote[] = guest.staffNotes ?? []
+
+  async function handleSaveNote() {
+    const text = noteText.trim()
+    if (!text || saving) return
+    setSaving(true)
+    try {
+      const res = await fetch(`/api/customers/${guest.id}/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error ?? "Failed to add note")
+      toast.success("Note added")
+      setShowAdd(false)
+      setNoteText("")
+      onNoteAdded?.()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to add note")
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
     <div className="guest-profile-section rounded-xl border border-border/30 bg-card/40 p-4">
@@ -172,7 +216,7 @@ function StaffNotesSection({ guest }: { guest: GuestProfile }) {
             <div key={note.id} className="rounded-lg border border-border/20 bg-secondary/20 p-3">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span className="font-medium text-foreground">{note.author}</span>
-                <span>({note.role})</span>
+                {note.role && <span>({note.role})</span>}
                 <span className="text-border">--</span>
                 <span>{new Date(note.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
               </div>
@@ -187,13 +231,20 @@ function StaffNotesSection({ guest }: { guest: GuestProfile }) {
       {showAdd ? (
         <div className="mt-3 flex flex-col gap-2 guest-note-expand">
           <textarea
+            value={noteText}
+            onChange={(e) => setNoteText(e.target.value)}
             className="rounded-lg border border-border/30 bg-secondary/40 px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/40"
             rows={2}
             placeholder="Add a note about this guest..."
+            disabled={saving}
           />
           <div className="flex justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setShowAdd(false)} className="text-xs">Cancel</Button>
-            <Button size="sm" className="bg-primary/20 text-primary text-xs hover:bg-primary/30">Save Note</Button>
+            <Button variant="ghost" size="sm" onClick={() => { setShowAdd(false); setNoteText("") }} className="text-xs" disabled={saving}>
+              Cancel
+            </Button>
+            <Button size="sm" className="bg-primary/20 text-primary text-xs hover:bg-primary/30" onClick={handleSaveNote} disabled={saving || !noteText.trim()}>
+              {saving ? "Saving…" : "Save Note"}
+            </Button>
           </div>
         </div>
       ) : (
@@ -206,14 +257,14 @@ function StaffNotesSection({ guest }: { guest: GuestProfile }) {
 }
 
 /* ── Main Overview ────────────────────────────────────────── */
-export function GuestOverviewTab({ guest }: OverviewTabProps) {
+export function GuestOverviewTab({ guest, onRefresh }: OverviewTabProps) {
   return (
     <div className="flex flex-col gap-4 p-4">
       <VisitFrequencyChart guest={guest} />
       <SpendHistoryChart guest={guest} />
       <FavoriteItems guest={guest} />
       <KeyDates guest={guest} />
-      <StaffNotesSection guest={guest} />
+      <StaffNotesSection guest={guest} onNoteAdded={onRefresh} />
     </div>
   )
 }

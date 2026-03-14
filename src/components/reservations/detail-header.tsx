@@ -22,6 +22,8 @@ import { cn } from "@/lib/utils"
 interface DetailHeaderProps {
   reservation: DetailReservation
   onClose: () => void
+  onCancelReservation?: (id: string) => void | Promise<void>
+  onSeatNow?: (id: string, tableId?: string | null) => void | Promise<void>
 }
 
 function StatusBadge({ status }: { status: DetailStatus }) {
@@ -57,10 +59,15 @@ function StatusBadge({ status }: { status: DetailStatus }) {
   )
 }
 
-function ConfirmedActions({ reservation }: { reservation: DetailReservation }) {
+function ConfirmedActions({ reservation, onCancelReservation, onSeatNow }: { reservation: DetailReservation; onCancelReservation?: (id: string) => void | Promise<void>; onSeatNow?: (id: string, tableId?: string | null) => void | Promise<void> }) {
   return (
     <>
-      <Button size="sm" className="bg-emerald-600 text-emerald-50 hover:bg-emerald-500" aria-label={`Seat ${reservation.guestName} at Table ${reservation.table} now`}>
+      <Button
+        size="sm"
+        className="bg-emerald-600 text-emerald-50 hover:bg-emerald-500"
+        aria-label={`Seat ${reservation.guestName} at Table ${reservation.table ?? "assigned"} now`}
+        onClick={() => onSeatNow?.(reservation.id)}
+      >
         <Utensils className="mr-1.5 h-3.5 w-3.5" /> Seat Now
       </Button>
       <Button size="sm" variant="outline" className="border-zinc-700 bg-zinc-800/50 text-zinc-200 hover:bg-zinc-700 hover:text-zinc-100">
@@ -83,17 +90,27 @@ function ConfirmedActions({ reservation }: { reservation: DetailReservation }) {
           <DropdownMenuItem className="focus:bg-zinc-800 focus:text-zinc-100">Move to Waitlist</DropdownMenuItem>
           <DropdownMenuSeparator className="bg-zinc-700" />
           <DropdownMenuItem className="text-rose-400 focus:bg-zinc-800 focus:text-rose-300"><UserX className="mr-2 h-3.5 w-3.5" /> Mark No-Show</DropdownMenuItem>
-          <DropdownMenuItem className="text-rose-400 focus:bg-zinc-800 focus:text-rose-300"><Ban className="mr-2 h-3.5 w-3.5" /> Cancel Reservation</DropdownMenuItem>
+          <DropdownMenuItem
+          className="text-rose-400 focus:bg-zinc-800 focus:text-rose-300"
+          onClick={() => onCancelReservation?.(reservation.id)}
+        >
+          <Ban className="mr-2 h-3.5 w-3.5" /> Cancel Reservation
+        </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </>
   )
 }
 
-function ArrivingActions({ reservation }: { reservation: DetailReservation }) {
+function ArrivingActions({ reservation, onCancelReservation, onSeatNow }: { reservation: DetailReservation; onCancelReservation?: (id: string) => void | Promise<void>; onSeatNow?: (id: string, tableId?: string | null) => void | Promise<void> }) {
   return (
     <>
-      <Button size="sm" className="bg-emerald-600 text-emerald-50 hover:bg-emerald-500" aria-label={`Seat ${reservation.guestName} now`}>
+      <Button
+        size="sm"
+        className="bg-emerald-600 text-emerald-50 hover:bg-emerald-500"
+        aria-label={`Seat ${reservation.guestName} now`}
+        onClick={() => onSeatNow?.(reservation.id)}
+      >
         <Utensils className="mr-1.5 h-3.5 w-3.5" /> Seat Now
       </Button>
       <Button size="sm" variant="outline" className="border-zinc-700 bg-zinc-800/50 text-zinc-200 hover:bg-zinc-700 hover:text-zinc-100">
@@ -115,7 +132,12 @@ function ArrivingActions({ reservation }: { reservation: DetailReservation }) {
           <DropdownMenuItem className="focus:bg-zinc-800 focus:text-zinc-100">Change Table</DropdownMenuItem>
           <DropdownMenuSeparator className="bg-zinc-700" />
           <DropdownMenuItem className="text-rose-400 focus:bg-zinc-800 focus:text-rose-300"><UserX className="mr-2 h-3.5 w-3.5" /> Mark No-Show</DropdownMenuItem>
-          <DropdownMenuItem className="text-rose-400 focus:bg-zinc-800 focus:text-rose-300"><Ban className="mr-2 h-3.5 w-3.5" /> Cancel</DropdownMenuItem>
+          <DropdownMenuItem
+          className="text-rose-400 focus:bg-zinc-800 focus:text-rose-300"
+          onClick={() => onCancelReservation?.(reservation.id)}
+        >
+          <Ban className="mr-2 h-3.5 w-3.5" /> Cancel
+        </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </>
@@ -226,7 +248,7 @@ function CancelledActions() {
   )
 }
 
-export function DetailHeader({ reservation, onClose }: DetailHeaderProps) {
+export function DetailHeader({ reservation, onClose, onCancelReservation, onSeatNow }: DetailHeaderProps) {
   const isVip = reservation.tags.includes("vip")
 
   return (
@@ -256,8 +278,8 @@ export function DetailHeader({ reservation, onClose }: DetailHeaderProps) {
 
       {/* Action buttons */}
       <div className="flex flex-wrap items-center gap-2">
-        {(reservation.status === "confirmed") && <ConfirmedActions reservation={reservation} />}
-        {(reservation.status === "arriving" || reservation.status === "late") && <ArrivingActions reservation={reservation} />}
+        {(reservation.status === "confirmed") && <ConfirmedActions reservation={reservation} onCancelReservation={onCancelReservation} onSeatNow={onSeatNow} />}
+        {(reservation.status === "arriving" || reservation.status === "late") && <ArrivingActions reservation={reservation} onCancelReservation={onCancelReservation} onSeatNow={onSeatNow} />}
         {reservation.status === "seated" && <SeatedActions />}
         {reservation.status === "completed" && <CompletedActions />}
         {reservation.status === "no_show" && <NoShowActions />}

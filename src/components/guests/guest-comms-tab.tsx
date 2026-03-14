@@ -4,7 +4,6 @@ import { Check, CheckCheck, Eye, Send, Mail, MessageSquare, ArrowDownLeft } from
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { GuestProfile, CommMessage } from "@/lib/guests-data"
-import { sarahCommunications } from "@/lib/guests-data"
 
 interface CommsTabProps {
   guest: GuestProfile
@@ -65,7 +64,7 @@ function MessageCard({ msg, index }: { msg: CommMessage; index: number }) {
 }
 
 export function GuestCommsTab({ guest }: CommsTabProps) {
-  const messages = guest.id === "guest_001" ? sarahCommunications : []
+  const messages: CommMessage[] = []
   const totalSent = messages.filter(m => m.direction === "outbound").length
   const totalRead = messages.filter(m => m.status === "read" || m.status === "opened").length
 

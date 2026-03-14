@@ -177,16 +177,24 @@ async function getCurrentUserId(): Promise<string | null> {
  * Canonical session creation: get or create an open session for a table (by table number string e.g. "t1").
  * Returns ServiceResult with sessionId on success.
  * userId optional: when not provided, uses current auth user.
+ * reservationId optional: when provided and a new session is created, sets source: "reservation" and sessions.reservationId.
  */
 export async function ensureSession(
   locationId: string,
   tableId: string,
   guestCount: number,
-  userId?: string | null
+  userId?: string | null,
+  reservationId?: string | null
 ): Promise<ServiceResult> {
   const effectiveUserId = userId ?? (await getCurrentUserId());
   if (!effectiveUserId) return { ok: false, reason: "Unauthorized" };
-  const result = await ensureSessionForTable(locationId, tableId, guestCount, effectiveUserId);
+  const result = await ensureSessionForTable(
+    locationId,
+    tableId,
+    guestCount,
+    effectiveUserId,
+    reservationId
+  );
   if (!result.ok) {
     const msg = result.reason === "user_not_staff" ? "You are not staff at this location" : result.reason;
     return { ok: false, reason: msg };
@@ -198,16 +206,24 @@ export async function ensureSession(
  * Canonical session creation by table UUID (tables.id).
  * Used when caller has table UUID (e.g. from API).
  * userId optional: when not provided, uses current auth user.
+ * reservationId optional: when provided and a new session is created, sets source: "reservation" and sessions.reservationId.
  */
 export async function ensureSessionByTableUuid(
   locationId: string,
   tableUuid: string,
   guestCount = 1,
-  userId?: string | null
+  userId?: string | null,
+  reservationId?: string | null
 ): Promise<ServiceResult> {
   const effectiveUserId = userId ?? (await getCurrentUserId());
   if (!effectiveUserId) return { ok: false, reason: "Unauthorized" };
-  const result = await ensureSessionForTableByTableUuid(locationId, tableUuid, guestCount, effectiveUserId);
+  const result = await ensureSessionForTableByTableUuid(
+    locationId,
+    tableUuid,
+    guestCount,
+    effectiveUserId,
+    reservationId
+  );
   if (!result.ok) {
     const msg = result.reason === "user_not_staff" ? "You are not staff at this location" : result.reason;
     return { ok: false, reason: msg };
@@ -302,7 +318,8 @@ export async function createOrderFromApi(
         input.locationId,
         input.tableId,
         Math.max(1, Math.floor(input.guestCount ?? 1)),
-        ensureUserId
+        ensureUserId,
+        input.reservationId
       );
       sessionId = ensureResult.ok ? ensureResult.sessionId ?? null : null;
     }

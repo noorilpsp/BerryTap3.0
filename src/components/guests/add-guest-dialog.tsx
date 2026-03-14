@@ -1,40 +1,82 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { cn } from "@/lib/utils"
+import { toast } from "sonner"
 
 interface AddGuestDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  locationId: string
+  onSuccess?: (createdId: string) => void
 }
 
-const allergyOptions = [
-  { key: "shellfish", label: "Shellfish" },
-  { key: "nuts", label: "Nuts" },
-  { key: "gluten", label: "Gluten" },
-  { key: "dairy", label: "Dairy" },
-  { key: "eggs", label: "Eggs" },
-  { key: "vegan", label: "Vegan" },
-  { key: "vegetarian", label: "Vegetarian" },
-]
+const inputClass =
+  "rounded-lg border border-zinc-600/60 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-500 focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
 
-const tagOptions = [
-  { key: "vip", label: "VIP" },
-  { key: "high-value", label: "High-value" },
-  { key: "business", label: "Business" },
-  { key: "celebration", label: "Celebrates" },
-  { key: "first-timer", label: "First-timer" },
-]
+export function AddGuestDialog({ open, onOpenChange, locationId, onSuccess }: AddGuestDialogProps) {
+  const [name, setName] = useState("")
+  const [phone, setPhone] = useState("")
+  const [email, setEmail] = useState("")
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-export function AddGuestDialog({ open, onOpenChange }: AddGuestDialogProps) {
-  const [selectedAllergies, setSelectedAllergies] = useState<string[]>([])
-  const [selectedTags, setSelectedTags] = useState<string[]>([])
+  useEffect(() => {
+    if (open) {
+      setName("")
+      setPhone("")
+      setEmail("")
+      setError(null)
+    }
+  }, [open])
 
-  function toggleItem(list: string[], setter: (v: string[]) => void, key: string) {
-    setter(list.includes(key) ? list.filter(k => k !== key) : [...list, key])
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+
+    const trimmedName = name.trim()
+    const trimmedPhone = phone.trim()
+    const trimmedEmail = email.trim() || null
+
+    if (!trimmedName) {
+      setError("Name is required")
+      return
+    }
+    if (!trimmedPhone) {
+      setError("Phone is required")
+      return
+    }
+
+    setLoading(true)
+    try {
+      const res = await fetch("/api/customers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          locationId,
+          name: trimmedName,
+          phone: trimmedPhone,
+          email: trimmedEmail,
+        }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Failed to create guest")
+      }
+
+      toast.success("Guest added successfully")
+      onOpenChange(false)
+      onSuccess?.(data?.id)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to create guest"
+      setError(msg)
+      toast.error(msg)
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -47,136 +89,71 @@ export function AddGuestDialog({ open, onOpenChange }: AddGuestDialogProps) {
           <DialogTitle className="text-zinc-50">Add New Guest</DialogTitle>
         </DialogHeader>
 
-        <div className="flex flex-col gap-4 pt-2">
-          {/* Basic Info */}
-          {["Name *", "Phone *", "Email"].map((label) => (
-            <div key={label} className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-zinc-400">{label}</label>
-              <input
-                type={label === "Email" ? "email" : "text"}
-                className="rounded-lg border border-zinc-600/60 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-500 focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20"
-                placeholder={label.replace(" *", "")}
-              />
-            </div>
-          ))}
-
-          {/* Dates */}
-          <div className="grid grid-cols-2 gap-3">
-            {["Birthday", "Anniversary"].map((label) => (
-              <div key={label} className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-zinc-400">{label}</label>
-                <input
-                  type="date"
-                  className="rounded-lg border border-zinc-600/60 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-500/50 [color-scheme:dark]"
-                />
-              </div>
-            ))}
-          </div>
-
-          {/* Allergies */}
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4 pt-2">
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-zinc-400">Allergies & Dietary</label>
-            <div className="flex flex-wrap gap-1.5">
-              {allergyOptions.map((opt) => (
-                <Badge
-                  key={opt.key}
-                  variant="outline"
-                  className={cn(
-                    "cursor-pointer transition-all",
-                    selectedAllergies.includes(opt.key)
-                      ? "border-rose-500/40 bg-rose-500/15 text-rose-300"
-                      : "border-zinc-600 text-zinc-400 hover:border-zinc-500"
-                  )}
-                  onClick={() => toggleItem(selectedAllergies, setSelectedAllergies, opt.key)}
-                >
-                  {opt.label}
-                </Badge>
-              ))}
-            </div>
+            <label htmlFor="add-guest-name" className="text-xs font-medium text-zinc-400">
+              Name *
+            </label>
+            <input
+              id="add-guest-name"
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className={inputClass}
+              placeholder="Guest name"
+              disabled={loading}
+            />
           </div>
-
-          {/* Severity */}
-          {selectedAllergies.length > 0 && (
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-zinc-400">Allergy Severity</label>
-              <select className="rounded-lg border border-zinc-600/60 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-100 outline-none [color-scheme:dark]">
-                <option>Mild</option>
-                <option>Moderate</option>
-                <option>Severe</option>
-              </select>
-            </div>
-          )}
-
-          {/* Preferences */}
-          <div className="grid grid-cols-3 gap-3">
-            {[
-              { label: "Seating", options: ["No Preference", "Window", "Booth", "Quiet Area"] },
-              { label: "Zone", options: ["No Preference", "Main", "Patio", "Private"] },
-              { label: "Server", options: ["No Preference", "Mike", "Anna", "Carlos"] },
-            ].map((field) => (
-              <div key={field.label} className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-zinc-400">{field.label}</label>
-                <select className="rounded-lg border border-zinc-600/60 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-100 outline-none [color-scheme:dark]">
-                  {field.options.map((opt) => (
-                    <option key={opt}>{opt}</option>
-                  ))}
-                </select>
-              </div>
-            ))}
-          </div>
-
-          {/* Tags */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-zinc-400">Tags</label>
-            <div className="flex flex-wrap gap-1.5">
-              {tagOptions.map((opt) => (
-                <Badge
-                  key={opt.key}
-                  variant="outline"
-                  className={cn(
-                    "cursor-pointer transition-all",
-                    selectedTags.includes(opt.key)
-                      ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300"
-                      : "border-zinc-600 text-zinc-400 hover:border-zinc-500"
-                  )}
-                  onClick={() => toggleItem(selectedTags, setSelectedTags, opt.key)}
-                >
-                  {opt.label}
-                </Badge>
-              ))}
-            </div>
+            <label htmlFor="add-guest-phone" className="text-xs font-medium text-zinc-400">
+              Phone *
+            </label>
+            <input
+              id="add-guest-phone"
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              className={inputClass}
+              placeholder="Phone number"
+              disabled={loading}
+            />
           </div>
-
-          {/* Notes */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-zinc-400">Notes</label>
-            <textarea
-              rows={3}
-              className="rounded-lg border border-zinc-600/60 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-500 focus:border-emerald-500/50"
-              placeholder="Any notes about this guest..."
+            <label htmlFor="add-guest-email" className="text-xs font-medium text-zinc-400">
+              Email
+            </label>
+            <input
+              id="add-guest-email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className={inputClass}
+              placeholder="Email (optional)"
+              disabled={loading}
             />
           </div>
 
-          {/* Source */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-zinc-400">Source</label>
-            <select className="rounded-lg border border-zinc-600/60 bg-zinc-800/80 px-3 py-2 text-sm text-zinc-100 outline-none [color-scheme:dark]">
-              {["Walk-in", "Phone", "Website", "Google", "Referral", "Other"].map(s => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
-          </div>
+          {error && (
+            <p className="text-sm text-rose-400" role="alert">
+              {error}
+            </p>
+          )}
 
-          {/* Actions */}
           <div className="flex justify-end gap-2 border-t border-zinc-700/50 pt-4">
-            <Button variant="ghost" onClick={() => onOpenChange(false)} className="text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => onOpenChange(false)}
+              className="text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+              disabled={loading}
+            >
               Cancel
             </Button>
-            <Button className="bg-emerald-600 text-emerald-50 hover:bg-emerald-500">
-              Save Guest
+            <Button type="submit" className="bg-emerald-600 text-emerald-50 hover:bg-emerald-500" disabled={loading}>
+              {loading ? "Saving…" : "Save Guest"}
             </Button>
           </div>
-        </div>
+        </form>
       </DialogContent>
     </Dialog>
   )

@@ -207,6 +207,19 @@ export const waitlist = pgTable(
 // TABLE 2: CUSTOMERS
 // =============================================================================
 
+/** CRM enrichment stored in customers.profile_meta */
+export type CustomerProfileMeta = {
+  allergies?: Array<{ type: string; severity: "mild" | "moderate" | "severe" }>;
+  dietary?: string[];
+  preferences?: {
+    seating?: string | null;
+    zone?: string | null;
+    server?: string | null;
+    welcomeDrink?: string | null;
+  };
+  tags?: string[];
+};
+
 export const customers = pgTable(
   "customers",
   {
@@ -218,6 +231,12 @@ export const customers = pgTable(
     name: varchar("name", { length: 255 }),
     email: varchar("email", { length: 255 }),
     phone: varchar("phone", { length: 50 }),
+    /** CRM: birthday (month-day or full date) */
+    birthday: date("birthday"),
+    /** CRM: anniversary */
+    anniversary: date("anniversary"),
+    /** CRM: allergies, dietary, preferences, tags */
+    profileMeta: jsonb("profile_meta").$type<CustomerProfileMeta>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -225,6 +244,30 @@ export const customers = pgTable(
   (table) => ({
     locationIdIdx: index("customers_location_id_idx").on(table.locationId),
     userIdIdx: index("customers_user_id_idx").on(table.userId),
+  }),
+);
+
+// =============================================================================
+// TABLE 2b: CUSTOMER_NOTES (staff notes for CRM)
+// =============================================================================
+
+export const customerNotes = pgTable(
+  "customer_notes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    customerId: uuid("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    staffId: uuid("staff_id").references(() => staff.id, { onDelete: "set null" }),
+    authorName: varchar("author_name", { length: 255 }), // fallback when staffId null
+    role: varchar("role", { length: 50 }), // e.g. "Server", "Host"
+    text: text("text").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    customerIdIdx: index("customer_notes_customer_id_idx").on(table.customerId),
   }),
 );
 
@@ -770,6 +813,17 @@ export const sessionEventsRelations = relations(sessionEvents, ({ one }) => ({
   }),
 }));
 
+export const customerNotesRelations = relations(customerNotes, ({ one }) => ({
+  customer: one(customers, {
+    fields: [customerNotes.customerId],
+    references: [customers.id],
+  }),
+  staff: one(staff, {
+    fields: [customerNotes.staffId],
+    references: [staff.id],
+  }),
+}));
+
 export const customersRelations = relations(customers, ({ one, many }) => ({
   user: one(users, {
     fields: [customers.userId],
@@ -781,6 +835,7 @@ export const customersRelations = relations(customers, ({ one, many }) => ({
   }),
   reservations: many(reservations),
   orders: many(orders),
+  notes: many(customerNotes),
 }));
 
 export const reservationsRelations = relations(

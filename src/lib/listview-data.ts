@@ -71,6 +71,7 @@ export interface ListReservation {
 export interface ReservationLike {
   id: string
   time: string
+  date?: string | null
   guestName: string
   partySize: number
   table: string | null
@@ -84,10 +85,24 @@ export interface ReservationLike {
   confirmationSent?: boolean
 }
 
+/** Format ISO date for list display (e.g. "Mon 1/17" or "Today"). */
+export function formatListDate(iso: string | null | undefined): string | undefined {
+  if (!iso || typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso.trim())) return undefined
+  const d = new Date(iso + "T12:00:00")
+  if (Number.isNaN(d.getTime())) return undefined
+  const today = new Date()
+  if (d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate()) {
+    return "Today"
+  }
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "numeric", day: "numeric" })
+}
+
 export function reservationToListReservation(r: ReservationLike): ListReservation {
+  const dateLabel = formatListDate(r.date)
   return {
     id: r.id,
     time: r.time,
+    bookedDate: dateLabel,
     guestName: r.guestName,
     partySize: r.partySize,
     table: r.table,

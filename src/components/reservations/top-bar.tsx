@@ -16,7 +16,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { restaurantConfig, type ServicePeriod } from "@/lib/reservations-data"
+import {
+  getCurrentLocalTime24,
+  getCurrentLocalDateFormatted,
+  type ServicePeriod,
+} from "@/lib/reservations-data"
+import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
 import { toast } from "sonner"
 
 interface TopBarProps {
@@ -25,28 +30,18 @@ interface TopBarProps {
 }
 
 export function TopBar({ servicePeriod, onServicePeriodChange }: TopBarProps) {
-  const [currentTime, setCurrentTime] = useState(restaurantConfig.currentTime)
-  const [currentDate, setCurrentDate] = useState(() => {
-    const parsed = new Date(restaurantConfig.currentDate)
-    return Number.isNaN(parsed.getTime()) ? new Date() : parsed
-  })
+  const { config } = useReservationsData()
+  const [currentTime, setCurrentTime] = useState(getCurrentLocalTime24)
+  const [currentDate, setCurrentDate] = useState(() => new Date())
 
   useEffect(() => {
-    // Simulate live clock from mock start time
     const interval = setInterval(() => {
-      setCurrentTime((prev) => {
-        const [h, m] = prev.split(":").map(Number)
-        const newM = m + 1
-        if (newM >= 60) {
-          return `${(h + 1).toString().padStart(2, "0")}:00`
-        }
-        return `${h.toString().padStart(2, "0")}:${newM.toString().padStart(2, "0")}`
-      })
+      setCurrentTime(getCurrentLocalTime24())
     }, 60000)
     return () => clearInterval(interval)
   }, [])
 
-  const activePeriod = restaurantConfig.servicePeriods.find(
+  const activePeriod = config.servicePeriods.find(
     (p) => p.id === servicePeriod
   )
 
@@ -123,7 +118,7 @@ export function TopBar({ servicePeriod, onServicePeriodChange }: TopBarProps) {
               align="center"
               className="border-zinc-700 bg-zinc-900"
             >
-              {restaurantConfig.servicePeriods.map((p) => (
+              {config.servicePeriods.map((p) => (
                 <DropdownMenuItem
                   key={p.id}
                   onClick={() => onServicePeriodChange(p.id)}

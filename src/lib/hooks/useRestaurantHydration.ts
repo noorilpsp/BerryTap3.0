@@ -4,19 +4,16 @@ import { useEffect, useRef } from "react";
 import { useLocation } from "@/lib/contexts/LocationContext";
 import { useRestaurantStore } from "@/store/restaurantStore";
 import { getTablesForLocation, getTablesForFloorPlan } from "@/app/actions/tables";
-import { getReservationsForLocation } from "@/app/actions/reservations";
-import { getWaitlistForLocation } from "@/app/actions/waitlist";
 import { getActiveFloorPlan, getConvertedTablesForFloorPlan } from "@/app/actions/floor-plans";
 
 /**
  * Hydrates the restaurant Zustand store from Neon when currentLocationId is set.
- * Call this from layouts or pages that use the restaurant store and have LocationProvider.
+ * Reservations and waitlist are NOT hydrated here — they use the server-read path
+ * (layout + GET /api/reservations/view) to avoid duplicate fetches.
  */
 export function useRestaurantHydration() {
   const { currentLocationId, loading: locationLoading } = useLocation();
   const setTables = useRestaurantStore((s) => s.setTables);
-  const setReservations = useRestaurantStore((s) => s.setReservations);
-  const setWaitlist = useRestaurantStore((s) => s.setWaitlist);
   const lastLocationRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -36,17 +33,12 @@ export function useRestaurantHydration() {
 
     async function hydrate() {
       try {
-        const [allTables, reservations, waitlist, activeFloorPlan] = await Promise.all([
+        const [allTables, activeFloorPlan] = await Promise.all([
           getTablesForLocation(currentLocationId!),
-          getReservationsForLocation(currentLocationId!),
-          getWaitlistForLocation(currentLocationId!),
           getActiveFloorPlan(currentLocationId!),
         ]);
 
         if (cancelled) return;
-
-        setReservations(reservations);
-        setWaitlist(waitlist);
 
         if (activeFloorPlan && activeFloorPlan.elements.length > 0) {
           const planTables = await getTablesForFloorPlan(currentLocationId!, activeFloorPlan.id);
@@ -68,11 +60,5 @@ export function useRestaurantHydration() {
     return () => {
       cancelled = true;
     };
-  }, [
-    currentLocationId,
-    locationLoading,
-    setTables,
-    setReservations,
-    setWaitlist,
-  ]);
+  }, [currentLocationId, locationLoading, setTables]);
 }

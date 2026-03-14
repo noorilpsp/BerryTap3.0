@@ -1,5 +1,4 @@
 import { getTimelineBlocksNoOverlap } from "./timeline-data"
-import { restaurantConfig } from "./reservations-data"
 
 // ── Reservation Create/Edit Form Data ────────────────────────────────────────
 
@@ -470,15 +469,115 @@ export const MINI_TL_NOW_OFFSET = 30 // 7:30 PM = 30 min from start
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-export function searchGuests(query: string): GuestProfile[] {
-  if (!query || query.length < 2) return []
-  const lower = query.toLowerCase()
-  return guestDatabase.filter(
-    (g) =>
-      g.name.toLowerCase().includes(lower) ||
-      g.phone.includes(query) ||
-      g.email.toLowerCase().includes(lower)
-  )
+/** Map API customer shape to GuestProfile. Enrichment fields use safe defaults. */
+function customerToGuestProfile(c: {
+  id: string
+  name: string | null
+  phone: string | null
+  email: string | null
+}): GuestProfile {
+  return {
+    id: c.id,
+    name: c.name?.trim() || "Guest",
+    phone: c.phone ?? "",
+    email: c.email ?? "",
+    visitCount: 0,
+    lastVisit: null,
+    avgSpend: 0,
+    allergies: [],
+    preferences: [],
+    tags: [],
+    noShowCount: 0,
+    totalReservations: 0,
+  }
+}
+
+/**
+ * Search customers via API and map to GuestProfile.
+ * Returns real guest data when locationId is set and API succeeds.
+ */
+export async function searchCustomersAsGuests(
+  locationId: string,
+  query: string
+): Promise<GuestProfile[]> {
+  if (!query || query.trim().length < 2) return []
+  const q = encodeURIComponent(query.trim())
+  const res = await fetch(`/api/customers?locationId=${encodeURIComponent(locationId)}&q=${q}`)
+  if (!res.ok) return []
+  const data = await res.json().catch(() => [])
+  const list = Array.isArray(data) ? data : []
+  return list.map(customerToGuestProfile)
+}
+
+/** Build a minimal GuestProfile from reservation prefill. Use when no richer source exists. */
+export function guestProfileFromPrefill(p: {
+  guestId: string
+  guestName?: string
+  phone?: string
+  email?: string
+  visitCount?: number
+  noShowCount?: number
+  totalReservations?: number
+}): GuestProfile {
+  const totalRes = p.totalReservations ?? 0
+  return {
+    id: p.guestId,
+    name: p.guestName?.trim() || "Guest",
+    phone: p.phone ?? "",
+    email: p.email ?? "",
+    visitCount: p.visitCount ?? 0,
+    lastVisit: null,
+    avgSpend: 0,
+    allergies: [],
+    preferences: [],
+    tags: [],
+    noShowCount: p.noShowCount ?? 0,
+    totalReservations: totalRes,
+  }
+}
+
+/** Build GuestProfile from StoreReservation. Uses customerProfile when available; otherwise minimal from reservation fields. */
+export function guestProfileFromStoreReservation(sr: {
+  customerId?: string
+  guestName: string
+  phone?: string
+  email?: string
+  visitCount?: number
+  customerProfile?: {
+    totalVisits?: number
+    lastVisit?: string | null
+    avgSpend?: number
+    noShowCount?: number
+    cancelCount?: number
+    preferences?: string
+    favoriteItems?: string[]
+  } | null
+}): GuestProfile {
+  const cp = sr.customerProfile
+  const id = sr.customerId ?? sr.guestName?.toLowerCase().replace(/\s+/g, "-") ?? "guest"
+  const visitCount = cp?.totalVisits ?? sr.visitCount ?? 0
+  return {
+    id,
+    name: sr.guestName?.trim() || "Guest",
+    phone: sr.phone ?? "",
+    email: sr.email ?? "",
+    visitCount,
+    lastVisit: cp?.lastVisit ?? null,
+    avgSpend: cp?.avgSpend ?? 0,
+    allergies: [],
+    preferences: cp?.preferences ? cp.preferences.split(/[,;]/).map((p) => p.trim()).filter(Boolean) : [],
+    tags: [],
+    noShowCount: cp?.noShowCount ?? 0,
+    totalReservations: visitCount,
+  }
+}
+
+/**
+ * Local guest search. Returns empty in production—prefer searchCustomersAsGuests (API).
+ * Kept for backward compatibility; callers should use API when locationId is available.
+ */
+export function searchGuests(_query: string): GuestProfile[] {
+  return []
 }
 
 export function getDurationForParty(size: number): number {
@@ -536,15 +635,6 @@ export function getConflictsForSelection(
     }
   }
 
-  if (guest && guest.id === "g1" && guest.visitCount >= 10) {
-    warnings.push({
-      id: "c4",
-      type: "info",
-      severity: "info",
-      message: `${guest.name} last visited ${guest.lastVisit} and usually stays 2+ hours. Adjust duration?`,
-    })
-  }
-
   if (partySize >= 7) {
     warnings.push({
       id: "c5",
@@ -564,7 +654,10 @@ export function getRiskLevel(guest: GuestProfile | null): { level: "low" | "medi
   return { level: "low", label: "Low", color: "text-emerald-400" }
 }
 
-export function getCapacityAtTime(time: string): CapacitySnapshot | undefined {
+export function getCapacityAtTime(
+  time: string,
+  options?: { totalSeats?: number }
+): CapacitySnapshot | undefined {
   const parseMinutes = (hhmm: string): number => {
     const [h, m] = hhmm.split(":").map(Number)
     return h * 60 + m
@@ -576,9 +669,9 @@ export function getCapacityAtTime(time: string): CapacitySnapshot | undefined {
     return `${hour12}:${m.toString().padStart(2, "0")} ${suffix}`
   }
 
+  const totalSeats = options?.totalSeats
+  if (totalSeats == null || totalSeats <= 0) return undefined
   const target = parseMinutes(time)
-  const totalSeats = restaurantConfig.totalSeats
-  if (totalSeats <= 0) return undefined
 
   const activeSeatDemand = getTimelineBlocksNoOverlap()
     .filter((block) => block.status !== "no-show")
@@ -629,12 +722,13 @@ export const sampleEditData: EditModeData = {
   originalTime: "19:00",
 }
 
+/** Base defaults; date is overridden at init with today when creating. */
 export const defaultFormData: ReservationFormData = {
   guestName: "",
   guestId: null,
   phone: "",
   email: "",
-  date: "2025-01-17",
+  date: "", // Replaced with today's ISO at form init when creating
   time: "19:30",
   partySize: 4,
   duration: 90,

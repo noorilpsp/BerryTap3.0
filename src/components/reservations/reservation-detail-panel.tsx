@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useMediaQuery } from "@/hooks/use-media-query"
 import { type DetailReservation } from "@/lib/detail-modal-data"
+import { useRestaurantMutations } from "@/lib/hooks/useRestaurantMutations"
 import { cn } from "@/lib/utils"
 
 import { DetailHeader } from "./detail-header"
@@ -14,9 +15,10 @@ import { DetailNotes } from "./detail-notes"
 import { DetailCommunications } from "./detail-communications"
 import { DetailHistory } from "./detail-history"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { toast } from "sonner"
 
 interface ReservationDetailPanelProps {
-  reservation: DetailReservation
+  reservation: DetailReservation | null
   open: boolean
   onClose: () => void
 }
@@ -32,7 +34,35 @@ export function ReservationDetailPanel({
   open,
   onClose,
 }: ReservationDetailPanelProps) {
+  const { deleteReservation, seatReservation } = useRestaurantMutations()
   const isDesktop = useMediaQuery("(min-width: 1280px)")
+
+  const handleCancelReservation = useCallback(
+    async (id: string) => {
+      try {
+        await deleteReservation(id)
+        onClose()
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to cancel reservation"
+        toast.error(msg)
+      }
+    },
+    [deleteReservation, onClose]
+  )
+
+  const handleSeatNow = useCallback(
+    async (id: string) => {
+      try {
+        await seatReservation(id)
+        toast.success("Guests seated")
+        onClose()
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to seat reservation"
+        toast.error(msg)
+      }
+    },
+    [seatReservation, onClose]
+  )
   const isTablet = useMediaQuery("(min-width: 768px) and (max-width: 1279px)")
   const isMobile = useMediaQuery("(max-width: 767px)")
 
@@ -86,9 +116,39 @@ export function ReservationDetailPanel({
 
   if (!open) return null
 
+  if (!reservation) {
+    return (
+      <>
+        <div className="detail-backdrop fixed inset-0 z-40 bg-zinc-950/60" onClick={onClose} />
+        <div
+          ref={panelRef}
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Reservation not found"
+          className={cn(
+            "detail-panel-ops fixed z-50 flex flex-col items-center justify-center gap-4 border-zinc-800/50 bg-zinc-950 p-6 text-zinc-400",
+            isDesktop && "bottom-0 right-0 top-0 w-[480px] border-l detail-panel-slide-right",
+            isTablet && "inset-4 rounded-2xl border detail-panel-fade",
+            isMobile && "inset-x-0 bottom-0 rounded-t-2xl border-t detail-panel-slide-up"
+          )}
+        >
+          <p className="text-sm">Reservation not found</p>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-zinc-700 bg-zinc-800/80 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-700"
+          >
+            Close
+          </button>
+        </div>
+      </>
+    )
+  }
+
   const panelContent = (
     <>
-      <DetailHeader reservation={reservation} onClose={onClose} />
+      <DetailHeader reservation={reservation} onClose={onClose} onCancelReservation={handleCancelReservation} onSeatNow={handleSeatNow} />
       {isTablet ? (
         <TabletContent reservation={reservation} />
       ) : (

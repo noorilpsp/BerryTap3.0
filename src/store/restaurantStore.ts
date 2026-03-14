@@ -10,6 +10,7 @@ import type {
   WaitlistEntry,
   StoreTableStatus,
 } from "./types"
+import { resolveTableUuidFromStore } from "@/lib/resolveTableUuid"
 
 /**
  * Default state: empty. Data is hydrated from Neon when location is set.
@@ -27,8 +28,21 @@ function createDefaultWaitlist(): WaitlistEntry[] {
   return []
 }
 
-function normalizeTableId(id: string): string {
-  return id.toLowerCase()
+/** Capacity slot shape from reservations capacity engine. Not persisted. */
+export type StoreCapacitySlot = {
+  time: string
+  seatsOccupied: number
+  totalSeats: number
+  occupancyPct: number
+  arrivals?: number
+  arrivingReservations: number
+  predictedTurns: number
+}
+
+/** Resolve to canonical table UUID for lookup. Supports UUID or display (T12, 12). */
+function toTableUuid(tables: StoreTable[], id: string): string | null {
+  const resolved = resolveTableUuidFromStore(tables, id)
+  return resolved ?? null
 }
 
 function getOrderItemWaveNumber(item: StoreOrderItem): number {
@@ -215,6 +229,8 @@ export interface RestaurantState {
   orders: StoreOrder[]
   reservations: StoreReservation[]
   waitlist: WaitlistEntry[]
+  /** From ReservationsView; refreshed with reservations. Not persisted. */
+  capacitySlots: StoreCapacitySlot[]
 }
 
 export interface RestaurantActions {
@@ -233,6 +249,7 @@ export interface RestaurantActions {
   createReservation: (r: StoreReservation) => void
   updateReservation: (id: string, patch: Partial<StoreReservation>) => void
   setReservations: (r: StoreReservation[]) => void
+  setCapacitySlots: (slots: StoreCapacitySlot[]) => void
   assignReservationToTable: (reservationId: string, tableId: string) => void
   getWaitlist: () => WaitlistEntry[]
   setWaitlist: (entries: WaitlistEntry[]) => void
@@ -256,6 +273,7 @@ function createDefaultState(): RestaurantState {
     orders: [],
     reservations: createDefaultReservations(),
     waitlist: createDefaultWaitlist(),
+    capacitySlots: [],
   }
 }
 
@@ -292,6 +310,7 @@ function readPersistedState(): RestaurantState | null {
     }
     return {
       tables: snapshot.tables as StoreTable[],
+      capacitySlots: [],
       orders: Array.isArray(snapshot.orders)
         ? (snapshot.orders as Partial<StoreOrder>[])
             .map(normalizePersistedOrder)
@@ -316,14 +335,20 @@ export const useRestaurantStore = create<RestaurantStore>()((set, get) => ({
   orders: initialState.orders,
   reservations: initialState.reservations,
   waitlist: initialState.waitlist,
+  capacitySlots: initialState.capacitySlots ?? [],
 
   getTables: () => get().tables,
-  getTable: (id: string) => get().tables.find((t) => t.id === id.toLowerCase() || t.id === id),
+  getTable: (id: string) => {
+    const tables = get().tables
+    const uuid = toTableUuid(tables, id) ?? id
+    return tables.find((t) => t.id === uuid)
+  },
   updateTable: (id: string, patch: Partial<StoreTable>) => {
-    const normalizedId = id.toLowerCase()
+    const tables = get().tables
+    const uuid = toTableUuid(tables, id) ?? id
     set((state) => ({
       tables: state.tables.map((t) =>
-        t.id === normalizedId ? { ...t, ...patch, id: t.id } : t
+        t.id === uuid ? { ...t, ...patch, id: t.id } : t
       ),
     }))
   },
@@ -353,10 +378,10 @@ export const useRestaurantStore = create<RestaurantStore>()((set, get) => ({
   getOrders: () => get().orders,
   getOrderById: (id: string) => get().orders.find((order) => order.id === id),
   getOpenOrderForTable: (tableId: string) => {
-    const normalizedTableId = normalizeTableId(tableId)
     const state = get()
+    const uuid = toTableUuid(state.tables, tableId) ?? tableId
     const linkedOrder = state.tables
-      .find((table) => table.id === normalizedTableId)
+      .find((table) => table.id === uuid)
       ?.orderId
     if (linkedOrder) {
       const direct = state.orders.find(
@@ -365,17 +390,17 @@ export const useRestaurantStore = create<RestaurantStore>()((set, get) => ({
       if (direct) return direct
     }
     return state.orders.find(
-      (order) => order.tableId === normalizedTableId && order.status === "open"
+      (order) => order.tableId === uuid && order.status === "open"
     )
   },
   openOrderForTable: (tableId: string, guestCount?: number) => {
-    const normalizedTableId = normalizeTableId(tableId)
     const state = get()
-    const table = state.tables.find((t) => t.id === normalizedTableId)
+    const uuid = toTableUuid(state.tables, tableId) ?? tableId
+    const table = state.tables.find((t) => t.id === uuid)
     if (!table) return null
 
     const existingOrder =
-      get().getOpenOrderForTable(normalizedTableId) ?? null
+      get().getOpenOrderForTable(uuid) ?? null
     const now = new Date().toISOString()
 
     if (existingOrder) {
@@ -411,7 +436,7 @@ export const useRestaurantStore = create<RestaurantStore>()((set, get) => ({
               : order
           ),
           tables: current.tables.map((currentTable) =>
-            currentTable.id === normalizedTableId
+            currentTable.id === uuid
               ? { ...currentTable, orderId: existingOrder.id }
               : currentTable
           ),
@@ -425,7 +450,7 @@ export const useRestaurantStore = create<RestaurantStore>()((set, get) => ({
     const orderId = createOrderId()
     const order: StoreOrder = {
       id: orderId,
-      tableId: normalizedTableId,
+      tableId: uuid,
       tableNumber: table.number,
       status: "open",
       openedAt: now,
@@ -441,7 +466,7 @@ export const useRestaurantStore = create<RestaurantStore>()((set, get) => ({
     set((current) => ({
       orders: [...current.orders, order],
       tables: current.tables.map((currentTable) =>
-        currentTable.id === normalizedTableId
+        currentTable.id === uuid
           ? { ...currentTable, orderId }
           : currentTable
       ),
@@ -451,9 +476,9 @@ export const useRestaurantStore = create<RestaurantStore>()((set, get) => ({
   },
   syncOrderSession: (tableId: string, session: StoreTableSessionState) => {
     if (!hasSessionData(session)) return null
-
-    const normalizedTableId = normalizeTableId(tableId)
-    const ensuredOrderId = get().openOrderForTable(normalizedTableId, session.guestCount)
+    const tables = get().tables
+    const uuid = toTableUuid(tables, tableId) ?? tableId
+    const ensuredOrderId = get().openOrderForTable(uuid, session.guestCount)
     if (!ensuredOrderId) return null
 
     const state = get()
@@ -499,7 +524,7 @@ export const useRestaurantStore = create<RestaurantStore>()((set, get) => ({
       timeline: [...(currentOrder.timeline ?? []), ...waveEvents],
     }
 
-    const table = state.tables.find((t) => t.id === normalizedTableId)
+    const table = state.tables.find((t) => t.id === uuid)
     const currentSnapshot = JSON.stringify({
       order: currentOrder,
       tableOrderId: table?.orderId ?? null,
@@ -516,7 +541,7 @@ export const useRestaurantStore = create<RestaurantStore>()((set, get) => ({
             : order
         ),
         tables: current.tables.map((currentTable) =>
-          currentTable.id === normalizedTableId
+          currentTable.id === uuid
             ? { ...currentTable, orderId: ensuredOrderId }
             : currentTable
         ),
@@ -576,18 +601,20 @@ export const useRestaurantStore = create<RestaurantStore>()((set, get) => ({
     }))
   },
   setReservations: (reservations) => set({ reservations }),
+  setCapacitySlots: (capacitySlots) => set({ capacitySlots }),
   assignReservationToTable: (reservationId: string, tableId: string) => {
-    const normalizedTableId = tableId.toLowerCase()
-    const table = get().getTable(normalizedTableId)
-    const tableNumber = table?.number?.toString() ?? tableId
+    const tables = get().tables
+    const uuid = toTableUuid(tables, tableId) ?? tableId
+    const table = tables.find((t) => t.id === uuid)
+    const tableDisplay = table ? `T${table.number}` : tableId
     set((state) => ({
       reservations: state.reservations.map((r) =>
         r.id === reservationId
-          ? { ...r, tableId: normalizedTableId, table: tableNumber, status: "confirmed" as const }
+          ? { ...r, tableId: uuid, table: tableDisplay, status: "confirmed" as const }
           : r
       ),
       tables: state.tables.map((t) =>
-        t.id === normalizedTableId ? { ...t, status: "reserved" as StoreTableStatus, reservationId } : t
+        t.id === uuid ? { ...t, status: "reserved" as StoreTableStatus, reservationId } : t
       ),
     }))
   },

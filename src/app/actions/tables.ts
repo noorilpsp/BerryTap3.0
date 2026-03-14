@@ -1,10 +1,11 @@
 "use server";
 
-import { eq, and, desc, ilike, sql } from "drizzle-orm";
+import { eq, and, desc, ilike, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { tables as tablesTable, sessions as sessionsTable } from "@/lib/db/schema/orders";
 import { verifyLocationAccess } from "@/lib/location-access";
 import { updateTableMutation } from "@/domain/table-mutations";
+import { isValidUuid } from "@/lib/resolveTableUuid";
 import type { StoreTable } from "@/store/types";
 
 /**
@@ -12,7 +13,7 @@ import type { StoreTable } from "@/store/types";
  */
 function mapTableRowToStoreTable(row: {
   id: string;
-  displayId: string | null;
+  displayId?: string | null;
   tableNumber: string;
   seats: number | null;
   status: string;
@@ -30,10 +31,11 @@ function mapTableRowToStoreTable(row: {
 }): StoreTable {
   const pos = row.position as { x?: number; y?: number } | null;
   const alerts = row.alerts as string[] | null;
-  // Parse "T1", "T2" or "1", "2" format
+  // Parse "T1", "T2" or "1", "2" format for display number
   const numMatch = row.tableNumber.match(/^[A-Za-z]*(\d+)$/);
   const num = numMatch ? parseInt(numMatch[1], 10) : parseInt(row.tableNumber, 10) || 1;
-  const id = (row.displayId ?? row.tableNumber).toLowerCase() || `t${num}`;
+  // Use DB UUID as real identity; number is for UI display only
+  const id = row.id;
 
   return {
     id,
@@ -230,10 +232,15 @@ export async function updateTable(
   }
 
   const rows = await db.query.tables.findMany({
-    where: and(
-      eq(tablesTable.locationId, locationId),
-      ilike(tablesTable.tableNumber, tableId)
-    ),
+    where: isValidUuid(tableId)
+      ? and(eq(tablesTable.locationId, locationId), eq(tablesTable.id, tableId))
+      : and(
+          eq(tablesTable.locationId, locationId),
+          or(
+            ilike(tablesTable.tableNumber, tableId),
+            ilike(tablesTable.displayId, tableId)
+          )
+        ),
     columns: { id: true },
     limit: 1,
   });

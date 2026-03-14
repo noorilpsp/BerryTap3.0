@@ -4,7 +4,6 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { useMediaQuery } from "@/hooks/use-media-query"
 import {
-  restaurantConfig,
   getCurrentLocalTime24,
   getTimelineBlocksFromReservations,
   getTableLanesFromStore,
@@ -12,7 +11,8 @@ import {
   type ZoomLevel,
   type TimelineBlock,
 } from "@/lib/timeline-data"
-import { useReservationsFromStore } from "@/lib/reservations-data"
+import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
+import { useReservationsSelectedDate } from "@/lib/reservations/useReservationsSelectedDate"
 import { useRestaurantMutations } from "@/lib/hooks/useRestaurantMutations"
 import { useRestaurantStore } from "@/store/restaurantStore"
 import { TimelineTopBar } from "./timeline-top-bar"
@@ -53,13 +53,6 @@ function isSameLocalDay(a: Date, b: Date): boolean {
   )
 }
 
-function toIsoDate(date: Date): string {
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, "0")
-  const d = String(date.getDate()).padStart(2, "0")
-  return `${y}-${m}-${d}`
-}
-
 function ceilToQuarterHour(time: string): string {
   const [h, m] = time.split(":").map(Number)
   const total = h * 60 + m
@@ -80,14 +73,19 @@ export function TimelineView() {
   const [partySizeFilter, setPartySizeFilter] = useState("all")
   const [showGhosts, setShowGhosts] = useState(true)
   const [currentTime, setCurrentTime] = useState(() => getCurrentLocalTime24())
-  const [selectedDate, setSelectedDate] = useState(() => startOfLocalDay(new Date()))
-  const [servicePeriodId, setServicePeriodId] = useState(() => {
-    const now = getCurrentLocalTime24()
-    const activeService = restaurantConfig.servicePeriods.find((period) =>
-      isWithinService(now, period.start, period.end)
-    )
-    return activeService?.id ?? restaurantConfig.servicePeriods.find((period) => period.id === "dinner")?.id ?? restaurantConfig.servicePeriods[0]?.id ?? "dinner"
-  })
+  const { selectedDate, selectedIsoDate, setSelectedDate } = useReservationsSelectedDate()
+  const { reservations, config } = useReservationsData()
+  const [servicePeriodId, setServicePeriodId] = useState<string | null>(null)
+  useEffect(() => {
+    if (servicePeriodId === null && config.servicePeriods.length > 0) {
+      const now = getCurrentLocalTime24()
+      const active = config.servicePeriods.find((p) =>
+        isWithinService(now, p.start, p.end)
+      )
+      setServicePeriodId(active?.id ?? config.servicePeriods[0]?.id ?? "dinner")
+    }
+  }, [config.servicePeriods, servicePeriodId])
+  const effectiveServicePeriodId = servicePeriodId ?? config.servicePeriods[0]?.id ?? "dinner"
   const [selectedBlock, setSelectedBlock] = useState<TimelineBlock | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const storeTables = useRestaurantStore((s) => s.tables)
@@ -96,35 +94,45 @@ export function TimelineView() {
     [storeTables]
   )
   const validTableIds = useMemo(() => new Set(tableLanes.map((l) => l.id)), [tableLanes])
-  const { reservations } = useReservationsFromStore()
-  const blocks = useMemo(
-    () =>
-      getTimelineBlocksFromReservations(
-        reservations.map((r) => ({
+  const uuidToDisplay = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const t of storeTables) m.set(t.id, `T${t.number}`)
+    return m
+  }, [storeTables])
+  const blocks = useMemo(() => {
+    const resolveTable = (raw: string | null | undefined): string | null => {
+      if (!raw?.trim()) return null
+      const s = raw.trim()
+      if (uuidToDisplay.has(s)) return uuidToDisplay.get(s) ?? null
+      return s
+    }
+    return getTimelineBlocksFromReservations(
+      reservations.map((r) => {
+        const resolved = resolveTable(r.table ?? r.tableId)
+        return {
           id: r.id,
           guestName: r.guestName,
           partySize: r.partySize,
           time: r.time,
-          table: r.table,
-          tableId: r.table,
+          table: resolved,
+          tableId: resolved,
           status: r.status,
           risk: r.risk,
           tags: r.tags,
           date: r.date ?? undefined,
-        })),
-        validTableIds
-      ),
-    [reservations, validTableIds]
-  )
+        }
+      }),
+      validTableIds
+    )
+  }, [reservations, validTableIds, uuidToDisplay])
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const isMobile = useMediaQuery("(max-width: 767px)")
 
   const activeService =
-    restaurantConfig.servicePeriods.find((period) => period.id === servicePeriodId)
-    ?? restaurantConfig.servicePeriods[0]
+    config.servicePeriods.find((period) => period.id === effectiveServicePeriodId)
+    ?? config.servicePeriods[0]
   const isSelectedDateToday = isSameLocalDay(selectedDate, new Date())
   const nowTimeForTimeline = isSelectedDateToday ? currentTime : null
-  const selectedIsoDate = toIsoDate(selectedDate)
   const displayedBlocks = blocks.filter((b) => b.date === selectedIsoDate)
 
   const handleBlockClick = useCallback((block: TimelineBlock) => {
@@ -153,8 +161,8 @@ export function TimelineView() {
       : activeService.start
 
     next.set("action", "new")
-    next.set("date", toIsoDate(selectedDate))
-    next.set("service", servicePeriodId)
+    next.set("date", selectedIsoDate)
+    next.set("service", effectiveServicePeriodId)
     next.set("time", defaultTime)
     next.delete("id")
     next.delete("detail")
@@ -165,7 +173,7 @@ export function TimelineView() {
 
     const query = next.toString()
     router.push(query ? `${pathname}?${query}` : pathname, { scroll: false })
-  }, [activeService.end, activeService.start, currentTime, isSelectedDateToday, pathname, router, searchParams, selectedDate, servicePeriodId])
+  }, [activeService.end, activeService.start, currentTime, effectiveServicePeriodId, isSelectedDateToday, pathname, router, searchParams, selectedIsoDate])
 
   const handleEmptySlotClick = useCallback((payload: { tableId: string; time: string; duration: number; durationMax: number; partySize: number }) => {
     const next = new URLSearchParams(searchParams.toString())
@@ -175,8 +183,8 @@ export function TimelineView() {
     next.set("table", payload.tableId)
     if (selectedLane) next.set("zone", selectedLane.zone)
     else next.delete("zone")
-    next.set("date", toIsoDate(selectedDate))
-    next.set("service", servicePeriodId)
+    next.set("date", selectedIsoDate)
+    next.set("service", effectiveServicePeriodId)
     next.set("partySize", payload.partySize.toString())
     next.set("duration", payload.duration.toString())
     next.set("durationMax", payload.durationMax.toString())
@@ -184,7 +192,7 @@ export function TimelineView() {
     next.delete("detail")
     const query = next.toString()
     router.push(query ? `${pathname}?${query}` : pathname, { scroll: false })
-  }, [pathname, router, searchParams, selectedDate, servicePeriodId, tableLanes])
+  }, [pathname, router, searchParams, selectedIsoDate, effectiveServicePeriodId, tableLanes])
 
   const handleScrollChange = useCallback(() => {}, [])
 
@@ -223,7 +231,7 @@ export function TimelineView() {
         onPartySizeFilterChange={setPartySizeFilter}
         showGhosts={showGhosts}
         onShowGhostsChange={setShowGhosts}
-        servicePeriodId={servicePeriodId}
+        servicePeriodId={effectiveServicePeriodId}
         onServicePeriodChange={setServicePeriodId}
         selectedDate={selectedDate}
         onSelectedDateChange={(date) => setSelectedDate(startOfLocalDay(date))}

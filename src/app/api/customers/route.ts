@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, or, ilike, desc } from "drizzle-orm";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { db } from "@/db";
 import { customers } from "@/lib/db/schema/orders";
@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 /**
  * GET /api/customers
  * List customers for a location
- * Query params: locationId (required)
+ * Query params: locationId (required), q (optional, min 2 chars) – search by name, phone, or email
  */
 export async function GET(request: NextRequest) {
   try {
@@ -29,6 +29,7 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const locationId = searchParams.get("locationId");
+    const q = searchParams.get("q")?.trim();
 
     if (!locationId) {
       return NextResponse.json(
@@ -73,10 +74,23 @@ export async function GET(request: NextRequest) {
     }
 
     // Fetch customers
+    const baseWhere = eq(customers.locationId, locationId);
+    const searchWhere =
+      q && q.length >= 2
+        ? and(
+            baseWhere,
+            or(
+              ilike(customers.name ?? "", `%${q}%`),
+              ilike(customers.phone ?? "", `%${q}%`),
+              ilike(customers.email ?? "", `%${q}%`)
+            )
+          )
+        : baseWhere;
+
     const customersList = await db.query.customers.findMany({
-      where: eq(customers.locationId, locationId),
+      where: searchWhere,
       orderBy: [desc(customers.createdAt)],
-      limit: 100,
+      limit: 50,
     });
 
     return NextResponse.json(customersList, {
@@ -119,7 +133,16 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json().catch(() => ({}));
-    const { locationId, userId, name, email, phone } = body;
+    const {
+      locationId,
+      userId,
+      name,
+      email,
+      phone,
+      birthday,
+      anniversary,
+      profileMeta,
+    } = body;
 
     if (!locationId) {
       return NextResponse.json(
@@ -163,7 +186,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create customer
     const [newCustomer] = await db
       .insert(customers)
       .values({
@@ -172,6 +194,9 @@ export async function POST(request: NextRequest) {
         name: name || null,
         email: email || null,
         phone: phone || null,
+        birthday: birthday ?? null,
+        anniversary: anniversary ?? null,
+        profileMeta: profileMeta ?? null,
       })
       .returning();
 

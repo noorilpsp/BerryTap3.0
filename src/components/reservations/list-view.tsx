@@ -16,18 +16,44 @@ import {
   reservationToListReservation,
   waitlistPartyToListReservation,
 } from "@/lib/listview-data"
-import { useReservationsFromStore } from "@/lib/reservations-data"
+import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
+import { useReservationsSelectedDate } from "@/lib/reservations/useReservationsSelectedDate"
+import { useRestaurantMutations } from "@/lib/hooks/useRestaurantMutations"
 import { useMediaQuery } from "@/hooks/use-media-query"
+import { toast } from "sonner"
 
 export function ListView() {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const { reservations, waitlistParties } = useReservationsFromStore()
-  const listReservations = useMemo(
-    () => reservations.map(reservationToListReservation),
-    [reservations]
+  const { reservations, waitlistParties } = useReservationsData()
+  const { deleteReservation, removeFromWaitlist } = useRestaurantMutations()
+
+  const [detailReservation, setDetailReservation] = useState<ListReservation | null>(null)
+  const [detailOpen, setDetailOpen] = useState(false)
+
+  const handleCancelOrRemove = useCallback(
+    async (id: string, isWaitlist: boolean) => {
+      try {
+        if (isWaitlist) await removeFromWaitlist(id)
+        else await deleteReservation(id)
+        if (detailReservation?.id === id) setDetailOpen(false)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to cancel"
+        toast.error(msg)
+      }
+    },
+    [deleteReservation, removeFromWaitlist, detailReservation?.id]
   )
+  const { selectedDate, selectedIsoDate, todayIso, setSelectedDate } = useReservationsSelectedDate()
+
+  const listReservations = useMemo(() => {
+    const byDate = reservations.filter((r) => {
+      const rDate = r.date ?? todayIso
+      return rDate === selectedIsoDate
+    })
+    return byDate.map(reservationToListReservation)
+  }, [reservations, selectedIsoDate, todayIso])
 
   const startOfDay = useCallback((date: Date) => {
     const next = new Date(date)
@@ -46,11 +72,8 @@ export function ListView() {
   const [groupBy, setGroupBy] = useState<GroupByOption>("status")
   const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>([])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [detailReservation, setDetailReservation] = useState<ListReservation | null>(null)
-  const [detailOpen, setDetailOpen] = useState(false)
   const [focusedRowId, setFocusedRowId] = useState<string | null>(null)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
-  const [selectedDate, setSelectedDate] = useState<Date>(() => startOfDay(new Date()))
 
   const isDesktop = useMediaQuery("(min-width: 768px)")
 
@@ -145,14 +168,15 @@ export function ListView() {
     () => waitlistParties.map(waitlistPartyToListReservation),
     [waitlistParties]
   )
-  // When only "Waitlist" is selected, show just waitlist rows; otherwise include waitlist in the list so "Waitlist" appears as a section
+  // When only "Waitlist" is selected, show just waitlist rows (only when viewing today); otherwise include waitlist in the list
   const isWaitlistOnlyView =
     activeStatuses.length === 1 && activeStatuses[0] === "waitlist"
+  const showWaitlist = selectedIsoDate === todayIso
   const displayReservations = useMemo(() => {
-    if (isWaitlistOnlyView) return waitlistAsListRows
-    const includeWaitlist = activeStatuses.length === 0 || activeStatuses.includes("waitlist")
+    if (isWaitlistOnlyView) return showWaitlist ? waitlistAsListRows : []
+    const includeWaitlist = showWaitlist && (activeStatuses.length === 0 || activeStatuses.includes("waitlist"))
     return includeWaitlist ? [...filteredReservations, ...waitlistAsListRows] : filteredReservations
-  }, [isWaitlistOnlyView, filteredReservations, waitlistAsListRows, activeStatuses])
+  }, [isWaitlistOnlyView, showWaitlist, filteredReservations, waitlistAsListRows, activeStatuses])
   const displaySummary = useMemo(
     () => getListSummary(displayReservations),
     [displayReservations]
@@ -232,18 +256,14 @@ export function ListView() {
 
   const handleOpenNewReservation = useCallback(() => {
     const next = new URLSearchParams(searchParams.toString())
-    const y = selectedDate.getFullYear()
-    const m = String(selectedDate.getMonth() + 1).padStart(2, "0")
-    const d = String(selectedDate.getDate()).padStart(2, "0")
-
     next.set("action", "new")
-    next.set("date", `${y}-${m}-${d}`)
+    next.set("date", selectedIsoDate)
     next.delete("id")
     next.delete("detail")
 
     const query = next.toString()
     router.push(query ? `${pathname}?${query}` : pathname, { scroll: false })
-  }, [pathname, router, searchParams, selectedDate])
+  }, [pathname, router, searchParams, selectedIsoDate])
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -275,6 +295,7 @@ export function ListView() {
             onSelectAll={handleSelectAll}
             onDeselectAll={handleDeselectAll}
             onOpenDetail={handleOpenDetail}
+            onCancelReservation={(id, isWaitlist) => handleCancelOrRemove(id, isWaitlist)}
             focusedRowId={focusedRowId}
             onFocusRow={setFocusedRowId}
           />
@@ -298,6 +319,7 @@ export function ListView() {
         reservation={detailReservation}
         open={detailOpen}
         onClose={() => setDetailOpen(false)}
+        onCancel={(id, isWaitlist) => handleCancelOrRemove(id, isWaitlist)}
       />
 
       <ListKeyboardShortcuts

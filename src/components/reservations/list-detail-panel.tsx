@@ -38,6 +38,8 @@ interface ListDetailPanelProps {
   reservation: ListReservation | null
   open: boolean
   onClose: () => void
+  /** Called when user cancels a reservation or removes from waitlist. id, and whether it's a waitlist entry. */
+  onCancel?: (id: string, isWaitlist: boolean) => void | Promise<void>
 }
 
 function TagBadge({ type, label }: { type: ListTagType; label: string }) {
@@ -62,7 +64,7 @@ function TagBadge({ type, label }: { type: ListTagType; label: string }) {
   )
 }
 
-export function ListDetailPanel({ reservation, open, onClose }: ListDetailPanelProps) {
+export function ListDetailPanel({ reservation, open, onClose, onCancel }: ListDetailPanelProps) {
   if (!reservation) return null
 
   const statusBadge = getStatusBadge(reservation.status, reservation.courseStage)
@@ -234,7 +236,12 @@ export function ListDetailPanel({ reservation, open, onClose }: ListDetailPanelP
               <Button size="sm" variant="outline" className="h-8 border-zinc-700 text-xs text-zinc-300 hover:bg-zinc-700">
                 Edit
               </Button>
-              <Button size="sm" variant="outline" className="h-8 border-rose-700/30 text-xs text-rose-400 hover:bg-rose-500/10">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 border-rose-700/30 text-xs text-rose-400 hover:bg-rose-500/10"
+                onClick={() => onCancel?.(reservation.id, reservation.status === "waitlist")}
+              >
                 Cancel
               </Button>
             </div>

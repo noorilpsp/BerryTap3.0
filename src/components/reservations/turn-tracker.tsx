@@ -3,11 +3,7 @@
 import Link from "next/link"
 import { ArrowRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import {
-  type OccupiedTable,
-  occupiedTables,
-  getCourseLabel,
-} from "@/lib/reservations-data"
+import { type OccupiedTable, useOccupiedTables, getCourseLabel } from "@/lib/reservations-data"
 
 function getProgressColor(pct: number): string {
   if (pct >= 85) return "bg-emerald-500"
@@ -61,6 +57,7 @@ function TableTurnRow({ table }: { table: OccupiedTable }) {
 }
 
 export function TurnTracker() {
+  const occupiedTables = useOccupiedTables()
   const turningSoon = occupiedTables
     .filter((t) => t.predictedTurnMin <= 15)
     .sort((a, b) => a.predictedTurnMin - b.predictedTurnMin)

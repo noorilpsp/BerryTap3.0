@@ -9,11 +9,8 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import {
-  type WaitlistParty,
-  useReservationsFromStore,
-  getWaitTimerStatus,
-} from "@/lib/reservations-data"
+import { type WaitlistParty, getWaitTimerStatus } from "@/lib/reservations-data"
+import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
 
 function WaitlistCard({
   party,
@@ -99,7 +96,7 @@ function WaitlistCard({
 }
 
 export function WaitlistPanel() {
-  const { waitlistParties } = useReservationsFromStore()
+  const { waitlistParties } = useReservationsData()
   return (
     <div className="glass-surface flex flex-col rounded-xl">
       <div className="flex items-center justify-between border-b border-zinc-800/50 px-4 py-3">

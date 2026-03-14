@@ -92,13 +92,15 @@ async function getCurrentServicePeriodIdForLocation(
 
 /**
  * Get or create an open session for a table. At most one open session per table.
+ * When reservationId is provided and a new session is created, sets source: "reservation" and sessions.reservationId.
  */
 async function getOrCreateSessionForTable(
   locationId: string,
   tableUuid: string,
   guestCount: number,
-  serverId?: string | null
-) {
+  serverId?: string | null,
+  reservationId?: string | null
+): Promise<string | null> {
   const existing = await db.query.sessions.findFirst({
     where: and(
       eq(sessionsTable.locationId, locationId),
@@ -110,6 +112,7 @@ async function getOrCreateSessionForTable(
   if (existing) return existing.id;
 
   const servicePeriodId = await getCurrentServicePeriodIdForLocation(locationId);
+  const isFromReservation = Boolean(reservationId?.trim());
   const [inserted] = await db
     .insert(sessionsTable)
     .values({
@@ -118,7 +121,8 @@ async function getOrCreateSessionForTable(
       serverId: serverId ?? null,
       guestCount,
       status: "open",
-      source: "walk_in",
+      source: isFromReservation ? "reservation" : "walk_in",
+      reservationId: isFromReservation ? reservationId : null,
       servicePeriodId: servicePeriodId ?? undefined,
       updatedAt: new Date(),
     })
@@ -162,12 +166,14 @@ export type EnsureSessionResult =
  * Get or create an open session for a table by table UUID (tables.id) or displayId.
  * Table lookup matches /api/tables/[id]/pos: UUID → eq(id), else ilike(displayId).
  * Requires userId to resolve staff.id. Rejects if furniture status is maintenance/disabled.
+ * When reservationId is provided and a new session is created, sets source: "reservation".
  */
 export async function ensureSessionForTableByTableUuid(
   locationId: string,
   tableUuid: string,
   guestCount: number,
-  userId: string
+  userId: string,
+  reservationId?: string | null
 ): Promise<EnsureSessionResult> {
   const location = await verifyLocationAccess(locationId);
   if (!location) return { ok: false, reason: "no_location" };
@@ -202,36 +208,31 @@ export async function ensureSessionForTableByTableUuid(
     return { ok: false, reason: "table_not_active" };
   }
 
-  const sessionId = await getOrCreateSessionForTable(locationId, tableRow.id, guestCount, staffId);
+  const sessionId = await getOrCreateSessionForTable(
+    locationId,
+    tableRow.id,
+    guestCount,
+    staffId,
+    reservationId
+  );
   return sessionId ? { ok: true, sessionId } : { ok: false, reason: "no_table" };
 }
 
-/** Get or create an open session for a table (by table id string e.g. "t1"). Returns sessionId for recording events. Requires userId to resolve staff.id. */
+/** Get or create an open session for a table. Delegates to ensureSessionForTableByTableUuid. Supports UUID or displayId (T12). */
 export async function ensureSessionForTable(
   locationId: string,
   tableId: string,
   guestCount: number,
-  userId: string
+  userId: string,
+  reservationId?: string | null
 ): Promise<EnsureSessionResult> {
-  const location = await verifyLocationAccess(locationId);
-  if (!location) return { ok: false, reason: "no_location" };
-
-  const staffId = await getStaffIdForUser(locationId, userId);
-  if (!staffId) return { ok: false, reason: "user_not_staff" };
-
-  const tableRows = await db.query.tables.findMany({
-    where: and(
-      eq(tablesTable.locationId, locationId),
-      ilike(tablesTable.tableNumber, tableId)
-    ),
-    columns: { id: true },
-    limit: 1,
-  });
-  const tableRow = tableRows[0];
-  if (!tableRow) return { ok: false, reason: "no_table" };
-
-  const sessionId = await getOrCreateSessionForTable(locationId, tableRow.id, guestCount, staffId);
-  return sessionId ? { ok: true, sessionId } : { ok: false, reason: "no_table" };
+  return ensureSessionForTableByTableUuid(
+    locationId,
+    tableId,
+    guestCount,
+    userId,
+    reservationId
+  );
 }
 
 /**

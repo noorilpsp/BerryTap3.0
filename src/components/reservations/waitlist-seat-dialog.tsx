@@ -18,6 +18,8 @@ interface SeatDialogProps {
   onOpenChange: (open: boolean) => void
   entry: WaitlistEntry | null
   tableId: string
+  /** Display label for table, e.g. "T12". Falls back to tableId when absent. */
+  tableDisplayId?: string
   onConfirm: () => void
 }
 
@@ -26,6 +28,7 @@ export function WaitlistSeatDialog({
   onOpenChange,
   entry,
   tableId,
+  tableDisplayId,
   onConfirm,
 }: SeatDialogProps) {
   const [sendSms, setSendSms] = useState(true)
@@ -55,7 +58,9 @@ export function WaitlistSeatDialog({
               <span className="font-bold">{entry.name}</span>{" "}
               <span className="text-zinc-500">({entry.partySize} guests)</span>
               <span className="mx-2 text-zinc-600">&rarr;</span>
-              <span className="font-bold text-emerald-400">Table {tableId.replace("T", "")}</span>
+              <span className="font-bold text-emerald-400">
+                Table {tableDisplayId ? tableDisplayId.replace(/^T/i, "") : tableId}
+              </span>
             </div>
             <div className="mt-1.5 flex items-center gap-1.5 text-xs">
               <span className="text-zinc-500">
@@ -91,7 +96,7 @@ export function WaitlistSeatDialog({
             <label className="flex items-center gap-2 text-xs text-zinc-400">
               <Checkbox checked={alertServer} onCheckedChange={(v) => setAlertServer(v as boolean)} />
               <Bell className="h-3 w-3" />
-              Alert server ({tableId})
+              Alert server ({tableDisplayId ?? tableId})
             </label>
           </div>
 

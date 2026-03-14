@@ -1,6 +1,8 @@
 "use client"
 
 import { useCallback, useMemo, type ReactNode } from "react"
+import type { ReservationsView } from "@/lib/reservations/reservationsView"
+import { ReservationsDataProvider, useReservationsData } from "@/lib/reservations/reservationsDataContext"
 import Link from "next/link"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import {
@@ -12,6 +14,7 @@ import {
   Map,
 } from "lucide-react"
 
+import { useRestaurantStore } from "@/store/restaurantStore"
 import { useMediaQuery } from "@/hooks/use-media-query"
 import {
   Dialog,
@@ -29,14 +32,17 @@ import {
 } from "@/components/ui/sheet"
 import { ReservationDetailPanel } from "@/components/reservations/reservation-detail-panel"
 import { ReservationFormView } from "@/components/reservations/reservation-form-view"
-import { getReservationById, getReservationByStatus } from "@/lib/detail-modal-data"
+import { getReservationById, type DetailReservation } from "@/lib/detail-modal-data"
 import {
-  capacitySlots,
-  useReservationsFromStore,
-  restaurantConfig,
+  getCurrentLocalTime24,
   type Reservation,
 } from "@/lib/reservations-data"
-import { guestDatabase, type BookingChannel, type FormTag } from "@/lib/reservation-form-data"
+import {
+  guestProfileFromPrefill,
+  guestProfileFromStoreReservation,
+  type BookingChannel,
+  type FormTag,
+} from "@/lib/reservation-form-data"
 import { cn } from "@/lib/utils"
 
 type ReservationLens = {
@@ -68,6 +74,7 @@ const LENS_ICONS: Record<ReservationLens["id"], typeof LayoutDashboard> = {
 }
 
 interface ReservationsShellLayoutProps {
+  initialReservationsView: ReservationsView | null
   children: ReactNode
 }
 
@@ -100,24 +107,6 @@ function mapBookedViaToChannel(raw?: string | null): BookingChannel | undefined 
   return "direct"
 }
 
-function inferServicePeriodIdFromTime(time?: string): string | undefined {
-  if (!time) return undefined
-  const timeMin = timeToMinutes(time)
-  if (!Number.isFinite(timeMin)) return undefined
-
-  const match = restaurantConfig.servicePeriods.find((period) => {
-    const start = timeToMinutes(period.start)
-    let end = timeToMinutes(period.end)
-    let current = timeMin
-    if (end <= start) {
-      end += 24 * 60
-      if (current < start) current += 24 * 60
-    }
-    return current >= start && current < end
-  })
-  return match?.id
-}
-
 function mapOverviewTagsToFormTags(tags: Reservation["tags"]): FormTag[] {
   const mapped = tags.flatMap<FormTag>((tag) => {
     switch (tag.type) {
@@ -138,8 +127,30 @@ function mapOverviewTagsToFormTags(tags: Reservation["tags"]): FormTag[] {
   return [...new Set(mapped)]
 }
 
-export function ReservationsShellLayout({ children }: ReservationsShellLayoutProps) {
-  const { reservations, waitlistParties } = useReservationsFromStore()
+function inferServicePeriodIdFromTime(
+  time: string | undefined,
+  servicePeriods: Array<{ id: string; start: string; end: string }>
+): string | undefined {
+  if (!time) return undefined
+  const timeMin = timeToMinutes(time)
+  if (!Number.isFinite(timeMin)) return undefined
+  const match = servicePeriods.find((period) => {
+    const start = timeToMinutes(period.start)
+    let end = timeToMinutes(period.end)
+    let current = timeMin
+    if (end <= start) {
+      end += 24 * 60
+      if (current < start) current += 24 * 60
+    }
+    return current >= start && current < end
+  })
+  return match?.id
+}
+
+function ReservationsShellLayoutInner({ children }: { children: ReactNode }) {
+  const { reservations, waitlistParties, config, capacitySlots } = useReservationsData()
+  const storeReservations = useRestaurantStore((s) => s.reservations)
+  const tables = useRestaurantStore((s) => s.tables) ?? []
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -176,14 +187,25 @@ export function ReservationsShellLayout({ children }: ReservationsShellLayoutPro
     [actionId]
   )
   const editDetailReservation = useMemo(
-    () => (actionId ? getReservationById(actionId, reservations) : undefined),
-    [actionId, reservations]
+    () =>
+      actionId
+        ? getReservationById(actionId, reservations, {
+            storeReservations,
+            tables,
+          })
+        : undefined,
+    [actionId, reservations, storeReservations, tables]
   )
+  const todayIso = useMemo(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+  }, [])
+
   const newPrefill = useMemo(
     () => (
       action === "new"
         ? {
-            date: prefillDate ?? undefined,
+            date: prefillDate ?? todayIso,
             time: prefillTime ?? undefined,
             assignedTable: prefillTable ?? undefined,
             zonePreference: normalizeZonePreference(prefillZone),
@@ -194,7 +216,7 @@ export function ReservationsShellLayout({ children }: ReservationsShellLayoutPro
           }
         : undefined
     ),
-    [action, prefillDate, prefillDuration, prefillDurationMax, prefillPartySize, prefillService, prefillTable, prefillTime, prefillZone]
+    [action, prefillDate, prefillDuration, prefillDurationMax, prefillPartySize, prefillService, prefillTable, prefillTime, prefillZone, todayIso]
   )
   const editPrefill = useMemo(() => {
     if (action !== "edit") return undefined
@@ -212,17 +234,23 @@ export function ReservationsShellLayout({ children }: ReservationsShellLayoutPro
       editSourceReservation?.tags.find((tag) => tag.type === "allergy")?.detail
       ?? undefined
     )
-    const guestId = (() => {
-      if (!editSourceReservation) return undefined
-      const byPhone = editSourceReservation.phone
-        ? guestDatabase.find((guest) => guest.phone === editSourceReservation.phone)
-        : undefined
-      if (byPhone) return byPhone.id
-      const byName = guestDatabase.find((guest) => guest.name.toLowerCase() === editSourceReservation.guestName.toLowerCase())
-      return byName?.id
-    })()
+    const storeRes = storeReservations.find((r) => r.id === actionId)
+    const guestId = storeRes?.customerId ?? editSourceReservation?.customerId ?? undefined
+    const guestProfile =
+      storeRes
+        ? guestProfileFromStoreReservation(storeRes)
+        : editSourceReservation
+          ? guestProfileFromPrefill({
+              guestId: guestId ?? editSourceReservation.id,
+              guestName: editSourceReservation.guestName,
+              phone: editSourceReservation.phone,
+              email: undefined,
+              visitCount: editSourceReservation.visitCount,
+            })
+          : undefined
 
     return {
+      reservationId: actionId,
       guestName: editDetailReservation?.guestName ?? editSourceReservation?.guestName ?? prefillGuestName ?? undefined,
       guestId,
       phone: editDetailReservation?.guestPhone ?? editSourceReservation?.phone ?? prefillPhone ?? undefined,
@@ -243,12 +271,14 @@ export function ReservationsShellLayout({ children }: ReservationsShellLayoutPro
       requireDeposit: editDetailReservation?.depositStatus === "required" || editDetailReservation?.depositStatus === "paid",
       depositAmount: editDetailReservation?.deposit ? String(editDetailReservation.deposit) : "",
       addToCalendar: false,
-      servicePeriodId: prefillService ?? inferServicePeriodIdFromTime(time),
+      servicePeriodId: prefillService ?? inferServicePeriodIdFromTime(time, config.servicePeriods),
       durationMax: Number.isFinite(prefillDurationMax) ? prefillDurationMax : undefined,
+      guestProfile,
     }
   }, [
     action,
     actionId,
+    config.servicePeriods,
     editDetailReservation,
     editSourceReservation,
     prefillDate,
@@ -262,12 +292,13 @@ export function ReservationsShellLayout({ children }: ReservationsShellLayoutPro
     prefillTable,
     prefillTime,
     prefillZone,
+    storeReservations,
   ])
   const prefill = action === "new" ? newPrefill : action === "edit" ? editPrefill : undefined
   const formRenderKey = `${mode}:${actionId ?? ""}:${prefill?.guestName ?? ""}:${prefill?.date ?? ""}:${prefill?.time ?? ""}:${prefill?.assignedTable ?? ""}:${prefill?.zonePreference ?? ""}:${prefill?.servicePeriodId ?? ""}:${prefill?.partySize ?? ""}:${prefill?.duration ?? ""}:${prefill?.durationMax ?? ""}`
 
   const shellMetrics = useMemo(() => {
-    const nowMinutes = timeToMinutes(restaurantConfig.currentTime)
+    const nowMinutes = timeToMinutes(getCurrentLocalTime24())
     const currentSlot =
       capacitySlots.find((slot) => timeToMinutes(slot.time) <= nowMinutes && nowMinutes < timeToMinutes(slot.time) + 30) ??
       capacitySlots.reduce((closest, slot) => {
@@ -304,7 +335,7 @@ export function ReservationsShellLayout({ children }: ReservationsShellLayoutPro
     }
 
     return { lensMetrics }
-  }, [reservations, waitlistParties])
+  }, [reservations, waitlistParties, capacitySlots])
 
   const updateSearch = useCallback(
     (mutate: (next: URLSearchParams) => void) => {
@@ -329,7 +360,7 @@ export function ReservationsShellLayout({ children }: ReservationsShellLayoutPro
       next.delete("id")
       next.delete("draft")
       next.delete("time")
-      next.delete("date")
+      // Keep "date" — it is the shared view date for List/Timeline, not just form prefill
       next.delete("table")
       next.delete("service")
       next.delete("zone")
@@ -339,10 +370,15 @@ export function ReservationsShellLayout({ children }: ReservationsShellLayoutPro
     })
   }, [updateSearch])
 
-  const reservation = useMemo(() => {
-    if (!detail) return getReservationByStatus("arriving")
-    return getReservationById(detail, reservations) ?? getReservationByStatus("arriving")
-  }, [detail, reservations])
+  const reservation = useMemo((): DetailReservation | null => {
+    if (!detail) return null
+    return (
+      getReservationById(detail, reservations, {
+        storeReservations,
+        tables,
+      }) ?? null
+    )
+  }, [detail, reservations, storeReservations, tables])
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-zinc-950">
@@ -354,10 +390,17 @@ export function ReservationsShellLayout({ children }: ReservationsShellLayoutPro
                 const selected = activeLens.href === lens.href
                 const lensMetric = shellMetrics.lensMetrics[lens.id]
                 const LensIcon = LENS_ICONS[lens.id]
+                const dateParam = searchParams.get("date")
+                const preserveDate =
+                  (lens.id === "list" || lens.id === "timeline") &&
+                  dateParam &&
+                  dateParam !== todayIso &&
+                  /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
+                const lensHref = preserveDate ? `${lens.href}?date=${dateParam}` : lens.href
                 return (
                   <Link
                     key={lens.id}
-                    href={lens.href}
+                    href={lensHref}
                     role="tab"
                     aria-selected={selected}
                     className={cn(
@@ -430,5 +473,13 @@ export function ReservationsShellLayout({ children }: ReservationsShellLayoutPro
         </SheetContent>
       </Sheet>
     </div>
+  )
+}
+
+export function ReservationsShellLayout({ initialReservationsView, children }: ReservationsShellLayoutProps) {
+  return (
+    <ReservationsDataProvider initialReservationsView={initialReservationsView}>
+      <ReservationsShellLayoutInner>{children}</ReservationsShellLayoutInner>
+    </ReservationsDataProvider>
   )
 }

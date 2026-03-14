@@ -4,7 +4,16 @@ import { eq, and } from "drizzle-orm";
 import { db } from "@/db";
 import { waitlist as waitlistTable } from "@/lib/db/schema/orders";
 import { verifyLocationAccess } from "@/lib/location-access";
+import {
+  createReservation,
+  seatReservation,
+} from "@/app/actions/reservations";
+import { deleteReservationMutation } from "@/domain/reservation-mutations";
 import type { WaitlistEntry } from "@/store/types";
+
+export type SeatFromWaitlistResult =
+  | { ok: true; reservationId: string; sessionId: string; tableId: string }
+  | { ok: false; reason: string };
 
 /**
  * Get waitlist entries for a location
@@ -98,4 +107,80 @@ export async function updateWaitlistEntry(
       updatedAt: new Date(),
     })
     .where(eq(waitlistTable.id, waitlistId));
+}
+
+/**
+ * Seat a waitlist party: create a reservation, seat it (create session), then remove from waitlist.
+ * Requires tableUuid (table id or display id e.g. "T12").
+ */
+export async function seatFromWaitlist(
+  locationId: string,
+  waitlistEntryId: string,
+  tableUuid: string
+): Promise<SeatFromWaitlistResult> {
+  const location = await verifyLocationAccess(locationId);
+  if (!location) {
+    return { ok: false, reason: "Unauthorized or location not found" };
+  }
+
+  const trimmedTable = tableUuid?.trim();
+  if (!trimmedTable) {
+    return { ok: false, reason: "Table is required" };
+  }
+
+  const waitlistRow = await db.query.waitlist.findFirst({
+    where: and(
+      eq(waitlistTable.id, waitlistEntryId),
+      eq(waitlistTable.locationId, locationId)
+    ),
+    columns: { id: true, guestName: true, partySize: true, phone: true, notes: true },
+  });
+
+  if (!waitlistRow) {
+    return { ok: false, reason: "Waitlist entry not found" };
+  }
+
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  const timeNow =
+    now.getHours().toString().padStart(2, "0") +
+    ":" +
+    now.getMinutes().toString().padStart(2, "0");
+
+  let created;
+  try {
+    created = await createReservation(locationId, {
+      customerName: waitlistRow.guestName,
+      customerPhone: waitlistRow.phone ?? undefined,
+      partySize: Math.max(1, waitlistRow.partySize),
+      reservationDate: today,
+      reservationTime: timeNow,
+      notes: waitlistRow.notes ?? undefined,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Failed to create reservation";
+    return { ok: false, reason: msg };
+  }
+
+  const seatResult = await seatReservation(locationId, created.id, trimmedTable);
+  if (!seatResult.ok) {
+    await deleteReservationMutation(locationId, created.id);
+    return seatResult;
+  }
+
+  await db
+    .delete(waitlistTable)
+    .where(
+      and(
+        eq(waitlistTable.id, waitlistEntryId),
+        eq(waitlistTable.locationId, locationId)
+      )
+    );
+
+  return {
+    ok: true,
+    reservationId: created.id,
+    sessionId: seatResult.sessionId,
+    tableId: seatResult.tableId,
+  };
 }

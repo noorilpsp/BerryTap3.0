@@ -112,7 +112,7 @@ export async function PUT(
     }
 
     const body = await request.json().catch(() => ({}));
-    const { name, email, phone } = body;
+    const { name, email, phone, birthday, anniversary, profileMeta } = body;
 
     // Get existing customer
     const existingCustomer = await db.query.customers.findFirst({
@@ -153,11 +153,13 @@ export async function PUT(
       );
     }
 
-    // Update customer
-    const updateData: any = {};
+    const updateData: Record<string, unknown> = {};
     if (name !== undefined) updateData.name = name;
     if (email !== undefined) updateData.email = email;
     if (phone !== undefined) updateData.phone = phone;
+    if (birthday !== undefined) updateData.birthday = birthday || null;
+    if (anniversary !== undefined) updateData.anniversary = anniversary || null;
+    if (profileMeta !== undefined) updateData.profileMeta = profileMeta ?? null;
 
     const [updatedCustomer] = await db
       .update(customers)

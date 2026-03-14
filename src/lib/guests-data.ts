@@ -92,17 +92,37 @@ export interface GuestProfile {
   churnNote?: string
   daysSinceLastVisit?: number
   location?: string
+  /** Real visit history from backend. Prefer over synthetic. */
+  visitHistory?: VisitRecord[]
+  /** Staff notes for this guest (CRM). */
+  staffNotes?: StaffNote[]
+  /** Upcoming reservations (pending/confirmed). */
+  upcomingReservations?: Array<{
+    id: string
+    date: string
+    time: string
+    partySize: number
+    status: string
+  }>
 }
 
 // ── Segment Counts ──────────────────────────────────────────────
-export const SEGMENT_COUNTS = {
+/** Mock segment counts. Use real segmentCounts from GuestsView when available. */
+export const SEGMENT_COUNTS: {
+  all: number
+  vip: number
+  regular: number
+  new: number
+  at_risk: number
+  flagged: number
+} = {
   all: 247,
   vip: 18,
   regular: 42,
   new: 35,
   at_risk: 12,
   flagged: 3,
-} as const
+}
 
 // ── 20 Guest Profiles ──────────────────────────────────────────
 export const guests: GuestProfile[] = [

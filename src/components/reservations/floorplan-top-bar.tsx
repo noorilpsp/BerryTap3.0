@@ -20,12 +20,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
+import { type HeatMapMode, type ZoneId } from "@/lib/floorplan-data"
 import {
-  type HeatMapMode,
-  type ZoneId,
-  restaurantConfig,
+  getCurrentLocalTime24,
+  getCurrentLocalDateFormatted,
   formatTime12h,
-} from "@/lib/floorplan-data"
+} from "@/lib/reservations-data"
+import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
 
 interface FloorplanTopBarProps {
   heatMap: HeatMapMode
@@ -59,16 +60,12 @@ export function FloorplanTopBar({
   whatIfMode,
   onToggleWhatIf,
 }: FloorplanTopBarProps) {
-  const [currentTime, setCurrentTime] = useState(restaurantConfig.currentTime)
+  const { config } = useReservationsData()
+  const [currentTime, setCurrentTime] = useState(getCurrentLocalTime24)
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setCurrentTime((prev) => {
-        const [h, m] = prev.split(":").map(Number)
-        const newM = m + 1
-        if (newM >= 60) return `${(h + 1).toString().padStart(2, "0")}:00`
-        return `${h.toString().padStart(2, "0")}:${newM.toString().padStart(2, "0")}`
-      })
+      setCurrentTime(getCurrentLocalTime24())
     }, 60000)
     return () => clearInterval(interval)
   }, [])
@@ -90,7 +87,7 @@ export function FloorplanTopBar({
           <div className="hidden items-center gap-1.5 md:flex">
             <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="text-xs text-muted-foreground">
-              {restaurantConfig.currentDate}
+              {getCurrentLocalDateFormatted()}
             </span>
           </div>
         </div>
@@ -103,9 +100,9 @@ export function FloorplanTopBar({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="center" className="border-zinc-700 bg-zinc-900">
-              {restaurantConfig.servicePeriods.map((p) => (
+              {config.servicePeriods.map((p) => (
                 <DropdownMenuItem key={p.id} className="text-foreground text-xs focus:bg-zinc-800 focus:text-foreground">
-                  {p.label} ({formatTime12h(p.start)} - {formatTime12h(p.end)})
+                  {p.label || p.name} ({formatTime12h(p.start)} - {formatTime12h(p.end)})
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>

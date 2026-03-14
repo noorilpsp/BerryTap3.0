@@ -112,7 +112,9 @@ export interface StoreOrder {
 }
 
 export interface StoreTable {
+  /** Real identity: tables.id (UUID). Use for DB/API/sessions/orders. */
   id: string
+  /** Display number for UI only (e.g. T12). */
   number: number
   /** Section id - may be legacy (patio|bar|main|private) or custom from floor plan sections */
   section: string
@@ -167,6 +169,7 @@ export interface StoreReservationCustomerProfile {
 export interface StoreReservation {
   id: string
   code: string
+  customerId?: string
   guestName: string
   fullName: string
   partySize: number
@@ -178,7 +181,9 @@ export interface StoreReservation {
   status: StoreReservationStatus
   phone?: string
   email?: string
+  /** Display label for UI (e.g. "T12"). */
   table: string | null
+  /** Real identity: tables.id (UUID). Use for API/DB. */
   tableId: string | null
   zone: string | null
   staff: string | null

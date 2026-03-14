@@ -2,7 +2,7 @@
 
 import { useMemo } from "react"
 import { useRestaurantStore } from "@/store/restaurantStore"
-import type { StoreReservation, WaitlistEntry as StoreWaitlistEntry } from "@/store/types"
+import type { StoreReservation, StoreTable, WaitlistEntry as StoreWaitlistEntry } from "@/store/types"
 
 export type ReservationStatus =
   | "confirmed"
@@ -34,6 +34,7 @@ export interface GuestTag {
 
 export interface Reservation {
   id: string
+  customerId?: string
   guestName: string
   partySize: number
   time: string // "HH:MM" format
@@ -103,7 +104,26 @@ export interface PaceMetrics {
   kitchenLoad: "low" | "moderate" | "high" | "critical"
 }
 
-// ── Restaurant Configuration ─────────────────────────────────────────────────
+// ── Time helpers (replace mock currentTime/currentDate) ────────────────────────
+
+/** Current time as "HH:MM" in local timezone. Use instead of restaurantConfig.currentTime. */
+export function getCurrentLocalTime24(now = new Date()): string {
+  const h = now.getHours().toString().padStart(2, "0")
+  const m = now.getMinutes().toString().padStart(2, "0")
+  return `${h}:${m}`
+}
+
+/** Current date formatted like "Friday, Jan 17, 2025". Use instead of restaurantConfig.currentDate. */
+export function getCurrentLocalDateFormatted(now = new Date()): string {
+  return now.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  })
+}
+
+// ── Restaurant Configuration (fallback when no real config) ───────────────────
 
 export const restaurantConfig = {
   name: "Bella Vista",
@@ -144,6 +164,7 @@ function storeReservationToReservation(r: StoreReservation): Reservation {
   }
   return {
     id: r.id,
+    customerId: r.customerId,
     guestName: r.guestName,
     partySize: r.partySize,
     time: time24,
@@ -160,15 +181,34 @@ function storeReservationToReservation(r: StoreReservation): Reservation {
   }
 }
 
+function computeElapsedMinutes(addedAt: string | null | undefined): number {
+  if (!addedAt || typeof addedAt !== "string") return 0
+  const ts = Date.parse(addedAt)
+  if (Number.isNaN(ts)) return 0
+  return Math.max(0, Math.floor((Date.now() - ts) / 60_000))
+}
+
 function storeWaitlistToWaitlistParty(w: StoreWaitlistEntry): WaitlistParty {
   const quoted = Number.parseInt(w.waitTime.replace(/\D/g, ""), 10) || 0
+  const elapsed = computeElapsedMinutes(w.addedAt)
   return {
     id: w.id,
     name: w.guestName,
     partySize: w.partySize,
     quotedWait: quoted,
-    elapsedWait: 0,
+    elapsedWait: elapsed,
     notes: w.notes,
+  }
+}
+
+/** Map store-shaped reservations/waitlist to UI shape. Used when converting ReservationsView to shell data. */
+export function mapReservationsViewToData(view: {
+  reservations: StoreReservation[]
+  waitlist: StoreWaitlistEntry[]
+}): { reservations: Reservation[]; waitlistParties: WaitlistParty[] } {
+  return {
+    reservations: view.reservations.map(storeReservationToReservation),
+    waitlistParties: view.waitlist.map(storeWaitlistToWaitlistParty),
   }
 }
 
@@ -491,7 +531,7 @@ export const waitlistParties: WaitlistParty[] = [
   },
 ]
 
-// ── Mock Occupied Tables (8 tables for Turn Tracker) ─────────────────────────
+// ── Mock Occupied Tables (fallback when no real tables) ───────────────────────
 
 export const occupiedTables: OccupiedTable[] = [
   { id: "ot1", tableNumber: "T3", partySize: 2, courseStage: "check-printed", predictedTurnMin: 5, mealProgressPct: 92, seatedAt: "18:15" },
@@ -503,6 +543,130 @@ export const occupiedTables: OccupiedTable[] = [
   { id: "ot7", tableNumber: "T20", partySize: 4, courseStage: "mains-served", predictedTurnMin: 30, mealProgressPct: 55, seatedAt: "18:50" },
   { id: "ot8", tableNumber: "T9", partySize: 4, courseStage: "dessert", predictedTurnMin: 15, mealProgressPct: 82, seatedAt: "18:20" },
 ]
+
+// ── Real Turn Tracker: store tables → occupied tables ────────────────────────
+
+/** Map session status + stage to CourseStage. Honest coarse mapping. */
+function deriveCourseStage(
+  status: string,
+  stage: string | null | undefined,
+  billTotal: number
+): CourseStage {
+  // Bill-related statuses
+  if (status === "bill_requested") return "check-requested"
+  if (stage === "bill") return billTotal > 0 ? "paying" : "check-printed"
+
+  // Later stages
+  if (stage === "dessert") return "dessert"
+  if (status === "served" || status === "food_ready") return "mains-served"
+  if (status === "in_kitchen") return "mains-fired"
+  if (status === "ordering" || status === "seated") {
+    return stage === "food" ? "appetizers" : "ordering"
+  }
+
+  return "ordering"
+}
+
+/** Estimate predicted turn minutes from course stage. Simple honest model—no predictive analytics. */
+function estimatePredictedTurnMin(stage: CourseStage): number {
+  const map: Record<CourseStage, number> = {
+    paying: 3,
+    "check-printed": 5,
+    "check-requested": 6,
+    dessert: 15,
+    "mains-served": 28,
+    "mains-fired": 42,
+    appetizers: 52,
+    ordering: 62,
+  }
+  return map[stage] ?? 30
+}
+
+/** Estimate meal progress % from course stage. Coarse mapping. */
+function estimateMealProgressPct(stage: CourseStage): number {
+  const map: Record<CourseStage, number> = {
+    paying: 97,
+    "check-printed": 94,
+    "check-requested": 90,
+    dessert: 82,
+    "mains-served": 65,
+    "mains-fired": 40,
+    appetizers: 25,
+    ordering: 10,
+  }
+  return map[stage] ?? 50
+}
+
+/** Check if session has dessert wave with items (for noDessertOrdered heuristic). */
+function hasDessertWave(session: { tableItems?: { wave: string }[]; seats?: { items: { wave: string }[] }[] } | null): boolean {
+  if (!session) return false
+  const items = [
+    ...(session.tableItems ?? []),
+    ...(session.seats ?? []).flatMap((s) => s.items ?? []),
+  ]
+  return items.some((i) => i.wave === "dessert")
+}
+
+/** Format seatedAt from ISO string to "HH:MM". */
+function formatSeatedAt(iso: string | null | undefined): string {
+  if (!iso || typeof iso !== "string") return "—"
+  try {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return "—"
+    return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`
+  } catch {
+    return "—"
+  }
+}
+
+/**
+ * Derive OccupiedTable[] from store tables. Uses tables with status active, urgent, or billing
+ * that have session data. Maps session status + stage to CourseStage; estimates turn time
+ * and progress from stage (simple model, not predictive analytics).
+ */
+export function storeTablesToOccupiedTables(tables: StoreTable[]): OccupiedTable[] {
+  const occupied: OccupiedTable[] = []
+  const occupiedStatuses = ["active", "urgent", "billing"] as const
+
+  for (const t of tables) {
+    if (!occupiedStatuses.includes(t.status as (typeof occupiedStatuses)[number])) continue
+
+    const session = t.session ?? null
+    const status = session?.status ?? "seated"
+    const stage = t.stage ?? null
+    const billTotal = session?.bill?.total ?? 0
+
+    const courseStage = deriveCourseStage(status, stage, billTotal)
+    const partySize = t.guests ?? session?.guestCount ?? t.capacity ?? 2
+    const seatedAt = formatSeatedAt(t.seatedAt)
+
+    occupied.push({
+      id: t.id,
+      tableNumber: `T${t.number}`,
+      partySize,
+      courseStage,
+      predictedTurnMin: estimatePredictedTurnMin(courseStage),
+      mealProgressPct: estimateMealProgressPct(courseStage),
+      noDessertOrdered:
+        (courseStage === "mains-served" || courseStage === "dessert" || courseStage === "check-requested") &&
+        !hasDessertWave(session)
+          ? true
+          : undefined,
+      seatedAt,
+    })
+  }
+
+  return occupied.sort((a, b) => a.predictedTurnMin - b.predictedTurnMin)
+}
+
+/** Occupied tables from restaurant store. Use real data when tables exist; fallback to mock. */
+export function useOccupiedTables(): OccupiedTable[] {
+  const tables = useRestaurantStore((s) => s.tables) ?? []
+  return useMemo(() => {
+    const real = storeTablesToOccupiedTables(tables)
+    return real.length > 0 ? real : occupiedTables
+  }, [tables])
+}
 
 // ── Capacity Slots (30-min intervals) ────────────────────────────────────────
 
@@ -536,40 +700,83 @@ export const paceMetrics: PaceMetrics = {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/** Parse time to minutes from midnight. Handles "HH:MM" (24h) and "H:MM AM/PM". Returns null if invalid. */
+function parseTimeToMinutesSafe(time: string): number | null {
+  if (!time || typeof time !== "string") return null
+  const trimmed = time.trim()
+  // 24h format "HH:MM" or "H:MM"
+  const m24 = trimmed.match(/^(\d{1,2}):(\d{1,2})\s*$/);
+  if (m24) {
+    const h = Number.parseInt(m24[1]!, 10)
+    const m = Number.parseInt(m24[2]!, 10)
+    if (Number.isNaN(h) || Number.isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return null
+    return h * 60 + m
+  }
+  // 12h format "H:MM AM" or "HH:MM PM"
+  const m12 = trimmed.match(/^(\d{1,2}):(\d{1,2})\s*(AM|PM)\s*$/i);
+  if (m12) {
+    let h = Number.parseInt(m12[1]!, 10)
+    const m = Number.parseInt(m12[2]!, 10)
+    const isPM = m12[3]!.toUpperCase() === "PM"
+    if (Number.isNaN(h) || Number.isNaN(m) || h < 1 || h > 12 || m < 0 || m > 59) return null
+    if (h === 12) h = isPM ? 12 : 0
+    else if (isPM) h += 12
+    return h * 60 + m
+  }
+  return null
+}
+
+function getTodayIso(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+}
+
 export function getUpcomingReservations(
   allReservations: Reservation[],
   currentTime: string
 ): Reservation[] {
-  const [currentH, currentM] = currentTime.split(":").map(Number)
-  const currentMinutes = currentH * 60 + currentM
-  const windowEnd = currentMinutes + 120 // next 2 hours
+  const currentMin = parseTimeToMinutesSafe(currentTime)
+  if (currentMin == null) return []
+  const todayIso = getTodayIso()
+  const windowEnd = currentMin + 120 // next 2 hours
 
   return allReservations.filter((r) => {
     if (r.status === "completed" || r.status === "cancelled" || r.status === "no-show" || r.status === "seated") return false
-    const [h, m] = r.time.split(":").map(Number)
-    const resMinutes = h * 60 + m
-    return resMinutes >= currentMinutes - 15 && resMinutes <= windowEnd
+    // Only show reservations for today
+    const resDate = r.date ?? todayIso
+    if (resDate !== todayIso) return false
+    const resMinutes = parseTimeToMinutesSafe(r.time)
+    if (resMinutes == null) return false
+    return resMinutes >= currentMin - 15 && resMinutes <= windowEnd
   })
+}
+
+function minutesToTime24(totalMin: number): string {
+  const n = ((totalMin % (24 * 60)) + 24 * 60) % (24 * 60)
+  const h = Math.floor(n / 60).toString().padStart(2, "0")
+  const m = (n % 60).toString().padStart(2, "0")
+  return `${h}:${m}`
 }
 
 export function groupReservationsByTime(
   upcomingReservations: Reservation[],
   currentTime: string
 ): { label: string; time: string; isArrivingNow: boolean; reservations: Reservation[] }[] {
-  const [currentH, currentM] = currentTime.split(":").map(Number)
-  const currentMinutes = currentH * 60 + currentM
+  const currentMinutes = parseTimeToMinutesSafe(currentTime) ?? 0
 
   const grouped = new Map<string, Reservation[]>()
   for (const r of upcomingReservations) {
-    const existing = grouped.get(r.time) || []
+    const minutes = parseTimeToMinutesSafe(r.time)
+    if (minutes == null) continue
+    const key = minutesToTime24(minutes)
+    const existing = grouped.get(key) ?? []
     existing.push(r)
-    grouped.set(r.time, existing)
+    grouped.set(key, existing)
   }
 
   const result: { label: string; time: string; isArrivingNow: boolean; reservations: Reservation[] }[] = []
-  for (const [time, resos] of grouped) {
-    const [h, m] = time.split(":").map(Number)
-    const resMinutes = h * 60 + m
+  for (const [time24, resos] of grouped) {
+    const resMinutes = parseTimeToMinutesSafe(time24) ?? 0
     const diff = resMinutes - currentMinutes
 
     let isArrivingNow = false
@@ -579,20 +786,22 @@ export function groupReservationsByTime(
       isArrivingNow = true
       label = "Arriving Now"
     } else {
-      const hour = h > 12 ? h - 12 : h
+      const minutes = parseTimeToMinutesSafe(time24) ?? 0
+      const h = Math.floor(minutes / 60) % 24
+      const m = minutes % 60
+      const hour = h > 12 ? h - 12 : h === 0 ? 12 : h
       const ampm = h >= 12 ? "PM" : "AM"
-      const minuteStr = m.toString().padStart(2, "0")
-      label = `${hour}:${minuteStr} ${ampm}`
+      label = `${hour}:${m.toString().padStart(2, "0")} ${ampm}`
       if (resos.length > 1) label += ` (${resos.length} reservations)`
     }
 
-    result.push({ label, time, isArrivingNow, reservations: resos })
+    result.push({ label, time: time24, isArrivingNow, reservations: resos })
   }
 
   return result.sort((a, b) => {
-    const [ah, am] = a.time.split(":").map(Number)
-    const [bh, bm] = b.time.split(":").map(Number)
-    return ah * 60 + am - (bh * 60 + bm)
+    const am = parseTimeToMinutesSafe(a.time) ?? 0
+    const bm = parseTimeToMinutesSafe(b.time) ?? 0
+    return am - bm
   })
 }
 
@@ -603,24 +812,34 @@ export function formatTime12h(time24: string): string {
   return `${hour}:${m.toString().padStart(2, "0")} ${ampm}`
 }
 
+export interface GetHeroStatsOptions {
+  totalSeats?: number
+  currentTime?: string
+  /** Capacity slots from real engine; if omitted, falls back to static mock. */
+  capacitySlots?: CapacitySlot[]
+}
+
 export function getHeroStats(
   allReservations: Reservation[],
-  waitlistPartiesList: WaitlistParty[] = []
+  waitlistPartiesList: WaitlistParty[] = [],
+  options?: GetHeroStatsOptions
 ) {
-  const totalCapacity = restaurantConfig.totalSeats
+  const totalCapacity = options?.totalSeats ?? 1
   const tonightReservations = allReservations.filter(
     (r) => r.status !== "cancelled"
   )
+  const nowTime = options?.currentTime ?? getCurrentLocalTime24()
+  const slots = options?.capacitySlots ?? capacitySlots
   const nowMinutes = (() => {
-    const [h, m] = restaurantConfig.currentTime.split(":").map(Number)
+    const [h, m] = nowTime.split(":").map(Number)
     return h * 60 + m
   })()
   const currentSlot =
-    capacitySlots.find((slot) => {
+    slots.find((slot) => {
       const [h, m] = slot.time.split(":").map(Number)
       const slotStart = h * 60 + m
       return slotStart <= nowMinutes && nowMinutes < slotStart + 30
-    }) ?? capacitySlots[0]
+    }) ?? slots[0]
 
   const totalCovers = tonightReservations.reduce((sum, r) => sum + r.partySize, 0)
   const reserved = tonightReservations.filter(
@@ -635,7 +854,7 @@ export function getHeroStats(
   const noShowPct = tonightReservations.length > 0
     ? ((noShows / tonightReservations.length) * 100).toFixed(1)
     : "0"
-  const upcoming2h = getUpcomingReservations(allReservations, restaurantConfig.currentTime).length
+  const upcoming2h = getUpcomingReservations(allReservations, nowTime).length
 
   return {
     covers: { current: totalCovers, capacity: totalCapacity },

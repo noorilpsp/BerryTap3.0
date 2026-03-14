@@ -90,6 +90,7 @@ export async function createReservationMutation(
 export type UpdateReservationMutationPatch = Partial<{
   customerId: string | null;
   tableId: string | null;
+  sessionId: string | null;
   partySize: number;
   reservationDate: string;
   reservationTime: string;
@@ -110,6 +111,7 @@ export async function updateReservationMutation(
   };
   if (patch.customerId !== undefined) updatePayload.customerId = patch.customerId;
   if (patch.tableId !== undefined) updatePayload.tableId = patch.tableId;
+  if (patch.sessionId !== undefined) updatePayload.sessionId = patch.sessionId;
   if (patch.partySize !== undefined) updatePayload.partySize = patch.partySize;
   if (patch.reservationDate !== undefined) updatePayload.reservationDate = patch.reservationDate;
   if (patch.reservationTime !== undefined) updatePayload.reservationTime = patch.reservationTime;

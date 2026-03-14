@@ -1,5 +1,8 @@
 // ── Waitlist Intelligence System — Data Layer ───────────────────────────────
 
+import { storeTablesToOccupiedTables } from "@/lib/reservations-data"
+import type { StoreTable } from "@/store/types"
+
 export type WaitlistLocation =
   | "at-restaurant"
   | "at-bar"
@@ -13,7 +16,10 @@ export type MatchStatus = "ready-now" | "turning-soon" | "long-wait" | "merge-op
 export type SortMode = "smart" | "wait-time" | "party-size" | "quoted-time"
 
 export interface TableMatch {
+  /** Table UUID for API/seat flow. Use for seatFromWaitlist. */
   tableId: string
+  /** Display label for UI, e.g. "T12". Use displayId ?? tableId when showing to user. */
+  displayId?: string
   seats: number
   zone: string
   detail: string // e.g. "Window", "Outdoor"
@@ -66,7 +72,10 @@ export interface RemovedEntry {
 }
 
 export interface AvailableTable {
+  /** Table UUID for matching to entries. */
   id: string
+  /** Display label for UI, e.g. "T12". */
+  displayId?: string
   seats: number
   zone: string
   detail: string
@@ -96,19 +105,136 @@ export const SERVICE_PERIOD = "Dinner"
 export const NOW_MINUTES = 143 // 7:23 PM = 143 min after 17:00
 
 /** Map store/reservations-data waitlist party to full WaitlistEntry (for UI that expects bestMatch, etc.). */
-export type WaitlistPartyLike = { id: string; name: string; partySize: number; quotedWait: number; notes?: string }
-export function waitlistPartyToWaitlistEntry(wp: WaitlistPartyLike): WaitlistEntry {
+export type WaitlistPartyLike = {
+  id: string
+  name: string
+  partySize: number
+  quotedWait: number
+  elapsedWait?: number
+  notes?: string
+}
+export function waitlistPartyToWaitlistEntry(
+  wp: WaitlistPartyLike,
+  tables?: StoreTable[] | null
+): WaitlistEntry {
+  const elapsed = wp.elapsedWait ?? 0
+  const joinedAt = Math.max(0, NOW_MINUTES - elapsed)
+  const { bestMatch, altMatches } = computeBestMatchesForParty(wp, tables ?? [])
   return {
     id: wp.id,
     name: wp.name,
     partySize: wp.partySize,
     quotedWait: wp.quotedWait,
-    joinedAt: Math.max(0, NOW_MINUTES - wp.quotedWait),
+    joinedAt,
     location: "at-restaurant",
-    bestMatch: null,
-    altMatches: [],
+    bestMatch,
+    altMatches,
     notes: wp.notes,
   }
+}
+
+/** Fallback est minutes when no real occupied-table ETA exists. */
+const FALLBACK_OCCUPIED_EST_MINUTES = 15
+/** Est minutes for cleaning tables (honest guess). */
+const CLEANING_EST_MINUTES = 5
+
+/** Build tableId → predictedTurnMin from real turn tracker. Used for occupied-table ETAs. */
+function getOccupiedEtaMap(tables: StoreTable[]): Map<string, number> {
+  const occupied = storeTablesToOccupiedTables(tables)
+  return new Map(occupied.map((o) => [o.id, o.predictedTurnMin]))
+}
+
+/**
+ * Compute best and alternate table matches for a waitlist party using real table state.
+ * Uses party size, table capacity, and table status. Occupied tables use per-table ETA
+ * from the real turn tracker (stage-aware); falls back to FALLBACK_OCCUPIED_EST_MINUTES
+ * when no estimate exists.
+ */
+export function computeBestMatchesForParty(
+  party: { partySize: number },
+  tables: StoreTable[]
+): { bestMatch: TableMatch | null; altMatches: TableMatch[] } {
+  if (tables.length === 0) return { bestMatch: null, altMatches: [] }
+
+  const fits = tables.filter((t) => t.capacity >= party.partySize && t.status !== "closed")
+  if (fits.length === 0) return { bestMatch: null, altMatches: [] }
+
+  const occupiedEta = getOccupiedEtaMap(tables)
+
+  const toMatch = (t: StoreTable): TableMatch => {
+    const isFree = t.status === "free"
+    const isCleaning = t.status === "cleaning"
+    let status: MatchStatus
+    let estMinutes: number
+    if (isFree) {
+      status = "ready-now"
+      estMinutes = 0
+    } else if (isCleaning) {
+      status = "turning-soon"
+      estMinutes = CLEANING_EST_MINUTES
+    } else {
+      status = "turning-soon"
+      estMinutes = occupiedEta.get(t.id) ?? FALLBACK_OCCUPIED_EST_MINUTES
+    }
+    return {
+      tableId: t.id,
+      displayId: `T${t.number}`,
+      seats: t.capacity,
+      zone: t.section,
+      detail: "",
+      status,
+      estMinutes,
+    }
+  }
+
+  const matches = fits.map(toMatch)
+  const ready = matches.filter((m) => m.status === "ready-now")
+  const turning = matches.filter((m) => m.status === "turning-soon")
+
+  // Best: smallest available now, else soonest turning (by ETA), then smallest capacity
+  const bySeats = (a: TableMatch, b: TableMatch) => a.seats - b.seats
+  const byEtaThenSeats = (a: TableMatch, b: TableMatch) =>
+    a.estMinutes !== b.estMinutes ? a.estMinutes - b.estMinutes : a.seats - b.seats
+  const best =
+    ready.length > 0 ? [...ready].sort(bySeats)[0] : turning.length > 0 ? [...turning].sort(byEtaThenSeats)[0] : null
+  const rest = best ? matches.filter((m) => m.tableId !== best.tableId).sort(byEtaThenSeats).slice(0, 4) : []
+  return { bestMatch: best, altMatches: rest }
+}
+
+/**
+ * Convert store tables to AvailableTable list for the matching panel.
+ * Excludes closed tables. Occupied tables use per-table ETA from turn tracker.
+ */
+export function storeTablesToAvailableTables(tables: StoreTable[]): AvailableTable[] {
+  const occupiedEta = getOccupiedEtaMap(tables)
+  const out: AvailableTable[] = []
+  for (const t of tables) {
+    if (t.status === "closed") continue
+    const isFree = t.status === "free"
+    const isCleaning = t.status === "cleaning"
+    let status: "available-now" | "turning-soon" | "occupied"
+    let estMinutes: number
+    if (isFree) {
+      status = "available-now"
+      estMinutes = 0
+    } else if (isCleaning) {
+      status = "turning-soon"
+      estMinutes = CLEANING_EST_MINUTES
+    } else {
+      status = "turning-soon"
+      estMinutes = occupiedEta.get(t.id) ?? FALLBACK_OCCUPIED_EST_MINUTES
+    }
+    out.push({
+      id: t.id,
+      displayId: `T${t.number}`,
+      seats: t.capacity,
+      zone: t.section,
+      detail: "",
+      status,
+      estMinutes,
+    })
+  }
+  return out.sort((a, b) => (a.estMinutes !== b.estMinutes ? a.estMinutes - b.estMinutes : a.seats - b.seats))
 }
 
 // ── Active Waitlist (expanded scenarios for testing) ─────────────────────────

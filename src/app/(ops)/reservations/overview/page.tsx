@@ -7,15 +7,17 @@ import { WaitlistPanel } from "@/components/reservations/waitlist-panel"
 import { WaitlistSignals } from "@/components/reservations/waitlist-signals"
 import { TurnTracker } from "@/components/reservations/turn-tracker"
 import { PaceStrip } from "@/components/reservations/pace-strip"
-import {
-  useReservationsFromStore,
-  getHeroStats,
-} from "@/lib/reservations-data"
+import { getHeroStats, getCurrentLocalTime24 } from "@/lib/reservations-data"
+import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
 import { Toaster } from "sonner"
 
 export default function ReservationsOverviewPage() {
-  const { reservations, waitlistParties } = useReservationsFromStore()
-  const stats = getHeroStats(reservations, waitlistParties)
+  const { reservations, waitlistParties, config, capacitySlots } = useReservationsData()
+  const stats = getHeroStats(reservations, waitlistParties, {
+    totalSeats: config.totalSeats,
+    currentTime: getCurrentLocalTime24(),
+    capacitySlots,
+  })
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
@@ -30,7 +32,7 @@ export default function ReservationsOverviewPage() {
         <HeroStats stats={stats} />
         <WaitlistSignals />
         <section aria-label="Capacity forecast" className="px-4 lg:px-6">
-          <TimelineCapacityStrip zoom="30min" sticky={false} synced={false} />
+          <TimelineCapacityStrip capacitySlots={capacitySlots} zoom="30min" sticky={false} synced={false} />
         </section>
         <section
           aria-label="Reservations and floor status"

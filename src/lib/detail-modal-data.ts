@@ -2,6 +2,7 @@ import {
   reservations as overviewReservations,
   type Reservation as OverviewReservation,
 } from "./reservations-data"
+import type { StoreReservation, StoreTable } from "@/store/types"
 
 // ── Reservation Detail Modal Data Layer ──────────────────────────────────────
 
@@ -565,6 +566,16 @@ function mapOverviewStatus(status: OverviewReservation["status"]): DetailStatus 
   }
 }
 
+function normalizeZoneDisplay(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const lower = raw.trim().toLowerCase()
+  if (lower === "main" || lower.includes("main")) return "Main Dining"
+  if (lower === "patio") return "Patio"
+  if (lower === "private" || lower.includes("private")) return "Private Room"
+  if (lower === "bar") return "Bar Area"
+  return raw
+}
+
 function deriveZoneFromTable(table: string | null): string {
   if (!table) return "Main Dining"
   const tableNumber = Number.parseInt(table.replace(/[^\d]/g, ""), 10)
@@ -585,106 +596,275 @@ function mapOverviewTags(tags: OverviewReservation["tags"]): string[] {
   }))]
 }
 
-function buildDetailFromOverview(reservation: OverviewReservation): DetailReservation {
-  const status = mapOverviewStatus(reservation.status)
-  const base = getReservationByStatus(status)
-  const mappedTags = mapOverviewTags(reservation.tags)
-  const duration = (
-    reservation.partySize <= 2 ? 75
-    : reservation.partySize <= 4 ? 90
-    : reservation.partySize <= 6 ? 105
-    : 120
-  )
-  const safeGuestEmail = `${reservation.guestName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ".")
-    .replace(/^\.+|\.+$/g, "")}@guest.local`
-  const fallbackTableCapacity = (
-    reservation.table
-      ? Math.max(reservation.partySize, base.tableCapacity ?? reservation.partySize)
-      : null
-  )
+const EMPTY_GUEST_PROFILE: GuestProfile = {
+  totalVisits: 0,
+  avgSpend: 0,
+  lastVisit: "",
+  lifetimeValue: 0,
+  noShows: 0,
+  cancellations: 0,
+  preferences: [],
+  allergies: [],
+  vipTier: null,
+}
 
-  const createdAt = base.createdAt
-  const confirmedAt = reservation.confirmationSent
-    ? (base.confirmedAt ?? `${base.date}T12:00:00`)
-    : null
+/** Build ServiceStatus from table session when available. Honest derivation—no fake items. */
+function buildServiceStatusFromTable(
+  table: StoreTable,
+  duration: number,
+  date: string
+): ServiceStatus | null {
+  const session = table.session
+  if (!session) return null
+
+  const seatedAt = table.seatedAt ?? table.session?.lastCheckIn ?? new Date().toISOString()
+  const seatedTs = new Date(seatedAt).getTime()
+  const now = Date.now()
+  const tableTime = Math.max(0, Math.floor((now - seatedTs) / 60_000))
+
+  const waves = session.seats?.flatMap((s) => s.items ?? []) ?? []
+  const tableItems = session.tableItems ?? []
+  const allItems = [...waves, ...tableItems].filter((i) => i.status !== "void")
+
+  const waveStatus = (waveType: "drinks" | "food" | "dessert"): CourseStatus["status"] => {
+    const items = allItems.filter((i) => i.wave === waveType)
+    if (items.length === 0) return "not_ordered"
+    const anyServed = items.some((i) => i.status === "served")
+    const anyCooking = items.some((i) => ["cooking", "ready"].includes(i.status ?? ""))
+    const anySent = items.some((i) => i.status === "sent")
+    if (anyServed) return "served"
+    if (anyCooking || anySent) return "firing"
+    return "ordered"
+  }
+
+  const courses: CourseStatus[] = [
+    { name: "Drinks", status: waveStatus("drinks") },
+    { name: "Food", status: waveStatus("food") },
+    { name: "Dessert", status: waveStatus("dessert") },
+    {
+      name: "Check",
+      status: (session.bill?.total ?? 0) > 0 ? "served" : "pending",
+    },
+  ]
+
+  const itemMap = new Map<string, { qty: number; price: number }>()
+  for (const i of allItems) {
+    const key = i.name
+    const existing = itemMap.get(key)
+    if (existing) {
+      existing.qty += 1
+    } else {
+      itemMap.set(key, { qty: 1, price: i.price ?? 0 })
+    }
+  }
+  const currentOrder: OrderItem[] = Array.from(itemMap.entries()).map(([item, { qty, price }]) => ({
+    item,
+    qty,
+    price,
+  }))
+
+  const subtotal = session.bill?.subtotal ?? session.bill?.total ?? 0
+  const finishDate = new Date(seatedTs + duration * 60_000)
 
   return {
+    seatedAt,
+    estimatedFinish: finishDate.toISOString(),
+    courses,
+    currentOrder,
+    subtotal,
+    estimatedTotal: Math.round(subtotal * 1.25),
+    tableTime,
+    estimatedDuration: duration,
+  }
+}
+
+/** Map StoreReservation.timeline to HistoryEvent[]. */
+function mapStoreTimelineToHistory(
+  timeline: StoreReservation["timeline"],
+  baseEvent: HistoryEvent
+): HistoryEvent[] {
+  if (!timeline || timeline.length === 0) return [baseEvent]
+
+  const mapped = timeline.map((e) => ({
+    event: e.event,
+    detail: e.event.replace(/_/g, " "),
+    actor: e.user,
+    timestamp: e.time,
+  }))
+  return [...mapped, baseEvent].sort(
+    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+  )
+}
+
+/** Enrich GuestProfile from StoreReservation.customerProfile when available. */
+function enrichGuestFromStore(
+  base: GuestProfile,
+  cp: StoreReservation["customerProfile"]
+): GuestProfile {
+  if (!cp) return base
+  return {
     ...base,
+    totalVisits: cp.totalVisits ?? base.totalVisits,
+    avgSpend: cp.avgSpend ?? base.avgSpend,
+    lastVisit: cp.lastVisit ?? base.lastVisit,
+    lifetimeValue: (cp.avgSpend ?? 0) * (cp.totalVisits ?? 0),
+    noShows: cp.noShowCount ?? base.noShows,
+    cancellations: cp.cancelCount ?? base.cancellations,
+    preferences: cp.preferences ? cp.preferences.split(/[,;]/).map((p) => p.trim()).filter(Boolean) : base.preferences,
+    allergies: cp.favoriteItems?.length ? [] : base.allergies,
+  }
+}
+
+/** Build DetailReservation from real overview data. Enriches from storeReservation/table when provided. */
+function buildDetailFromOverview(
+  reservation: OverviewReservation,
+  storeReservation?: StoreReservation | null,
+  table?: StoreTable | null
+): DetailReservation {
+  const status = mapOverviewStatus(reservation.status)
+  const mappedTags = mapOverviewTags(reservation.tags)
+  const duration =
+    storeReservation?.duration ??
+    (reservation.partySize <= 2 ? 75 : reservation.partySize <= 4 ? 90 : reservation.partySize <= 6 ? 105 : 120)
+  const safeGuestEmail = reservation.guestName
+    ? `${reservation.guestName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ".")
+        .replace(/^\.+|\.+$/g, "")}@guest.local`
+    : ""
+  const date = reservation.date ?? new Date().toISOString().slice(0, 10)
+  const timelineTimes = storeReservation?.timeline?.map((e) => e.time).filter(Boolean) ?? []
+  const createdAt = timelineTimes.length > 0
+    ? timelineTimes.reduce((a, b) => (a < b ? a : b))
+    : `${date}T12:00:00`
+  const confirmedAt = reservation.confirmationSent ? `${date}T12:00:00` : null
+  const tableCapacity = reservation.table ? (table?.capacity ?? Math.max(reservation.partySize, 2)) : null
+
+  const baseGuest: GuestProfile = {
+    ...EMPTY_GUEST_PROFILE,
+    totalVisits: reservation.visitCount ?? storeReservation?.visitCount ?? 0,
+  }
+  const guest = enrichGuestFromStore(baseGuest, storeReservation?.customerProfile)
+
+  const allergiesFromTags = reservation.tags
+    .filter((t) => t.type === "allergy")
+    .map((t) => t.detail ?? t.label ?? "Allergy")
+    .filter(Boolean)
+  if (allergiesFromTags.length > 0) {
+    guest.allergies = [...new Set([...guest.allergies, ...allergiesFromTags])]
+  }
+
+  const notes: ReservationNote[] = reservation.notes
+    ? [
+        {
+          type: "staff_note",
+          text: reservation.notes,
+          author: "Host",
+          role: "Host",
+          timestamp: createdAt,
+        },
+      ]
+    : []
+
+  const baseHistoryEvent: HistoryEvent = {
+    event: "created",
+    detail: `Reservation created via ${reservation.bookedVia ?? storeReservation?.source ?? "manual entry"}`,
+    actor: "System",
+    timestamp: createdAt,
+  }
+  const history = mapStoreTimelineToHistory(storeReservation?.timeline, baseHistoryEvent)
+  if (confirmedAt && !history.some((h) => h.event === "confirmed")) {
+    history.unshift({
+      event: "confirmed",
+      detail: "Guest confirmed reservation",
+      actor: "Guest",
+      timestamp: confirmedAt,
+    })
+  }
+
+  const zone =
+    normalizeZoneDisplay(storeReservation?.zone ?? null) ??
+    (table ? normalizeZoneDisplay(table.section) ?? table.section : null) ??
+    deriveZoneFromTable(reservation.table)
+
+  const server = storeReservation?.staff ?? table?.serverName ?? null
+
+  let serviceStatus: ServiceStatus | null = null
+  if (status === "seated" && table?.session) {
+    serviceStatus = buildServiceStatusFromTable(table, duration, date)
+  }
+
+  return {
     id: reservation.id,
     guestName: reservation.guestName,
-    guestPhone: reservation.phone ?? base.guestPhone,
-    guestEmail: safeGuestEmail || base.guestEmail,
+    guestPhone: reservation.phone ?? storeReservation?.phone ?? "",
+    guestEmail: storeReservation?.email ?? (safeGuestEmail || ""),
     partySize: reservation.partySize,
+    date,
     time: reservation.time,
     duration,
     table: reservation.table,
-    tableCapacity: fallbackTableCapacity,
-    tableFeature: reservation.tags.some((tag) => tag.type === "window") ? "Window" : base.tableFeature,
-    zone: deriveZoneFromTable(reservation.table),
+    tableCapacity,
+    tableFeature: reservation.tags.some((tag) => tag.type === "window") ? "Window" : null,
+    zone: zone ?? deriveZoneFromTable(reservation.table),
+    server,
     status,
-    riskScore: reservation.riskScore ?? (
-      reservation.risk === "high" ? 72
-      : reservation.risk === "medium" ? 42
-      : 12
-    ),
+    riskScore: reservation.riskScore ?? (reservation.risk === "high" ? 72 : reservation.risk === "medium" ? 42 : 12),
     riskLevel: reservation.risk,
-    channel: reservation.bookedVia ?? base.channel,
+    channel: reservation.bookedVia ?? storeReservation?.source ?? "Direct",
+    createdAt,
+    createdBy: "System",
     confirmedAt,
-    confirmedVia: reservation.confirmationSent ? (base.confirmedVia ?? "sms") : null,
+    confirmedVia: reservation.confirmationSent ? "sms" : null,
+    deposit: null,
+    depositStatus: "none",
     tags: mappedTags,
-    notes: reservation.notes
-      ? [
-          {
-            type: "staff_note",
-            text: reservation.notes,
-            author: "Host",
-            role: "Host",
-            timestamp: createdAt,
-          },
-        ]
-      : base.notes,
-    history: [
-      {
-        event: "created",
-        detail: `Reservation created via ${reservation.bookedVia ?? "manual entry"}`,
-        actor: "System",
-        timestamp: createdAt,
-      },
-      ...(confirmedAt
-        ? [
-            {
-              event: "confirmed",
-              detail: "Guest confirmed reservation",
-              actor: "Guest",
-              timestamp: confirmedAt,
-            } satisfies HistoryEvent,
-          ]
-        : []),
-    ],
-    serviceStatus: status === "seated" ? (base.serviceStatus ?? sarahChen.serviceStatus) : null,
-    finalCheck: status === "completed" ? (base.finalCheck ?? 89) : undefined,
-    actualDuration: status === "completed" ? (base.actualDuration ?? duration) : undefined,
-    rating: status === "completed" ? (base.rating ?? null) : undefined,
-    noShowHistory: status === "no_show" ? (base.noShowHistory ?? []) : undefined,
-    depositCharged: status === "no_show" ? (base.depositCharged ?? false) : undefined,
-    cancelledAt: status === "cancelled" ? (base.cancelledAt ?? createdAt) : undefined,
-    cancelReason: status === "cancelled" ? (base.cancelReason ?? "guest_request") : undefined,
-    cancelNote: status === "cancelled" ? (base.cancelNote ?? "Cancelled by guest") : undefined,
+    guest,
+    notes,
+    communications: [],
+    history,
+    serviceStatus,
+    ...(status === "completed" && {
+      finalCheck: undefined,
+      actualDuration: duration,
+      rating: null,
+    }),
+    ...(status === "no_show" && {
+      noShowHistory: [],
+      depositCharged: false,
+    }),
+    ...(status === "cancelled" && {
+      cancelledAt: createdAt,
+      cancelReason: "guest_request",
+      cancelNote: "Cancelled",
+    }),
   }
+}
+
+export interface GetReservationByIdOptions {
+  storeReservations?: StoreReservation[]
+  tables?: StoreTable[]
 }
 
 export function getReservationById(
   id: string,
-  overviewReservationsList?: OverviewReservation[]
+  overviewReservationsList?: OverviewReservation[],
+  options?: GetReservationByIdOptions
 ): DetailReservation | undefined {
-  const staticMatch = [sarahChen, completedBase, noShowBase, cancelledBase].find((reservation) => reservation.id === id)
-  if (staticMatch) return staticMatch
-
   const list = overviewReservationsList ?? overviewReservations
-  const overviewMatch = list.find((reservation) => reservation.id === id)
-  if (overviewMatch) return buildDetailFromOverview(overviewMatch)
+  const overviewMatch = list.find((r) => r.id === id)
+  if (overviewMatch) {
+    const storeRes = options?.storeReservations?.find((r) => r.id === id)
+    const tableId = storeRes?.tableId ?? overviewMatch.table
+    const table = tableId && options?.tables
+      ? options.tables.find((t) => t.id === tableId || `T${t.number}` === tableId)
+      : null
+    return buildDetailFromOverview(overviewMatch, storeRes ?? null, table ?? null)
+  }
+
+  // Demo-only: static records for ids res_001, res_002, res_003, res_004 (not used with real UUIDs)
+  const staticMatch = [sarahChen, completedBase, noShowBase, cancelledBase].find((r) => r.id === id)
+  if (staticMatch) return staticMatch
 
   return undefined
 }
@@ -751,9 +931,14 @@ export function getTimeSince(iso: string): string {
 }
 
 export function getDaysAgo(dateStr: string): number {
+  if (!dateStr || typeof dateStr !== "string") return 0
   const d = new Date(dateStr + "T00:00:00")
-  const now = new Date("2025-01-17T00:00:00")
-  return Math.floor((now.getTime() - d.getTime()) / 86400000)
+  const ts = d.getTime()
+  if (Number.isNaN(ts)) return 0
+  const now = new Date()
+  now.setHours(0, 0, 0, 0)
+  const today = now.getTime()
+  return Math.max(0, Math.floor((today - ts) / 86400000))
 }
 
 export const statusConfig: Record<

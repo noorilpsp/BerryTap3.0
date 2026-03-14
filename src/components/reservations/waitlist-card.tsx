@@ -207,7 +207,7 @@ export function WaitlistCard({
                 <Zap className="h-3 w-3 text-emerald-400" />
                 <span className="font-bold text-emerald-300">AUTO-MATCH:</span>
                 <span className="text-emerald-200">
-                  {entry.bestMatch!.tableId} ready now!
+                  {entry.bestMatch!.displayId ?? entry.bestMatch!.tableId} ready now!
                 </span>
               </>
             ) : (
@@ -215,7 +215,7 @@ export function WaitlistCard({
                 <Clock className="h-3 w-3 text-amber-400" />
                 <span className="font-semibold text-amber-300">NEXT MATCH:</span>
                 <span className="text-zinc-300">
-                  {entry.bestMatch!.tableId} est. ~{entry.bestMatch!.estMinutes} min
+                  {entry.bestMatch!.displayId ?? entry.bestMatch!.tableId} est. ~{entry.bestMatch!.estMinutes} min
                   {entry.bestMatch!.reason && (
                     <span className="text-zinc-500"> ({entry.bestMatch!.reason})</span>
                   )}
@@ -225,12 +225,12 @@ export function WaitlistCard({
           </div>
           {isReadyNow && (
             <div className="mt-1 text-[10px] text-zinc-500">
-              {entry.bestMatch!.tableId} ({entry.bestMatch!.seats}-top, {entry.bestMatch!.zone},{" "}
-              {entry.bestMatch!.detail})
+              {entry.bestMatch!.displayId ?? entry.bestMatch!.tableId} ({entry.bestMatch!.seats}-top, {entry.bestMatch!.zone}
+              {entry.bestMatch!.detail ? `, ${entry.bestMatch!.detail}` : ""})
               {entry.altMatches.length > 0 && (
                 <span>
                   {" "}&middot; Also fits:{" "}
-                  {entry.altMatches.map((m) => `${m.tableId} at ~${m.estMinutes > 0 ? `${m.estMinutes} min` : "now"}`).join(", ")}
+                  {entry.altMatches.map((m) => `${m.displayId ?? m.tableId} at ~${m.estMinutes > 0 ? `${m.estMinutes} min` : "now"}`).join(", ")}
                 </span>
               )}
             </div>
@@ -291,7 +291,7 @@ export function WaitlistCard({
                 {entry.altMatches.map((m) => (
                   <div key={m.tableId} className="flex items-center justify-between text-[11px]">
                     <span className="text-zinc-400">
-                      {m.tableId} ({m.seats}-top, {m.zone}) &mdash; ~{m.estMinutes} min
+                      {m.displayId ?? m.tableId} ({m.seats}-top, {m.zone}) &mdash; ~{m.estMinutes} min
                     </span>
                     <Button
                       size="sm"
@@ -317,10 +317,10 @@ export function WaitlistCard({
               size="sm"
               className="h-7 bg-emerald-600 px-3 text-xs text-white hover:bg-emerald-500"
               onClick={() => onSeatAt(entry.bestMatch!.tableId)}
-              aria-label={`Seat ${entry.name} at ${entry.bestMatch!.tableId}`}
+              aria-label={`Seat ${entry.name} at ${entry.bestMatch!.displayId ?? entry.bestMatch!.tableId}`}
             >
               <Armchair className="mr-1 h-3 w-3" />
-              Seat at {entry.bestMatch!.tableId}
+              Seat at {entry.bestMatch!.displayId ?? entry.bestMatch!.tableId}
             </Button>
           )}
           <Button

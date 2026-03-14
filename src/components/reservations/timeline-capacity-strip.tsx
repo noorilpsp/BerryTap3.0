@@ -9,15 +9,17 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import {
-  capacitySlots,
   getTimeLabels,
   getSlotWidth,
   getNowPixel,
   NOW_LABEL,
   type ZoomLevel,
 } from "@/lib/timeline-data"
+import type { CapacitySlot } from "@/lib/reservations/buildCapacitySlots"
 
 interface TimelineCapacityStripProps {
+  /** Capacity slots from real engine; must be provided by parent (e.g. useReservationsData). */
+  capacitySlots: CapacitySlot[]
   zoom: ZoomLevel
   scrollLeft?: number
   onSlotClick?: (slotIndex: number) => void
@@ -32,6 +34,7 @@ function getBarColor(pct: number): string {
 }
 
 export function TimelineCapacityStrip({
+  capacitySlots,
   zoom,
   scrollLeft = 0,
   onSlotClick,
@@ -62,22 +65,22 @@ export function TimelineCapacityStrip({
     // At 30min zoom, direct mapping to our data
     if (zoom === "30min") {
       const slot = capacitySlots[index]
-      if (slot) return { pct: slot.occupancyPct, seats: slot.seatsOccupied, total: slot.totalSeats, arriving: slot.arrivingReservations }
-      return { pct: 0, seats: 0, total: 78, arriving: 0 }
+      if (slot) return { pct: slot.occupancyPct, seats: slot.seatsOccupied, total: slot.totalSeats, arriving: slot.arrivingReservations ?? slot.arrivals }
+      return { pct: 0, seats: 0, total: capacitySlots[0]?.totalSeats ?? 78, arriving: 0 }
     }
     // At 1hr zoom, average two 30min slots
     if (zoom === "1hr") {
       const s1 = capacitySlots[index * 2]
       const s2 = capacitySlots[index * 2 + 1]
-      if (s1 && s2) return { pct: Math.round((s1.occupancyPct + s2.occupancyPct) / 2), seats: Math.round((s1.seatsOccupied + s2.seatsOccupied) / 2), total: 78, arriving: s1.arrivingReservations + s2.arrivingReservations }
-      if (s1) return { pct: s1.occupancyPct, seats: s1.seatsOccupied, total: 78, arriving: s1.arrivingReservations }
-      return { pct: 0, seats: 0, total: 78, arriving: 0 }
+      if (s1 && s2) return { pct: Math.round((s1.occupancyPct + s2.occupancyPct) / 2), seats: Math.round((s1.seatsOccupied + s2.seatsOccupied) / 2), total: s1.totalSeats, arriving: (s1.arrivingReservations ?? s1.arrivals) + (s2.arrivingReservations ?? s2.arrivals) }
+      if (s1) return { pct: s1.occupancyPct, seats: s1.seatsOccupied, total: s1.totalSeats, arriving: s1.arrivingReservations ?? s1.arrivals }
+      return { pct: 0, seats: 0, total: capacitySlots[0]?.totalSeats ?? 78, arriving: 0 }
     }
     // At 15min zoom, split each 30min slot in half
     const parentIndex = Math.floor(index / 2)
     const slot = capacitySlots[parentIndex]
-    if (slot) return { pct: slot.occupancyPct, seats: slot.seatsOccupied, total: slot.totalSeats, arriving: Math.round(slot.arrivingReservations / 2) }
-    return { pct: 0, seats: 0, total: 78, arriving: 0 }
+    if (slot) return { pct: slot.occupancyPct, seats: slot.seatsOccupied, total: slot.totalSeats, arriving: Math.round((slot.arrivingReservations ?? slot.arrivals) / 2) }
+    return { pct: 0, seats: 0, total: capacitySlots[0]?.totalSeats ?? 78, arriving: 0 }
   }
 
   return (

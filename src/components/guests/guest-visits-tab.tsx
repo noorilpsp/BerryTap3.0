@@ -5,7 +5,7 @@ import { Check, Clock, XCircle, ChevronDown } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { GuestProfile, VisitRecord } from "@/lib/guests-data"
-import { sarahVisitHistory, formatCurrency } from "@/lib/guests-data"
+import { formatCurrency } from "@/lib/guests-data"
 
 interface VisitsTabProps {
   guest: GuestProfile
@@ -29,7 +29,15 @@ function statusLabel(status: VisitRecord["status"]): string {
   }
 }
 
-function VisitCard({ visit, index }: { visit: VisitRecord; index: number }) {
+function VisitCard({
+  visit,
+  index,
+  displayId,
+}: {
+  visit: VisitRecord
+  index: number
+  displayId: string | number
+}) {
   const [expanded, setExpanded] = useState(index === 0)
 
   return (
@@ -42,7 +50,7 @@ function VisitCard({ visit, index }: { visit: VisitRecord; index: number }) {
         className="flex w-full items-start gap-3 p-3 text-left transition-colors hover:bg-secondary/20"
       >
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary/40 text-xs font-bold text-muted-foreground">
-          #{visit.id}
+          #{displayId}
         </div>
 
         <div className="min-w-0 flex-1">
@@ -99,23 +107,8 @@ function VisitCard({ visit, index }: { visit: VisitRecord; index: number }) {
 
 export function GuestVisitsTab({ guest }: VisitsTabProps) {
   const [showAll, setShowAll] = useState(false)
-  const allVisits = guest.id === "guest_001" ? sarahVisitHistory : Array.from({ length: Math.min(guest.totalVisits, 4) }, (_, i) => ({
-    id: guest.totalVisits - i,
-    date: new Date(new Date(guest.lastVisit).getTime() - i * 14 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
-    dayOfWeek: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(new Date(guest.lastVisit).getTime() - i * 14 * 24 * 60 * 60 * 1000).getDay()],
-    service: "Dinner" as const,
-    partySize: Math.round(guest.avgPartySize || 2),
-    table: `T${Math.floor(Math.random() * 15) + 1}`,
-    zone: "Main",
-    server: ["Mike", "Anna", "Carlos"][i % 3],
-    status: (i === 0 && guest.lastVisit === "2025-01-17" ? "in_progress" : guest.segment === "flagged" && i === 0 ? "no_show" : "completed") as VisitRecord["status"],
-    total: Math.round(guest.avgSpend * (0.8 + Math.random() * 0.4)),
-    duration: i === 0 ? null : `${Math.floor(90 + Math.random() * 45)}min`,
-    items: ["House Salad", "Main Course", "Dessert"],
-    note: null,
-  }))
-
-  const displayed = showAll ? allVisits : allVisits.slice(0, 4)
+  const allVisits = guest.visitHistory ?? []
+  const displayed = showAll ? allVisits : allVisits.slice(0, 8)
 
   return (
     <div className="flex flex-col gap-3 p-4">
@@ -125,19 +118,28 @@ export function GuestVisitsTab({ guest }: VisitsTabProps) {
         </h3>
       </div>
 
-      {displayed.map((visit, i) => (
-        <VisitCard key={visit.id} visit={visit} index={i} />
-      ))}
+      {allVisits.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 py-8 text-center">
+          <Clock className="h-6 w-6 text-muted-foreground/50" />
+          <p className="text-sm text-muted-foreground">No visits yet</p>
+        </div>
+      ) : (
+        <>
+          {displayed.map((visit, i) => (
+            <VisitCard key={`${guest.id}-${i}`} visit={visit} index={i} displayId={visit.id} />
+          ))}
 
-      {allVisits.length > 4 && !showAll && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setShowAll(true)}
-          className="text-xs text-muted-foreground hover:text-primary"
-        >
-          Show All {allVisits.length} Visits
-        </Button>
+          {allVisits.length > 8 && !showAll && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowAll(true)}
+              className="text-xs text-muted-foreground hover:text-primary"
+            >
+              Show All {allVisits.length} Visits
+            </Button>
+          )}
+        </>
       )}
     </div>
   )

@@ -59,7 +59,7 @@ import { fetchPos, getPosCorrelationId, makeIdempotencyKey } from "@/lib/pos/fet
 import { fireAndForget } from "@/lib/pos/fireAndForget"
 import { posDebugError } from "@/lib/pos/posDebugError"
 import { TablePageSkeleton } from "@/components/table-detail/TablePageSkeleton"
-import { getTableCache, setTableCache } from "@/lib/view-cache"
+import { getTableCache, setTableCache, OPS_POST_SEATING_EVENT, type PostSeatingDetail } from "@/lib/view-cache"
 
 function getAutoSelectedOptions(item: MenuItem): Record<string, string> {
   const options: Record<string, string> = {}
@@ -793,6 +793,17 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
       void refreshTableView()
     }
   }, [id, refreshTableView, applyTableView])
+
+  useEffect(() => {
+    const handler = (e: CustomEvent<PostSeatingDetail>) => {
+      const evTableId = e.detail?.tableId
+      if (!evTableId) return
+      const matches = evTableId === id || evTableId.toLowerCase() === id.toLowerCase()
+      if (matches) void refreshTableView({ silent: true })
+    }
+    window.addEventListener(OPS_POST_SEATING_EVENT, handler as EventListener)
+    return () => window.removeEventListener(OPS_POST_SEATING_EVENT, handler as EventListener)
+  }, [id, refreshTableView])
 
   useEffect(() => {
     itemOrderIdsRef.current = itemOrderIds

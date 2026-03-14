@@ -1,5 +1,6 @@
 "use client"
 
+import { useMemo } from "react"
 import {
   ArrowRight,
   Clock,
@@ -9,26 +10,35 @@ import {
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import {
-  availableTables,
-  mergeOptions,
+  storeTablesToAvailableTables,
   quoteAccuracy,
   activeWaitlist,
   type WaitlistEntry,
 } from "@/lib/waitlist-data"
+import type { StoreTable } from "@/store/types"
 
-type WaitlistMatchingPanelProps = { entries?: WaitlistEntry[] }
+type WaitlistMatchingPanelProps = {
+  entries?: WaitlistEntry[]
+  /** Real tables from store. When provided, available tables are derived from them; merge options are empty. */
+  tables?: StoreTable[]
+}
 
-export function WaitlistMatchingPanel({ entries: entriesProp }: WaitlistMatchingPanelProps = {}) {
+export function WaitlistMatchingPanel({ entries: entriesProp, tables = [] }: WaitlistMatchingPanelProps = {}) {
   const entries = entriesProp ?? activeWaitlist
+  const availableTables = useMemo(
+    () => (tables.length > 0 ? storeTablesToAvailableTables(tables) : []),
+    [tables]
+  )
+  const mergeOptions = [] as { tables: string[]; combinedSeats: number; estTime: string; reason?: string }[]
   const nowTables = availableTables.filter((t) => t.status === "available-now")
   const turningTables = availableTables.filter((t) => t.status === "turning-soon")
 
-  // Find best match for available tables
+  // Find best match for available tables (by UUID)
   function bestMatchFor(tableId: string, seats: number): string | null {
-    const match = entries.find(
+    const entry = entries.find(
       (e) => e.bestMatch?.tableId === tableId || e.altMatches.some((m) => m.tableId === tableId)
     )
-    if (match) return `${match.name} (${match.partySize}p)`
+    if (entry) return `${entry.name} (${entry.partySize}p)`
     // fallback: find smallest party that fits
     const fits = entries
       .filter((e) => e.partySize <= seats)
@@ -68,7 +78,7 @@ export function WaitlistMatchingPanel({ entries: entriesProp }: WaitlistMatching
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold tracking-wide text-emerald-200">{t.id}</span>
+                        <span className="text-sm font-bold tracking-wide text-emerald-200">{t.displayId ?? t.id}</span>
                         <Badge variant="outline" className="border-zinc-700 text-[10px] text-zinc-400">
                           {t.seats}-top
                         </Badge>
@@ -103,7 +113,7 @@ export function WaitlistMatchingPanel({ entries: entriesProp }: WaitlistMatching
                 <div key={t.id} className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-2 py-1.5 text-xs">
                   <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="font-semibold text-zinc-200">{t.id}</span>
+                    <span className="font-semibold text-zinc-200">{t.displayId ?? t.id}</span>
                     <Badge variant="outline" className="border-zinc-800 text-[10px] text-zinc-500">
                       {t.seats}-top
                     </Badge>

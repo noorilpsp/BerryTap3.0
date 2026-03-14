@@ -2,12 +2,14 @@
 
 import { eq, and, desc, gte, lte } from "drizzle-orm";
 import { db } from "@/db";
-import { reservations as reservationsTable } from "@/lib/db/schema/orders";
+import { reservations as reservationsTable, sessions as sessionsTable } from "@/lib/db/schema/orders";
 import { verifyLocationAccess } from "@/lib/location-access";
 import {
   createReservationMutation,
   updateReservationMutation,
+  deleteReservationMutation,
 } from "@/domain/reservation-mutations";
+import { ensureSessionByTableUuid } from "@/domain";
 import type { StoreReservation } from "@/store/types";
 
 const DB_STATUS_TO_STORE: Record<string, StoreReservation["status"]> = {
@@ -141,6 +143,7 @@ export async function createReservation(
     customerEmail?: string;
     notes?: string;
     tableId?: string | null;
+    customerId?: string | null;
   }
 ): Promise<StoreReservation> {
   const location = await verifyLocationAccess(locationId);
@@ -150,6 +153,7 @@ export async function createReservation(
 
   const row = await createReservationMutation({
     locationId,
+    customerId: data.customerId ?? null,
     partySize: data.partySize,
     reservationDate: data.reservationDate,
     reservationTime: data.reservationTime,
@@ -186,6 +190,7 @@ export async function updateReservation(
     customerName: string;
     customerPhone: string;
     customerEmail: string;
+    customerId: string | null;
     notes: string;
     tableId: string | null;
   }>
@@ -203,7 +208,102 @@ export async function updateReservation(
     customerName: patch.customerName,
     customerPhone: patch.customerPhone,
     customerEmail: patch.customerEmail,
+    customerId: patch.customerId,
     notes: patch.notes,
     tableId: patch.tableId,
   });
+}
+
+export async function deleteReservation(
+  locationId: string,
+  id: string
+): Promise<void> {
+  const location = await verifyLocationAccess(locationId);
+  if (!location) {
+    throw new Error("Unauthorized or location not found");
+  }
+
+  const deleted = await deleteReservationMutation(locationId, id);
+  if (!deleted) {
+    throw new Error("Reservation not found or already deleted");
+  }
+}
+
+export type SeatReservationResult =
+  | { ok: true; sessionId: string; tableId: string }
+  | { ok: false; reason: string };
+
+/**
+ * Seat an existing reservation: create or reuse a reservation-backed session,
+ * update the reservation to seated, and return session/table for refresh/navigation.
+ * Requires the reservation to have a table assigned, or tableUuid to be passed.
+ */
+export async function seatReservation(
+  locationId: string,
+  reservationId: string,
+  tableUuid?: string | null
+): Promise<SeatReservationResult> {
+  const location = await verifyLocationAccess(locationId);
+  if (!location) {
+    return { ok: false, reason: "Unauthorized or location not found" };
+  }
+
+  const reservation = await db.query.reservations.findFirst({
+    where: and(
+      eq(reservationsTable.id, reservationId),
+      eq(reservationsTable.locationId, locationId)
+    ),
+    columns: {
+      id: true,
+      tableId: true,
+      partySize: true,
+      status: true,
+    },
+  });
+
+  if (!reservation) {
+    return { ok: false, reason: "Reservation not found" };
+  }
+
+  if (reservation.status === "seated") {
+    return { ok: false, reason: "Reservation is already seated" };
+  }
+  if (reservation.status === "cancelled" || reservation.status === "completed" || reservation.status === "no_show") {
+    return { ok: false, reason: `Cannot seat reservation with status: ${reservation.status}` };
+  }
+
+  const tableIdentifier = tableUuid?.trim() || reservation.tableId;
+  if (!tableIdentifier) {
+    return { ok: false, reason: "Please assign a table first" };
+  }
+
+  const result = await ensureSessionByTableUuid(
+    locationId,
+    tableIdentifier,
+    Math.max(1, reservation.partySize),
+    undefined,
+    reservationId
+  );
+
+  if (!result.ok) {
+    const msg = result.reason === "no_table"
+      ? "Table not found. Please assign a valid table first."
+      : result.reason;
+    return { ok: false, reason: msg };
+  }
+
+  const sessionId = result.sessionId!;
+  const sessionRow = await db.query.sessions.findFirst({
+    where: eq(sessionsTable.id, sessionId),
+    columns: { tableId: true },
+  });
+  const resolvedTableId = sessionRow?.tableId ?? reservation.tableId ?? tableIdentifier;
+
+  await updateReservationMutation(locationId, reservationId, {
+    status: "seated",
+    sessionId,
+    tableId: resolvedTableId,
+  });
+
+  return { ok: true, sessionId, tableId: resolvedTableId };
 }

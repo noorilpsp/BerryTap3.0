@@ -1,21 +1,14 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Gift, Sparkles, Heart, Calendar, Plus, TrendingUp, Shield } from "lucide-react"
+import { Calendar, Plus, TrendingUp, Shield } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { GuestProfile } from "@/lib/guests-data"
-import {
-  sarahVipBreakdown, sarahRevenueImpact, sarahRetentionRisk,
-  sarahSmartActions, formatCurrency, getChurnColor, getChurnLabel,
-} from "@/lib/guests-data"
+import { formatCurrency, getChurnLabel } from "@/lib/guests-data"
 
 interface AnalyticsSidebarProps {
   guest: GuestProfile
-}
-
-const smartIcons: Record<string, typeof Gift> = {
-  Gift, Sparkles, Heart,
 }
 
 /* ── VIP Score Ring ─────────────────────────────────────────── */
@@ -75,27 +68,28 @@ function ScoreBar({ label, value, max = 10 }: { label: string; value: number; ma
 
 /* ── Main Analytics ─────────────────────────────────────────── */
 export function GuestAnalyticsSidebar({ guest }: AnalyticsSidebarProps) {
-  const isSarah = guest.id === "guest_001"
-  const breakdown = isSarah ? sarahVipBreakdown : {
+  const breakdown = {
     frequency: Math.min(10, Math.round((guest.vipScore / 100) * 10)),
     spend: Math.min(10, Math.round((guest.avgSpend / 310) * 10)),
     loyalty: Math.min(10, Math.round((guest.totalVisits / 18) * 10)),
     engagement: Math.min(10, Math.round(guest.vipScore / 12)),
     reliability: Math.max(0, 10 - guest.noShows * 3),
   }
-  const revenue = isSarah ? sarahRevenueImpact : {
-    annualRevenuePercent: +(guest.lifetimeValue / 220000 * 100).toFixed(1),
+  const revenue = {
+    annualRevenuePercent: Number(((guest.lifetimeValue / 220000) * 100).toFixed(1)),
     topGuestPercent: Math.max(1, Math.round(100 - guest.vipScore)),
     avgVsRestaurant: +(guest.avgSpend / 85).toFixed(1),
     restaurantAvg: 85,
-    projectedAnnual: guest.projectedAnnualValue || Math.round(guest.avgSpend * guest.totalVisits * 2),
+    projectedAnnual: guest.projectedAnnualValue ?? Math.round(guest.avgSpend * guest.totalVisits * 2),
   }
-  const retention = isSarah ? sarahRetentionRisk : {
+  const daysSince = guest.daysSinceLastVisit ?? Math.floor(
+    (Date.now() - new Date(guest.lastVisit).getTime()) / (1000 * 60 * 60 * 24)
+  )
+  const retention = {
     level: guest.churnRisk,
     visitFrequencyTrend: guest.churnRisk === "high" ? "declining" : "stable",
     spendTrend: guest.churnRisk === "high" ? "declining" : "stable",
-    lastVisit: guest.lastVisit === "2025-01-17" ? "today" : `${guest.daysSinceLastVisit || 0} days ago`,
-    engagementRate: isSarah ? 92 : Math.max(20, 100 - guest.noShows * 15),
+    lastVisit: daysSince === 0 ? "today" : `${daysSince} days ago`,
     churnProbability: guest.churnRisk === "very_low" ? 5 : guest.churnRisk === "low" ? 15 : guest.churnRisk === "medium" ? 35 : 65,
   }
 
@@ -171,47 +165,20 @@ export function GuestAnalyticsSidebar({ guest }: AnalyticsSidebarProps) {
         </div>
       </div>
 
-      {/* Smart Actions */}
-      {isSarah && (
-        <div className="guest-insight-section rounded-xl border border-primary/20 bg-primary/5 p-4">
-          <h4 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Smart Actions</h4>
-          <div className="flex flex-col gap-3">
-            {sarahSmartActions.map((action, i) => {
-              const IconComp = smartIcons[action.icon] || Sparkles
-              return (
-                <div
-                  key={action.id}
-                  className="guest-action-card flex flex-col gap-2 rounded-lg border border-border/20 bg-secondary/20 p-3"
-                  style={{ "--action-i": i } as React.CSSProperties}
-                >
-                  <div className="flex items-start gap-2">
-                    <IconComp className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
-                    <div>
-                      <p className="text-xs font-medium text-foreground">{action.text}</p>
-                      <p className="text-[10px] text-muted-foreground">{action.subtext}</p>
-                    </div>
-                  </div>
-                  <Button size="sm" className="w-full bg-primary/15 text-primary text-[10px] hover:bg-primary/25">
-                    {action.action}
-                  </Button>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Upcoming Reservations */}
       <div className="guest-insight-section rounded-xl border border-border/30 bg-card/40 p-4">
         <h4 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Upcoming Reservations</h4>
-        {isSarah ? (
-          <div className="rounded-lg border border-border/20 bg-secondary/20 p-3">
-            <div className="flex items-center gap-2 text-sm">
-              <div className="h-2 w-2 rounded-full bg-emerald-400 guest-status-pulse" />
-              <span className="text-foreground">Jan 17 -- 7:30 PM -- 4 guests -- T12</span>
-            </div>
-            <span className="mt-1 block text-[10px] text-muted-foreground">(In progress now)</span>
-            <p className="mt-2 text-xs text-muted-foreground">No future reservations booked</p>
+        {(guest.upcomingReservations?.length ?? 0) > 0 ? (
+          <div className="flex flex-col gap-2">
+            {guest.upcomingReservations!.map((r) => (
+              <div key={r.id} className="flex items-center justify-between rounded-lg border border-border/20 bg-secondary/20 px-3 py-2">
+                <div>
+                  <span className="text-sm font-medium text-foreground">{new Date(r.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span>
+                  <span className="ml-2 text-xs text-muted-foreground">{r.time}</span>
+                </div>
+                <span className="text-xs text-muted-foreground">{r.partySize} guests</span>
+              </div>
+            ))}
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">No upcoming reservations</p>

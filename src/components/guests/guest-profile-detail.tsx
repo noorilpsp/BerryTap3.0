@@ -16,6 +16,8 @@ import { GuestAnalyticsSidebar } from "./guest-analytics-sidebar"
 interface ProfileDetailProps {
   guest: GuestProfile
   onBack?: () => void
+  onEdit?: () => void
+  onRefresh?: () => void
   showAnalyticsTab?: boolean
 }
 
@@ -26,7 +28,7 @@ const tabs = [
   { key: "comms", label: "Comms", Icon: MessageSquare },
 ]
 
-export function GuestProfileDetail({ guest, onBack, showAnalyticsTab }: ProfileDetailProps) {
+export function GuestProfileDetail({ guest, onBack, onEdit, onRefresh, showAnalyticsTab }: ProfileDetailProps) {
   const allTabs = showAnalyticsTab
     ? [...tabs, { key: "insights", label: "AI", Icon: Brain }]
     : tabs
@@ -45,7 +47,7 @@ export function GuestProfileDetail({ guest, onBack, showAnalyticsTab }: ProfileD
       )}
 
       <ScrollArea className="min-h-0 flex-1">
-        <GuestProfileHeader guest={guest} />
+        <GuestProfileHeader guest={guest} onEdit={onEdit} />
 
         <Tabs defaultValue="overview" className="flex-1">
           <TabsList className="scrollbar-none mx-4 flex w-auto justify-start gap-0.5 overflow-x-auto bg-transparent p-0 lg:mx-5">
@@ -65,13 +67,13 @@ export function GuestProfileDetail({ guest, onBack, showAnalyticsTab }: ProfileD
           </TabsList>
 
           <TabsContent value="overview" className="mt-0 guest-tab-content">
-            <GuestOverviewTab guest={guest} />
+            <GuestOverviewTab guest={guest} onRefresh={onRefresh} />
           </TabsContent>
           <TabsContent value="visits" className="mt-0 guest-tab-content">
             <GuestVisitsTab guest={guest} />
           </TabsContent>
           <TabsContent value="preferences" className="mt-0 guest-tab-content">
-            <GuestPreferencesTab guest={guest} />
+            <GuestPreferencesTab guest={guest} onEdit={onEdit} />
           </TabsContent>
           <TabsContent value="comms" className="mt-0 guest-tab-content">
             <GuestCommsTab guest={guest} />

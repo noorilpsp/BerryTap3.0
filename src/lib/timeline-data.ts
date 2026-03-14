@@ -1,7 +1,7 @@
 // ── Timeline View ("The River") Data ─────────────────────────────────────────
 
 import type { StoreTable } from "@/store/types"
-import { type CapacitySlot, capacitySlots, restaurantConfig } from "./reservations-data"
+import { type CapacitySlot, restaurantConfig } from "./reservations-data"
 
 export type TimelineStatus =
   | "confirmed"
@@ -210,9 +210,9 @@ export function getNowPixel(
   return offsetToPixel(nowMin - startMin, zoom)
 }
 
-/** Returns capacity data aligned to timeline slots */
-export function getTimelineCapacity(): CapacitySlot[] {
-  return capacitySlots
+/** Returns capacity data aligned to timeline slots. Prefer passing capacitySlots from useReservationsData(). */
+export function getTimelineCapacity(capacitySlots?: CapacitySlot[]): CapacitySlot[] {
+  return capacitySlots ?? []
 }
 
 // ── Build timeline blocks from reservations (store / reservations-data) ───────
@@ -1379,4 +1379,4 @@ export function formatTime24h(time24: string): string {
   return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`
 }
 
-export { restaurantConfig, capacitySlots }
+export { restaurantConfig }

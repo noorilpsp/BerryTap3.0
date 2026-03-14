@@ -17,11 +17,14 @@ import {
   getBlocksForTable,
   getMergedForTable,
   getTableLanesFromStore,
-  restaurantConfig as timelineRestaurantConfig,
   tableLanes as fallbackTableLanes,
   zones as timelineZones,
 } from "@/lib/timeline-data"
 import { useRestaurantStore } from "@/store/restaurantStore"
+import { resolveTableUuidFromStore } from "@/lib/resolveTableUuid"
+import { useRestaurantMutations } from "@/lib/hooks/useRestaurantMutations"
+import { useLocation } from "@/lib/contexts/LocationContext"
+import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
 import {
   type GuestProfile,
   type FormTag,
@@ -32,10 +35,11 @@ import {
   defaultFormData,
   editFormData,
   sampleEditData,
-  guestDatabase,
+  guestProfileFromPrefill,
   getDurationForParty,
   getConflictsForSelection,
 } from "@/lib/reservation-form-data"
+import { toast } from "sonner"
 
 type ReservationFormPrefill = Partial<
   Pick<
@@ -64,6 +68,9 @@ type ReservationFormPrefill = Partial<
 > & {
   durationMax?: number
   servicePeriodId?: string
+  reservationId?: string
+  /** Real guest profile from reservation/customer. Prefer over mock lookup. */
+  guestProfile?: GuestProfile | null
 }
 
 interface ReservationFormViewProps {
@@ -170,9 +177,16 @@ function formatTime12(time24: string): string {
   return `${hour12}:${m.toString().padStart(2, "0")} ${suffix}`
 }
 
-function getServiceBoundsForTime(time: string, servicePeriodId?: string): { start: number; end: number } {
+type ServicePeriodLike = { id: string; start: string; end: string }
+const DEFAULT_SERVICE_PERIODS: ServicePeriodLike[] = [{ id: "dinner", start: "17:00", end: "23:00" }]
+function getServiceBoundsForTime(
+  time: string,
+  servicePeriodId?: string,
+  servicePeriods?: ServicePeriodLike[]
+): { start: number; end: number } {
+  const periods = (servicePeriods?.length ?? 0) > 0 ? (servicePeriods ?? []) : DEFAULT_SERVICE_PERIODS
   if (servicePeriodId) {
-    const forcedPeriod = timelineRestaurantConfig.servicePeriods.find((period) => period.id === servicePeriodId)
+    const forcedPeriod = periods.find((period) => period.id === servicePeriodId)
     if (forcedPeriod) {
       const start = toMinutes(forcedPeriod.start)
       let end = toMinutes(forcedPeriod.end)
@@ -182,7 +196,7 @@ function getServiceBoundsForTime(time: string, servicePeriodId?: string): { star
   }
 
   const selectedMin = toMinutes(time)
-  const matching = timelineRestaurantConfig.servicePeriods
+  const matching = periods
     .map((period) => {
       const start = toMinutes(period.start)
       let end = toMinutes(period.end)
@@ -196,8 +210,7 @@ function getServiceBoundsForTime(time: string, servicePeriodId?: string): { star
 
   if (matching) return matching
 
-  const fallback = timelineRestaurantConfig.servicePeriods.find((period) => period.id === "dinner")
-    ?? timelineRestaurantConfig.servicePeriods[0]
+  const fallback = periods.find((period) => period.id === "dinner") ?? periods[0]
   const fallbackStart = toMinutes(fallback.start)
   let fallbackEnd = toMinutes(fallback.end)
   if (fallbackEnd <= fallbackStart) fallbackEnd += 24 * 60
@@ -234,8 +247,13 @@ function getTodayIsoDate(): string {
   return `${y}-${m}-${d}`
 }
 
-function getOpenTimes(baseTime: string, servicePeriodId?: string, selectedDate?: string): string[] {
-  const { start, end } = getServiceBoundsForTime(baseTime, servicePeriodId)
+function getOpenTimes(
+  baseTime: string,
+  servicePeriodId?: string,
+  selectedDate?: string,
+  servicePeriods?: ServicePeriodLike[]
+): string[] {
+  const { start, end } = getServiceBoundsForTime(baseTime, servicePeriodId, servicePeriods)
   let effectiveStart = start
   let graceSlotStart: number | null = null
   if (isIsoToday(selectedDate)) {
@@ -277,7 +295,8 @@ function getContinuousWindowMetaForTable(
   startTime: string,
   servicePeriodId?: string,
   selectedDate?: string,
-  tableLanes?: { id: string; label: string }[]
+  tableLanes?: { id: string; label: string }[],
+  servicePeriods?: ServicePeriodLike[]
 ): {
   availableMinutes: number
   boundaryKind: "none" | "service-end" | "next-reservation"
@@ -318,7 +337,7 @@ function getContinuousWindowMetaForTable(
     }
   }
 
-  let serviceEnd = getServiceBoundsForTime(startTime, servicePeriodId).end
+  let serviceEnd = getServiceBoundsForTime(startTime, servicePeriodId, servicePeriods).end
   while (serviceEnd <= selectedStart) serviceEnd += 24 * 60
 
   const nextReservationStart = blockingWindows
@@ -355,13 +374,14 @@ function getAvailableTimesForTable(
   duration: number,
   servicePeriodId?: string,
   selectedDate?: string,
-  tableLanes?: { id: string; label: string }[]
+  tableLanes?: { id: string; label: string }[],
+  servicePeriods?: ServicePeriodLike[]
 ): string[] {
-  const openTimes = getOpenTimes(baseTime, servicePeriodId, selectedDate)
+  const openTimes = getOpenTimes(baseTime, servicePeriodId, selectedDate, servicePeriods)
   if (!tableId) return openTimes
 
   return openTimes.filter((time) => {
-    const window = getContinuousWindowMetaForTable(tableId, time, servicePeriodId, selectedDate, tableLanes)
+    const window = getContinuousWindowMetaForTable(tableId, time, servicePeriodId, selectedDate, tableLanes, servicePeriods)
     return window.availableMinutes >= duration
   })
 }
@@ -373,7 +393,14 @@ function pickNearestAvailableTime(currentTime: string, options: string[]): strin
   return sorted.find((time) => toMinutes(time) >= currentMin) ?? sorted[0]
 }
 
-function resolveDurationConstraints(time: string, tableId: string | null, partySize: number, servicePeriodId?: string, selectedDate?: string) {
+function resolveDurationConstraints(
+  time: string,
+  tableId: string | null,
+  partySize: number,
+  servicePeriodId?: string,
+  selectedDate?: string,
+  servicePeriods?: ServicePeriodLike[]
+) {
   const recommended = getDurationForParty(partySize)
   if (!tableId) {
     return { durationDefault: recommended, durationMax: undefined as number | undefined }
@@ -395,7 +422,7 @@ function resolveDurationConstraints(time: string, tableId: string | null, partyS
     .filter((start) => start > selectedNormalized)
     .sort((a, b) => a - b)[0]
 
-  const serviceEnd = getServiceBoundsForTime(time, servicePeriodId).end
+  const serviceEnd = getServiceBoundsForTime(time, servicePeriodId, servicePeriods).end
 
   const boundary = [nextReservationStart, serviceEnd]
     .filter((value): value is number => typeof value === "number")
@@ -437,7 +464,8 @@ function buildTimeFitMap(
   assignedTable: string | null,
   servicePeriodId?: string,
   selectedDate?: string,
-  tableLanes: { id: string; label: string; seats: number; zone: string }[] = fallbackTableLanes
+  tableLanes: { id: string; label: string; seats: number; zone: string }[] = fallbackTableLanes,
+  servicePeriods?: ServicePeriodLike[]
 ): Record<string, TimeFitSnapshot> {
   const eligibleTables = assignedTable
     ? tableLanes.filter((lane) => lane.id === assignedTable && lane.seats >= partySize)
@@ -459,7 +487,9 @@ function buildTimeFitMap(
       return acc
     }
 
-    const windows = eligibleTables.map((lane) => getContinuousWindowMetaForTable(lane.id, time, servicePeriodId, selectedDate, tableLanes))
+    const windows = eligibleTables.map((lane) =>
+      getContinuousWindowMetaForTable(lane.id, time, servicePeriodId, selectedDate, tableLanes, servicePeriods)
+    )
     const available = windows.filter((window) => window.availableMinutes >= duration).length
     const shortWindows = windows.filter((window) => window.availableMinutes >= 15 && window.availableMinutes < duration)
     const shortCount = shortWindows.length
@@ -494,9 +524,17 @@ function buildTimeFitMap(
   }, {})
 }
 
+function isUuid(s: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+}
+
 export function ReservationFormView({ mode = "create", prefill, onRequestClose }: ReservationFormViewProps) {
   const isMobile = useMediaQuery("(max-width: 767px)")
   const isDesktop = useMediaQuery("(min-width: 1280px)")
+  const { currentLocationId } = useLocation()
+  const { config } = useReservationsData()
+  const { createReservation, updateReservation, deleteReservation } = useRestaurantMutations()
+  const servicePeriods = config.servicePeriods
   const storeTables = useRestaurantStore((s) => s.tables)
   const tableLanes = useMemo(
     () => (storeTables.length > 0 ? getTableLanesFromStore(storeTables) : fallbackTableLanes),
@@ -525,6 +563,10 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
     if (typeof prefill?.phone !== "undefined") base.phone = prefill.phone
     if (typeof prefill?.email !== "undefined") base.email = prefill.email
     if (typeof prefill?.date !== "undefined") base.date = prefill.date
+    else if (!isEdit && !base.date) {
+      const d = new Date()
+      base.date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+    }
     if (typeof prefill?.time !== "undefined" && prefill.time) base.time = normalizeTime24(prefill.time)
     if (typeof prefill?.zonePreference !== "undefined" && prefill.zonePreference) base.zonePreference = prefill.zonePreference
     if (typeof prefill?.tags !== "undefined") base.tags = [...prefill.tags]
@@ -568,23 +610,20 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
     return base
   })
   const [selectedGuest, setSelectedGuest] = useState<GuestProfile | null>(() => {
+    if (prefill?.guestProfile) return prefill.guestProfile
+
     const prefilledGuestId = prefill?.guestId ?? (isEdit ? editFormData.guestId : null)
-    if (prefilledGuestId) {
-      const guestById = guestDatabase.find((guest) => guest.id === prefilledGuestId)
-      if (guestById) return guestById
-    }
-
-    const prefilledPhone = prefill?.phone ?? (isEdit ? editFormData.phone : "")
-    if (prefilledPhone) {
-      const guestByPhone = guestDatabase.find((guest) => guest.phone === prefilledPhone)
-      if (guestByPhone) return guestByPhone
-    }
-
     const prefilledName = prefill?.guestName ?? (isEdit ? editFormData.guestName : "")
-    if (prefilledName) {
-      const lowered = prefilledName.toLowerCase().trim()
-      const guestByName = guestDatabase.find((guest) => guest.name.toLowerCase() === lowered)
-      if (guestByName) return guestByName
+    const prefilledPhone = prefill?.phone ?? (isEdit ? editFormData.phone : "")
+    const prefilledEmail = prefill?.email ?? (isEdit ? editFormData.email : "")
+
+    if (prefilledGuestId && (prefilledName || prefilledPhone || prefilledEmail)) {
+      return guestProfileFromPrefill({
+        guestId: prefilledGuestId,
+        guestName: prefilledName,
+        phone: prefilledPhone,
+        email: prefilledEmail,
+      })
     }
 
     return null
@@ -594,20 +633,58 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
   const [showSidePanel, setShowSidePanel] = useState(true)
 
   const dynamicConstraints = useMemo(
-    () => resolveDurationConstraints(form.time, form.assignedTable, form.partySize, servicePeriodId, form.date),
-    [form.time, form.assignedTable, form.partySize, servicePeriodId, form.date]
+    () =>
+      resolveDurationConstraints(
+        form.time,
+        form.assignedTable,
+        form.partySize,
+        servicePeriodId,
+        form.date,
+        servicePeriods
+      ),
+    [form.time, form.assignedTable, form.partySize, servicePeriodId, form.date, servicePeriods]
   )
   const availableTimes = useMemo(
-    () => getAvailableTimesForTable(form.assignedTable, form.time, form.duration, servicePeriodId, form.date, tableLanes),
-    [form.assignedTable, form.date, form.duration, form.time, servicePeriodId, tableLanes]
+    () =>
+      getAvailableTimesForTable(
+        form.assignedTable,
+        form.time,
+        form.duration,
+        servicePeriodId,
+        form.date,
+        tableLanes,
+        servicePeriods
+      ),
+    [form.assignedTable, form.date, form.duration, form.time, servicePeriodId, tableLanes, servicePeriods]
   )
   const openTimes = useMemo(
-    () => getOpenTimes(form.time, servicePeriodId, form.date),
-    [form.date, form.time, servicePeriodId]
+    () => getOpenTimes(form.time, servicePeriodId, form.date, servicePeriods),
+    [form.date, form.time, servicePeriodId, servicePeriods]
   )
   const timeFitByTime = useMemo(
-    () => buildTimeFitMap(openTimes, form.partySize, form.zonePreference, form.duration, form.assignedTable, servicePeriodId, form.date, tableLanes),
-    [form.assignedTable, form.date, form.duration, form.partySize, form.zonePreference, openTimes, servicePeriodId, tableLanes]
+    () =>
+      buildTimeFitMap(
+        openTimes,
+        form.partySize,
+        form.zonePreference,
+        form.duration,
+        form.assignedTable,
+        servicePeriodId,
+        form.date,
+        tableLanes,
+        servicePeriods
+      ),
+    [
+      form.assignedTable,
+      form.date,
+      form.duration,
+      form.partySize,
+      form.zonePreference,
+      openTimes,
+      servicePeriodId,
+      tableLanes,
+      servicePeriods,
+    ]
   )
   const fitContextLabel = useMemo(
     () => `${ZONE_LABELS[form.zonePreference] ?? "All zones"} · ${form.partySize}p`,
@@ -639,9 +716,16 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
     if (!isIsoInPast(form.date)) return
 
     const todayIso = getTodayIsoDate()
-    const todayTimes = getOpenTimes(form.time, servicePeriodId, todayIso)
+    const todayTimes = getOpenTimes(form.time, servicePeriodId, todayIso, servicePeriods)
     const fallbackTime = todayTimes[0] ?? form.time
-    const nextConstraints = resolveDurationConstraints(fallbackTime, form.assignedTable, form.partySize, servicePeriodId)
+    const nextConstraints = resolveDurationConstraints(
+      fallbackTime,
+      form.assignedTable,
+      form.partySize,
+      servicePeriodId,
+      undefined,
+      servicePeriods
+    )
 
     updateForm({
       date: todayIso,
@@ -655,7 +739,14 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
     if (availableTimes.includes(form.time)) return
 
     const nextTime = pickNearestAvailableTime(form.time, availableTimes)
-    const nextConstraints = resolveDurationConstraints(nextTime, form.assignedTable, form.partySize, servicePeriodId)
+    const nextConstraints = resolveDurationConstraints(
+      nextTime,
+      form.assignedTable,
+      form.partySize,
+      servicePeriodId,
+      undefined,
+      servicePeriods
+    )
     updateForm({
       time: nextTime,
       duration: clampDuration(nextConstraints.durationDefault, nextConstraints.durationMax),
@@ -716,20 +807,112 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
     [form.tags, updateForm]
   )
 
-  const handleSave = useCallback(() => {
+  const handleCancelReservation = useCallback(async () => {
+    const id = prefill?.reservationId
+    if (!id) {
+      toast.error("Cannot cancel: reservation ID missing")
+      return
+    }
+    try {
+      await deleteReservation(id)
+      toast.success("Reservation cancelled")
+      onRequestClose?.()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to cancel reservation"
+      toast.error(msg)
+    }
+  }, [prefill?.reservationId, deleteReservation, onRequestClose])
+
+  const resolveTableId = useCallback((assignedTable: string | null): string | null => {
+    if (!assignedTable?.trim()) return null
+    const storeTables = useRestaurantStore.getState().tables
+    return resolveTableUuidFromStore(storeTables, assignedTable)
+  }, [])
+
+  const handleSave = useCallback(async () => {
+    if (!form.guestName?.trim()) {
+      toast.error("Guest name is required")
+      return
+    }
+    if (!form.date?.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(form.date.trim())) {
+      toast.error("Please select a valid reservation date")
+      return
+    }
+    if (!form.time?.trim()) {
+      toast.error("Please select a reservation time")
+      return
+    }
     setIsSaving(true)
-    setTimeout(() => {
-      setIsSaving(false)
+    try {
+      const tableId = resolveTableId(form.assignedTable)
+      const customerId =
+        form.guestId && isUuid(form.guestId) ? form.guestId : undefined
+
+      if (mode === "create") {
+        await createReservation({
+          partySize: form.partySize,
+          reservationDate: form.date,
+          reservationTime: form.time,
+          customerName: form.guestName.trim(),
+          customerPhone: form.phone?.trim() || undefined,
+          customerEmail: form.email?.trim() || undefined,
+          notes: form.notes?.trim() || undefined,
+          tableId: tableId ?? null,
+          customerId: customerId ?? null,
+        })
+        toast.success("Reservation created")
+        onRequestClose?.()
+      } else {
+        const id = prefill?.reservationId
+        if (!id) {
+          toast.error("Cannot update: reservation ID missing")
+          return
+        }
+        await updateReservation(id, {
+          partySize: form.partySize,
+          reservationDate: form.date,
+          reservationTime: form.time,
+          customerName: form.guestName.trim(),
+          customerPhone: form.phone?.trim() || undefined,
+          customerEmail: form.email?.trim() || undefined,
+          customerId: customerId ?? null,
+          notes: form.notes?.trim() || undefined,
+          tableId: tableId ?? null,
+        })
+        toast.success("Reservation updated")
+        onRequestClose?.()
+      }
       setIsSaved(true)
       setTimeout(() => setIsSaved(false), 2000)
-    }, 1200)
-  }, [])
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to save reservation"
+      toast.error(msg)
+    } finally {
+      setIsSaving(false)
+    }
+  }, [
+    form.date,
+    form.email,
+    form.guestName,
+    form.guestId,
+    form.notes,
+    form.partySize,
+    form.phone,
+    form.time,
+    form.assignedTable,
+    mode,
+    prefill?.reservationId,
+    createReservation,
+    updateReservation,
+    resolveTableId,
+    onRequestClose,
+  ])
 
   const bestTable = useMemo(() => {
     const selectedStart = toMinutes(form.time)
     if (!Number.isFinite(selectedStart)) return undefined
     const selectedEnd = selectedStart + form.duration
-    const { end: serviceEnd } = getServiceBoundsForTime(form.time, servicePeriodId)
+    const { end: serviceEnd } = getServiceBoundsForTime(form.time, servicePeriodId, servicePeriods)
 
     const candidates = tableLanes
       .filter((lane) => lane.seats >= form.partySize)
@@ -817,6 +1000,7 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
             date={form.date}
             time={form.time}
             partySize={form.partySize}
+            totalSeats={config.totalSeats}
             duration={form.duration}
             durationMax={effectiveDurationMax}
             availableTimes={availableTimes}
@@ -828,14 +1012,28 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
             timeFitByTime={timeFitByTime}
             onDateChange={(date) => updateForm({ date })}
             onTimeChange={(time) => {
-              const nextConstraints = resolveDurationConstraints(time, form.assignedTable, form.partySize, servicePeriodId)
+              const nextConstraints = resolveDurationConstraints(
+                time,
+                form.assignedTable,
+                form.partySize,
+                servicePeriodId,
+                undefined,
+                servicePeriods
+              )
               updateForm({ time, duration: clampDuration(nextConstraints.durationDefault, nextConstraints.durationMax) })
             }}
             onPartySizeChange={(partySize) =>
               updateForm({
                 partySize,
                 duration: clampDuration(
-                  resolveDurationConstraints(form.time, form.assignedTable, partySize, servicePeriodId).durationDefault,
+                  resolveDurationConstraints(
+                    form.time,
+                    form.assignedTable,
+                    partySize,
+                    servicePeriodId,
+                    undefined,
+                    servicePeriods
+                  ).durationDefault,
                   effectiveDurationMax
                 ),
               })
@@ -855,6 +1053,7 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
               onNameChange={(name) => updateForm({ guestName: name })}
               onSelectGuest={handleSelectGuest}
               onClearGuest={handleClearGuest}
+              locationId={currentLocationId}
             />
             <div>
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1.5 block">
@@ -898,7 +1097,14 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
               bestTable={bestTable}
               onModeChange={(mode) => updateForm({ tableAssignMode: mode })}
               onTableChange={(assignedTable) => {
-                const nextConstraints = resolveDurationConstraints(form.time, assignedTable, form.partySize, servicePeriodId)
+                const nextConstraints = resolveDurationConstraints(
+                  form.time,
+                  assignedTable,
+                  form.partySize,
+                  servicePeriodId,
+                  undefined,
+                  servicePeriods
+                )
                 updateForm({
                   assignedTable,
                   duration: clampDuration(nextConstraints.durationDefault, nextConstraints.durationMax),
@@ -926,6 +1132,7 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
               formData={form}
               guest={selectedGuest}
               bestTable={bestTable}
+              totalSeats={config.totalSeats}
               conflicts={conflicts}
             />
             <div className="border-t border-border/30 pt-4">
@@ -1028,16 +1235,31 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
               zonePreference={form.zonePreference}
               fitContextLabel={fitContextLabel}
               timeFitByTime={timeFitByTime}
+              totalSeats={config.totalSeats}
               onDateChange={(date) => updateForm({ date })}
               onTimeChange={(time) => {
-                const nextConstraints = resolveDurationConstraints(time, form.assignedTable, form.partySize, servicePeriodId)
+                const nextConstraints = resolveDurationConstraints(
+                  time,
+                  form.assignedTable,
+                  form.partySize,
+                  servicePeriodId,
+                  undefined,
+                  servicePeriods
+                )
                 updateForm({ time, duration: clampDuration(nextConstraints.durationDefault, nextConstraints.durationMax) })
               }}
               onPartySizeChange={(partySize) => {
                 updateForm({
                   partySize,
                   duration: clampDuration(
-                    resolveDurationConstraints(form.time, form.assignedTable, partySize, servicePeriodId).durationDefault,
+                    resolveDurationConstraints(
+                      form.time,
+                      form.assignedTable,
+                      partySize,
+                      servicePeriodId,
+                      undefined,
+                      servicePeriods
+                    ).durationDefault,
                     effectiveDurationMax
                   ),
                 })
@@ -1064,7 +1286,14 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
               onModeChange={(mode: TableAssignMode) => {
                 updateForm({ tableAssignMode: mode })
                 if (mode === "auto" && bestTable) {
-                  const nextConstraints = resolveDurationConstraints(form.time, bestTable.id, form.partySize, servicePeriodId)
+                  const nextConstraints = resolveDurationConstraints(
+                    form.time,
+                    bestTable.id,
+                    form.partySize,
+                    servicePeriodId,
+                    undefined,
+                    servicePeriods
+                  )
                   updateForm({
                     assignedTable: bestTable.id,
                     duration: clampDuration(nextConstraints.durationDefault, nextConstraints.durationMax),
@@ -1074,7 +1303,14 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
                 }
               }}
               onTableChange={(assignedTable) => {
-                const nextConstraints = resolveDurationConstraints(form.time, assignedTable, form.partySize, servicePeriodId)
+                const nextConstraints = resolveDurationConstraints(
+                  form.time,
+                  assignedTable,
+                  form.partySize,
+                  servicePeriodId,
+                  undefined,
+                  servicePeriods
+                )
                 updateForm({
                   assignedTable,
                   duration: clampDuration(nextConstraints.durationDefault, nextConstraints.durationMax),
@@ -1095,6 +1331,7 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
                 onNameChange={(name) => updateForm({ guestName: name })}
                 onSelectGuest={handleSelectGuest}
                 onClearGuest={handleClearGuest}
+                locationId={currentLocationId}
               />
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -1201,7 +1438,12 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
                     <Clock className="h-3.5 w-3.5" />
                     Move to Waitlist
                   </Button>
-                  <Button variant="outline" size="sm" className="gap-1.5 text-xs text-red-400 hover:text-red-300 hover:border-red-500/40">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 text-xs text-red-400 hover:text-red-300 hover:border-red-500/40"
+                    onClick={handleCancelReservation}
+                  >
                     <Trash2 className="h-3.5 w-3.5" />
                     Cancel Reservation
                   </Button>
@@ -1218,6 +1460,7 @@ export function ReservationFormView({ mode = "create", prefill, onRequestClose }
               formData={form}
               guest={selectedGuest}
               bestTable={bestTable}
+              totalSeats={config.totalSeats}
               conflicts={conflicts}
             />
           </div>

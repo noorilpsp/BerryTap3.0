@@ -30,6 +30,7 @@ import {
   viewTablesToFloorTables,
 } from "@/lib/floor-map/floorMapView"
 import { useLocation } from "@/lib/contexts/LocationContext"
+import { OPS_POST_SEATING_EVENT, type PostSeatingDetail } from "@/lib/view-cache"
 import { FloorplanSelector } from "@/components/floor-map/floorplan-selector"
 import type { FilterMode, ViewMode, FloorTableStatus, SectionId, SeatPartyForm } from "@/lib/floor-map-data"
 import { Plus, Hammer } from "lucide-react"
@@ -166,6 +167,14 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
       return () => clearTimeout(timer)
     }
   }, [])
+
+  useEffect(() => {
+    const handler = (e: CustomEvent<PostSeatingDetail>) => {
+      if (e.detail?.locationId === currentLocationId) void refresh(true)
+    }
+    window.addEventListener(OPS_POST_SEATING_EVENT, handler as EventListener)
+    return () => window.removeEventListener(OPS_POST_SEATING_EVENT, handler as EventListener)
+  }, [currentLocationId, refresh])
 
   let filteredByMode = filterTablesByMode(tables, filterMode, currentServer)
   if (sectionFilter) {

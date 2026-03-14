@@ -132,7 +132,9 @@ function SwipeCard({
             {reservation.tags.some((t) => t.type === "anniversary") && <Heart className="h-3 w-3 text-rose-400 fill-rose-400" />}
             <span className={cn("text-sm font-medium text-foreground", statusBadge.nameClass)}>{reservation.guestName}</span>
           </div>
-          <span className="text-xs tabular-nums font-mono text-zinc-400">{formatTime12h(reservation.time)}</span>
+          <span className="text-xs tabular-nums font-mono text-zinc-400">
+            {reservation.bookedDate ? `${reservation.bookedDate} · ${formatTime12h(reservation.time)}` : formatTime12h(reservation.time)}
+          </span>
         </div>
 
         {/* Row 2: Party + Table + Server */}

@@ -1,8 +1,10 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useCallback } from "react"
 import {
   CalendarDays,
+  ChevronLeft,
+  ChevronRight,
   Eye,
   Filter,
   Plus,
@@ -19,11 +21,8 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
-import {
-  restaurantConfig,
-  formatTime24h,
-  type ZoomLevel,
-} from "@/lib/timeline-data"
+import { formatTime24h, type ZoomLevel } from "@/lib/timeline-data"
+import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
 
 interface TimelineTopBarProps {
   zoom: ZoomLevel
@@ -56,6 +55,7 @@ export function TimelineTopBar({
   onSelectedDateChange,
   onNewReservation,
 }: TimelineTopBarProps) {
+  const { config } = useReservationsData()
   const [desktopDateOpen, setDesktopDateOpen] = useState(false)
   const [mobileDateOpen, setMobileDateOpen] = useState(false)
 
@@ -73,8 +73,8 @@ export function TimelineTopBar({
     "7+": "7+p",
   }
   const activeService =
-    restaurantConfig.servicePeriods.find((p) => p.id === servicePeriodId)
-    ?? restaurantConfig.servicePeriods[0]
+    config.servicePeriods.find((p) => p.id === servicePeriodId)
+    ?? config.servicePeriods[0]
   const fullDateLabel = selectedDate.toLocaleDateString("en-US", {
     weekday: "long",
     month: "long",
@@ -87,6 +87,15 @@ export function TimelineTopBar({
     day: "numeric",
     year: "numeric",
   })
+
+  const shiftDateByDays = useCallback(
+    (days: number) => {
+      const next = new Date(selectedDate)
+      next.setDate(next.getDate() + days)
+      onSelectedDateChange(next)
+    },
+    [onSelectedDateChange, selectedDate]
+  )
 
   return (
     <header className="sticky top-0 z-50 glass-surface-strong">
@@ -117,6 +126,26 @@ export function TimelineTopBar({
               />
             </PopoverContent>
           </Popover>
+          <div className="hidden items-center gap-0.5 sm:flex">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 text-muted-foreground hover:text-foreground"
+              aria-label="Previous day"
+              onClick={() => shiftDateByDays(-1)}
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 text-muted-foreground hover:text-foreground"
+              aria-label="Next day"
+              onClick={() => shiftDateByDays(1)}
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </Button>
+          </div>
           {/* Desktop/Tablet inline controls */}
           <div className="hidden h-5 w-px shrink-0 bg-zinc-700/50 md:block" />
           <div className="hidden shrink-0 items-center gap-1 md:flex">
@@ -212,7 +241,7 @@ export function TimelineTopBar({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="center" className="border-zinc-700 bg-zinc-900">
-              {restaurantConfig.servicePeriods.map((p) => (
+              {config.servicePeriods.map((p) => (
                 <DropdownMenuItem
                   key={p.id}
                   onClick={() => onServicePeriodChange(p.id)}
@@ -330,12 +359,12 @@ export function TimelineTopBar({
       </div>
 
       {/* Mobile: Service + time row */}
-      <div className="flex items-center border-t border-zinc-800/50 px-4 py-2 md:hidden">
+      <div className="flex items-center gap-2 border-t border-zinc-800/50 px-4 py-2 md:hidden">
         <Popover open={mobileDateOpen} onOpenChange={setMobileDateOpen}>
           <PopoverTrigger asChild>
             <Button
               variant="ghost"
-              className="h-auto items-center gap-2 px-0 py-0 text-xs text-muted-foreground hover:text-foreground"
+              className="h-auto shrink-0 items-center gap-2 px-0 py-0 text-xs text-muted-foreground hover:text-foreground"
             >
               <CalendarDays className="h-3 w-3 text-emerald-400" />
               <span className="font-medium text-foreground">{shortDateLabel}</span>
@@ -359,6 +388,26 @@ export function TimelineTopBar({
             />
           </PopoverContent>
         </Popover>
+        <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+            aria-label="Previous day"
+            onClick={() => shiftDateByDays(-1)}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+            aria-label="Next day"
+            onClick={() => shiftDateByDays(1)}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       {/* Mobile FAB */}

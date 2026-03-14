@@ -4,10 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react"
 import { Search, Star, AlertTriangle, X, UserPlus } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import {
-  type GuestProfile,
-  searchGuests,
-} from "@/lib/reservation-form-data"
+import { type GuestProfile, searchCustomersAsGuests } from "@/lib/reservation-form-data"
 
 interface FormGuestSearchProps {
   value: string
@@ -15,7 +12,11 @@ interface FormGuestSearchProps {
   onNameChange: (name: string) => void
   onSelectGuest: (guest: GuestProfile) => void
   onClearGuest: () => void
+  /** When set, uses real customer search API. Returns empty when missing or API fails. */
+  locationId?: string | null
 }
+
+const SEARCH_DEBOUNCE_MS = 280
 
 export function FormGuestSearch({
   value,
@@ -23,21 +24,43 @@ export function FormGuestSearch({
   onNameChange,
   onSelectGuest,
   onClearGuest,
+  locationId,
 }: FormGuestSearchProps) {
   const [isFocused, setIsFocused] = useState(false)
   const [results, setResults] = useState<GuestProfile[]>([])
   const [highlightIdx, setHighlightIdx] = useState(-1)
+  const [isLoading, setIsLoading] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (isFocused && value.length >= 2) {
-      setResults(searchGuests(value))
-      setHighlightIdx(-1)
-    } else {
+    if (!isFocused || value.trim().length < 2) {
       setResults([])
+      setHighlightIdx(-1)
+      return
     }
-  }, [value, isFocused])
+
+    const runSearch = async () => {
+      if (!locationId) {
+        setResults([])
+        setHighlightIdx(-1)
+        return
+      }
+      setIsLoading(true)
+      try {
+        const real = await searchCustomersAsGuests(locationId, value)
+        setResults(real)
+      } catch {
+        setResults([])
+      } finally {
+        setIsLoading(false)
+      }
+      setHighlightIdx(-1)
+    }
+
+    const id = setTimeout(runSearch, SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(id)
+  }, [value, isFocused, locationId])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -129,7 +152,11 @@ export function FormGuestSearch({
           role="listbox"
           className="absolute z-50 top-full left-0 right-0 mt-1 rounded-lg border border-border/60 bg-popover shadow-xl form-dropdown-enter overflow-hidden"
         >
-          {results.length > 0 ? (
+          {isLoading ? (
+            <div className="px-3 py-4 text-center text-sm text-muted-foreground">
+              Searching...
+            </div>
+          ) : results.length > 0 ? (
             results.map((guest, idx) => (
               <button
                 key={guest.id}

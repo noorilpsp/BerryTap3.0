@@ -24,11 +24,11 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   type Reservation,
   formatTime12h,
-  restaurantConfig,
+  getCurrentLocalTime24,
   groupReservationsByTime,
   getUpcomingReservations,
-  useReservationsFromStore,
 } from "@/lib/reservations-data"
+import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
 import { toast } from "sonner"
 
 function getRiskDot(risk: Reservation["risk"]): React.ReactNode {
@@ -67,23 +67,27 @@ function ReservationCard({
   index,
   onOpenDetail,
   onAssignTable,
+  currentTime,
+  locationName,
 }: {
   reservation: Reservation
   index: number
   onOpenDetail: (reservationId: string) => void
   onAssignTable: (reservationId: string) => void
+  currentTime: string
+  locationName: string
 }) {
   const isLate =
     reservation.status === "confirmed" &&
     (() => {
       const [rh, rm] = reservation.time.split(":").map(Number)
-      const [ch, cm] = restaurantConfig.currentTime.split(":").map(Number)
+      const [ch, cm] = currentTime.split(":").map(Number)
       return ch * 60 + cm - (rh * 60 + rm) >= 10
     })()
 
   const minutesLate = (() => {
     const [rh, rm] = reservation.time.split(":").map(Number)
-    const [ch, cm] = restaurantConfig.currentTime.split(":").map(Number)
+    const [ch, cm] = currentTime.split(":").map(Number)
     return ch * 60 + cm - (rh * 60 + rm)
   })()
 
@@ -217,7 +221,7 @@ function ReservationCard({
             </p>
             <p className="mb-3 rounded-md border border-zinc-800 bg-zinc-950 p-2 text-xs text-foreground">
               Hi {reservation.guestName.split(" ")[0]}, your table is ready at{" "}
-              {restaurantConfig.name}! We look forward to seeing you.
+              {locationName}! We look forward to seeing you.
             </p>
             <Button
               size="sm"
@@ -256,12 +260,13 @@ function ReservationCard({
 }
 
 export function UpcomingReservations() {
-  const { reservations } = useReservationsFromStore()
+  const { reservations, config } = useReservationsData()
+  const currentTime = getCurrentLocalTime24()
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const upcoming = getUpcomingReservations(reservations, restaurantConfig.currentTime)
-  const grouped = groupReservationsByTime(upcoming, restaurantConfig.currentTime)
+  const upcoming = getUpcomingReservations(reservations, currentTime)
+  const grouped = groupReservationsByTime(upcoming, currentTime)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
   const toggleGroup = (time: string) => {
@@ -343,6 +348,8 @@ export function UpcomingReservations() {
                       <ReservationCard
                         key={r.id}
                         reservation={r}
+                        currentTime={currentTime}
+                        locationName={config.name}
                         index={i}
                         onOpenDetail={openDetail}
                         onAssignTable={openEditForAssignment}

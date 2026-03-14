@@ -7,6 +7,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { cn } from "@/lib/utils"
 import type { GuestSegment, SortOption, ViewMode } from "@/lib/guests-data"
 import { SEGMENT_COUNTS } from "@/lib/guests-data"
+import type { GuestsViewSegmentCounts } from "@/lib/guests/guestsView"
 
 interface GuestTopBarProps {
   search: string
@@ -19,16 +20,20 @@ interface GuestTopBarProps {
   onViewChange: (view: ViewMode) => void
   onAddGuest: () => void
   filteredCount: number
+  /** When provided, segment pills use these counts (e.g. from server GuestsView). */
+  segmentCounts?: GuestsViewSegmentCounts
 }
 
-const segments: { key: GuestSegment | "all"; label: string; count: number }[] = [
-  { key: "all", label: "All", count: SEGMENT_COUNTS.all },
-  { key: "vip", label: "VIP", count: SEGMENT_COUNTS.vip },
-  { key: "regular", label: "Regulars", count: SEGMENT_COUNTS.regular },
-  { key: "new", label: "New", count: SEGMENT_COUNTS.new },
-  { key: "at_risk", label: "At Risk", count: SEGMENT_COUNTS.at_risk },
-  { key: "flagged", label: "Flagged", count: SEGMENT_COUNTS.flagged },
-]
+function buildSegments(counts: GuestsViewSegmentCounts): { key: GuestSegment | "all"; label: string; count: number }[] {
+  return [
+    { key: "all", label: "All", count: counts.all },
+    { key: "vip", label: "VIP", count: counts.vip },
+    { key: "regular", label: "Regulars", count: counts.regular },
+    { key: "new", label: "New", count: counts.new },
+    { key: "at_risk", label: "At Risk", count: counts.at_risk },
+    { key: "flagged", label: "Flagged", count: counts.flagged },
+  ]
+}
 
 const sortLabels: Record<SortOption, string> = {
   last_visit: "Last Visit",
@@ -41,10 +46,12 @@ const sortLabels: Record<SortOption, string> = {
 export function GuestTopBar({
   search, onSearchChange, segment, onSegmentChange,
   sort, onSortChange, view, onViewChange, onAddGuest, filteredCount,
+  segmentCounts,
 }: GuestTopBarProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [searchFocused, setSearchFocused] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const segments = buildSegments(segmentCounts ?? SEGMENT_COUNTS)
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {

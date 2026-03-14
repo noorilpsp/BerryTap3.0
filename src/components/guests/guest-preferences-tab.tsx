@@ -1,12 +1,13 @@
 "use client"
 
-import { AlertTriangle, Edit, Lightbulb } from "lucide-react"
+import { AlertTriangle, Edit } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { GuestProfile } from "@/lib/guests-data"
 
 interface PreferencesTabProps {
   guest: GuestProfile
+  onEdit?: () => void
 }
 
 function SectionTitle({ children, onEdit }: { children: React.ReactNode; onEdit?: () => void }) {
@@ -14,7 +15,7 @@ function SectionTitle({ children, onEdit }: { children: React.ReactNode; onEdit?
     <div className="mb-3 flex items-center justify-between">
       <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{children}</h3>
       {onEdit && (
-        <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-[10px] text-muted-foreground hover:text-foreground">
+        <Button variant="ghost" size="sm" onClick={onEdit} className="h-6 gap-1 px-2 text-[10px] text-muted-foreground hover:text-foreground">
           <Edit className="h-2.5 w-2.5" /> Edit
         </Button>
       )}
@@ -31,14 +32,12 @@ function PreferenceRow({ label, value, highlight }: { label: string; value: stri
   )
 }
 
-export function GuestPreferencesTab({ guest }: PreferencesTabProps) {
-  const isSarah = guest.id === "guest_001"
-
+export function GuestPreferencesTab({ guest, onEdit }: PreferencesTabProps) {
   return (
     <div className="flex flex-col gap-4 p-4">
       {/* Dietary & Allergies */}
       <div className="guest-profile-section rounded-xl border border-border/30 bg-card/40 p-4">
-        <SectionTitle onEdit={() => {}}>Dietary & Allergies</SectionTitle>
+        <SectionTitle onEdit={onEdit}>Dietary & Allergies</SectionTitle>
         {guest.allergies.length > 0 ? (
           <div className="flex flex-col gap-2">
             {guest.allergies.map((a) => (
@@ -65,10 +64,10 @@ export function GuestPreferencesTab({ guest }: PreferencesTabProps) {
 
       {/* Seating Preferences */}
       <div className="guest-profile-section rounded-xl border border-border/30 bg-card/40 p-4">
-        <SectionTitle onEdit={() => {}}>Seating Preferences</SectionTitle>
+        <SectionTitle onEdit={onEdit}>Seating Preferences</SectionTitle>
         <div className="flex flex-col gap-1.5">
           {guest.preferences.seating && (
-            <PreferenceRow label="Seating:" value={`${guest.preferences.seating} -- ${isSarah ? "strong preference (requested 10/12)" : "preferred"}`} highlight />
+            <PreferenceRow label="Seating:" value={guest.preferences.seating} highlight />
           )}
           {guest.preferences.zone && (
             <PreferenceRow label="Zone:" value={`${guest.preferences.zone} preferred`} />
@@ -81,7 +80,7 @@ export function GuestPreferencesTab({ guest }: PreferencesTabProps) {
 
       {/* Service Preferences */}
       <div className="guest-profile-section rounded-xl border border-border/30 bg-card/40 p-4">
-        <SectionTitle onEdit={() => {}}>Service Preferences</SectionTitle>
+        <SectionTitle onEdit={onEdit}>Service Preferences</SectionTitle>
         <div className="flex flex-col gap-1.5">
           {guest.preferences.welcomeDrink && (
             <PreferenceRow label="Welcome drink:" value={guest.preferences.welcomeDrink} highlight />
@@ -104,24 +103,6 @@ export function GuestPreferencesTab({ guest }: PreferencesTabProps) {
         </div>
       </div>
 
-      {/* Auto-Detected Patterns (Sarah only) */}
-      {isSarah && (
-        <div className="guest-profile-section rounded-xl border border-primary/20 bg-primary/5 p-4">
-          <SectionTitle>Auto-Detected Patterns</SectionTitle>
-          <div className="flex flex-col gap-3">
-            {[
-              "Sarah typically visits every 2-3 weeks on Fridays. Next predicted visit: Jan 31 or Feb 7.",
-              "Spending has increased 12% over last 6 visits. She's exploring more of the menu -- upsell potential.",
-              "Birthday is March 15. She asked about the private room. Proactively reach out in February?",
-            ].map((insight, i) => (
-              <div key={i} className="flex items-start gap-2">
-                <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
-                <p className="text-sm leading-relaxed text-muted-foreground">{insight}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

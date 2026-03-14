@@ -2,33 +2,32 @@
 
 import { useCallback } from "react";
 import { useLocation } from "@/lib/contexts/LocationContext";
-import { useRestaurantStore } from "@/store/restaurantStore";
 import {
   addToWaitlist as addToWaitlistAction,
   removeFromWaitlist as removeFromWaitlistAction,
   updateWaitlistEntry as updateWaitlistEntryAction,
+  seatFromWaitlist as seatFromWaitlistAction,
 } from "@/app/actions/waitlist";
-import { getWaitlistForLocation } from "@/app/actions/waitlist";
 import {
   createReservation as createReservationAction,
   updateReservation as updateReservationAction,
-  getReservationsForLocation,
+  deleteReservation as deleteReservationAction,
+  seatReservation as seatReservationAction,
 } from "@/app/actions/reservations";
+import { refreshReservationsView } from "@/lib/reservations/refreshReservationsView";
+import { postSeatingInvalidate } from "@/lib/view-cache";
 import type { StoreReservation } from "@/store/types";
 
 /**
- * Mutation helpers that call server actions and refetch into the store.
+ * Mutation helpers that call server actions and refetch via the shared view path.
  */
 export function useRestaurantMutations() {
   const { currentLocationId } = useLocation();
-  const setWaitlist = useRestaurantStore((s) => s.setWaitlist);
-  const setReservations = useRestaurantStore((s) => s.setReservations);
 
-  const refetchWaitlist = useCallback(async () => {
+  const refreshView = useCallback(async () => {
     if (!currentLocationId) return;
-    const entries = await getWaitlistForLocation(currentLocationId);
-    setWaitlist(entries);
-  }, [currentLocationId, setWaitlist]);
+    await refreshReservationsView(currentLocationId);
+  }, [currentLocationId]);
 
   const addToWaitlist = useCallback(
     async (data: {
@@ -40,18 +39,18 @@ export function useRestaurantMutations() {
     }) => {
       if (!currentLocationId) throw new Error("No location selected");
       await addToWaitlistAction(currentLocationId, data);
-      await refetchWaitlist();
+      await refreshView();
     },
-    [currentLocationId, refetchWaitlist]
+    [currentLocationId, refreshView]
   );
 
   const removeFromWaitlist = useCallback(
     async (id: string) => {
       if (!currentLocationId) throw new Error("No location selected");
       await removeFromWaitlistAction(currentLocationId, id);
-      await refetchWaitlist();
+      await refreshView();
     },
-    [currentLocationId, refetchWaitlist]
+    [currentLocationId, refreshView]
   );
 
   const updateWaitlistEntry = useCallback(
@@ -67,16 +66,26 @@ export function useRestaurantMutations() {
     ) => {
       if (!currentLocationId) throw new Error("No location selected");
       await updateWaitlistEntryAction(currentLocationId, id, data);
-      await refetchWaitlist();
+      await refreshView();
     },
-    [currentLocationId, refetchWaitlist]
+    [currentLocationId, refreshView]
   );
 
-  const refetchReservations = useCallback(async () => {
-    if (!currentLocationId) return;
-    const list = await getReservationsForLocation(currentLocationId);
-    setReservations(list);
-  }, [currentLocationId, setReservations]);
+  const refetchReservations = useCallback(
+    async () => {
+      if (!currentLocationId) return;
+      await refreshReservationsView(currentLocationId);
+    },
+    [currentLocationId]
+  );
+
+  const refetchWaitlist = useCallback(
+    async () => {
+      if (!currentLocationId) return;
+      await refreshReservationsView(currentLocationId);
+    },
+    [currentLocationId]
+  );
 
   const createReservation = useCallback(
     async (data: {
@@ -88,12 +97,13 @@ export function useRestaurantMutations() {
       customerEmail?: string;
       notes?: string;
       tableId?: string | null;
+      customerId?: string | null;
     }) => {
       if (!currentLocationId) throw new Error("No location selected");
       await createReservationAction(currentLocationId, data);
-      await refetchReservations();
+      await refreshView();
     },
-    [currentLocationId, refetchReservations]
+    [currentLocationId, refreshView]
   );
 
   const updateReservation = useCallback(
@@ -107,24 +117,73 @@ export function useRestaurantMutations() {
         customerName: string;
         customerPhone: string;
         customerEmail: string;
+        customerId: string | null;
         notes: string;
         tableId: string | null;
       }>
     ) => {
       if (!currentLocationId) throw new Error("No location selected");
       await updateReservationAction(currentLocationId, id, patch);
-      await refetchReservations();
+      await refreshView();
     },
-    [currentLocationId, refetchReservations]
+    [currentLocationId, refreshView]
+  );
+
+  const deleteReservation = useCallback(
+    async (id: string) => {
+      if (!currentLocationId) throw new Error("No location selected");
+      await deleteReservationAction(currentLocationId, id);
+      await refreshView();
+    },
+    [currentLocationId, refreshView]
+  );
+
+  const seatFromWaitlist = useCallback(
+    async (waitlistEntryId: string, tableUuid: string) => {
+      if (!currentLocationId) throw new Error("No location selected");
+      const result = await seatFromWaitlistAction(
+        currentLocationId,
+        waitlistEntryId,
+        tableUuid
+      );
+      if (!result.ok) throw new Error(result.reason);
+      await refreshView();
+      postSeatingInvalidate(currentLocationId, result.tableId);
+      return {
+        reservationId: result.reservationId,
+        sessionId: result.sessionId,
+        tableId: result.tableId,
+      };
+    },
+    [currentLocationId, refreshView]
+  );
+
+  const seatReservation = useCallback(
+    async (reservationId: string, tableUuid?: string | null) => {
+      if (!currentLocationId) throw new Error("No location selected");
+      const result = await seatReservationAction(
+        currentLocationId,
+        reservationId,
+        tableUuid
+      );
+      if (!result.ok) throw new Error(result.reason);
+      await refreshView();
+      postSeatingInvalidate(currentLocationId, result.tableId);
+      return { sessionId: result.sessionId, tableId: result.tableId };
+    },
+    [currentLocationId, refreshView]
   );
 
   return {
     addToWaitlist,
     removeFromWaitlist,
     updateWaitlistEntry,
+    seatFromWaitlist,
     refetchWaitlist,
     createReservation,
     updateReservation,
+    deleteReservation,
+    seatReservation,
     refetchReservations,
   };
 }

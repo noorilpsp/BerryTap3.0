@@ -23,11 +23,12 @@ interface SidePanelsProps {
   guest: GuestProfile | null
   bestTable: AvailableTable | undefined
   conflicts: ConflictWarning[]
+  totalSeats?: number
 }
 
-export function FormSidePanels({ formData, guest, bestTable, conflicts }: SidePanelsProps) {
+export function FormSidePanels({ formData, guest, bestTable, conflicts, totalSeats }: SidePanelsProps) {
   const risk = getRiskLevel(guest)
-  const capacity = getCapacityAtTime(formData.time)
+  const capacity = getCapacityAtTime(formData.time, totalSeats != null ? { totalSeats } : undefined)
   const timeLabel = (() => {
     const [h, m] = formData.time.split(":").map(Number)
     const hour = h > 12 ? h - 12 : h === 0 ? 12 : h

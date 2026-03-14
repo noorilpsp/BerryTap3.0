@@ -10,6 +10,7 @@ import { getInitials, getAvatarColor, getSegmentLabel, getSegmentColor, formatCu
 
 interface ProfileHeaderProps {
   guest: GuestProfile
+  onEdit?: () => void
 }
 
 function tagLabel(tag: string): string {
@@ -51,7 +52,7 @@ function tagColor(tag: string): string {
   return "border-border/30 bg-secondary/40 text-muted-foreground"
 }
 
-export function GuestProfileHeader({ guest }: ProfileHeaderProps) {
+export function GuestProfileHeader({ guest, onEdit }: ProfileHeaderProps) {
   const tierColor = guest.vipTier === "gold" ? "text-amber-400" : guest.vipTier === "silver" ? "text-zinc-300" : "text-orange-400"
 
   return (
@@ -97,10 +98,12 @@ export function GuestProfileHeader({ guest }: ProfileHeaderProps) {
           </div>
         </div>
 
-        <Button variant="ghost" size="sm" className="shrink-0 text-xs text-muted-foreground hover:text-foreground">
-          <Edit className="mr-1 h-3 w-3" />
-          Edit
-        </Button>
+        {onEdit && (
+          <Button variant="ghost" size="sm" onClick={onEdit} className="shrink-0 text-xs text-muted-foreground hover:text-foreground">
+            <Edit className="mr-1 h-3 w-3" />
+            Edit
+          </Button>
+        )}
       </div>
 
       {/* Stat Cards */}
@@ -133,10 +136,16 @@ export function GuestProfileHeader({ guest }: ProfileHeaderProps) {
             {a.type} ({a.severity})
           </Badge>
         ))}
-        <button className="flex items-center gap-0.5 rounded-full border border-dashed border-border/40 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary">
-          <Plus className="h-2.5 w-2.5" />
-          Add Tag
-        </button>
+        {onEdit && (
+          <button
+            type="button"
+            onClick={onEdit}
+            className="flex items-center gap-0.5 rounded-full border border-dashed border-border/40 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+          >
+            <Plus className="h-2.5 w-2.5" />
+            Add Tag
+          </button>
+        )}
       </div>
 
       <Separator className="bg-border/30" />

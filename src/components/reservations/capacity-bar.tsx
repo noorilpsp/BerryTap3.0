@@ -7,7 +7,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { type CapacitySlot, restaurantConfig, formatTime12h } from "@/lib/reservations-data"
+import { type CapacitySlot, formatTime12h, getCurrentLocalTime24 } from "@/lib/reservations-data"
 
 interface CapacityBarProps {
   slots: CapacitySlot[]
@@ -50,8 +50,14 @@ function getNowPosition(slots: CapacitySlot[], currentTime: string): number | nu
 
 export function CapacityBar({ slots }: CapacityBarProps) {
   const [animated, setAnimated] = useState(false)
+  const [currentTime, setCurrentTime] = useState(getCurrentLocalTime24)
   const containerRef = useRef<HTMLDivElement>(null)
-  const nowPosition = getNowPosition(slots, restaurantConfig.currentTime)
+  const nowPosition = getNowPosition(slots, currentTime)
+
+  useEffect(() => {
+    const interval = setInterval(() => setCurrentTime(getCurrentLocalTime24()), 60000)
+    return () => clearInterval(interval)
+  }, [])
 
   useEffect(() => {
     const timeout = setTimeout(() => setAnimated(true), 200)
@@ -117,7 +123,7 @@ export function CapacityBar({ slots }: CapacityBarProps) {
               <div className="flex items-end gap-1 pb-6 pt-6" style={{ height: 180 }}>
                 {slots.map((slot, i) => {
                   const height = animated ? slot.occupancyPct : 0
-                  const isNow = isNowSlot(slot.time, restaurantConfig.currentTime)
+                  const isNow = isNowSlot(slot.time, currentTime)
 
                   return (
                     <Tooltip key={slot.time}>
