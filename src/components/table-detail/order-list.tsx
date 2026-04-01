@@ -15,6 +15,10 @@ import {
   getSeatTotal,
 } from "@/lib/table-data"
 import type { ItemStatus } from "@/lib/table-data"
+import {
+  deriveCanonicalWaveStatusFromItems,
+  mapCanonicalWaveStatusToStoreLikeStatus,
+} from "@/lib/wave-status"
 
 interface OrderListProps {
   tableNumber?: number
@@ -509,16 +513,9 @@ function getWaveNumber(item: OrderItem): number | null {
 
 /** Wave is ready only when all non-void items are ready or served (no partial station readiness). */
 function getWaveProgressStatus(items: OrderItem[]): "held" | "sent" | "cooking" | "ready" | "served" {
-  const activeItems = items.filter((item) => item.status !== "void")
-  if (activeItems.length === 0) return "held"
-  if (activeItems.every((item) => item.status === "served")) return "served"
-  const allReadyOrServed = activeItems.every(
-    (item) => item.status === "ready" || item.status === "served"
+  return mapCanonicalWaveStatusToStoreLikeStatus(
+    deriveCanonicalWaveStatusFromItems(items)
   )
-  if (allReadyOrServed && activeItems.some((item) => item.status === "ready")) return "ready"
-  if (activeItems.some((item) => item.status === "cooking")) return "cooking"
-  if (activeItems.some((item) => item.status === "sent")) return "sent"
-  return "held"
 }
 
 function getNextWaveAction(

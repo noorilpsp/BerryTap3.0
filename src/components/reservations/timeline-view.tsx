@@ -6,15 +6,14 @@ import { useMediaQuery } from "@/hooks/use-media-query"
 import {
   getCurrentLocalTime24,
   getTimelineBlocksFromReservations,
-  getTableLanesFromStore,
-  tableLanes as fallbackTableLanes,
   type ZoomLevel,
   type TimelineBlock,
+  type TableLane,
 } from "@/lib/timeline-data"
 import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
+import { getZoneLabel } from "@/lib/reservations/zones"
 import { useReservationsSelectedDate } from "@/lib/reservations/useReservationsSelectedDate"
 import { useRestaurantMutations } from "@/lib/hooks/useRestaurantMutations"
-import { useRestaurantStore } from "@/store/restaurantStore"
 import { TimelineTopBar } from "./timeline-top-bar"
 import { TimelineGrid } from "./timeline-grid"
 import { TimelineDetailPanel } from "./timeline-detail-panel"
@@ -62,6 +61,14 @@ function ceilToQuarterHour(time: string): string {
   return `${hh}:${mm}`
 }
 
+function getTimelineLaneGroupId(table: { floorPlanId?: string | null; section?: string | null }): string {
+  const floorPlanId = table.floorPlanId?.trim()
+  if (floorPlanId) return floorPlanId
+  const section = table.section?.trim()
+  if (section) return section
+  return "__unassigned__"
+}
+
 export function TimelineView() {
   const router = useRouter()
   const pathname = usePathname()
@@ -69,12 +76,12 @@ export function TimelineView() {
   const { updateReservation } = useRestaurantMutations()
 
   const [zoom, setZoom] = useState<ZoomLevel>("30min")
-  const [zoneFilter, setZoneFilter] = useState("all")
+  const [floorplanFilter, setFloorplanFilter] = useState("all")
   const [partySizeFilter, setPartySizeFilter] = useState("all")
   const [showGhosts, setShowGhosts] = useState(true)
   const [currentTime, setCurrentTime] = useState(() => getCurrentLocalTime24())
   const { selectedDate, selectedIsoDate, setSelectedDate } = useReservationsSelectedDate()
-  const { reservations, config } = useReservationsData()
+  const { reservations, config, tables } = useReservationsData()
   const [servicePeriodId, setServicePeriodId] = useState<string | null>(null)
   useEffect(() => {
     if (servicePeriodId === null && config.servicePeriods.length > 0) {
@@ -88,17 +95,63 @@ export function TimelineView() {
   const effectiveServicePeriodId = servicePeriodId ?? config.servicePeriods[0]?.id ?? "dinner"
   const [selectedBlock, setSelectedBlock] = useState<TimelineBlock | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
-  const storeTables = useRestaurantStore((s) => s.tables)
-  const tableLanes = useMemo(
-    () => (storeTables.length > 0 ? getTableLanesFromStore(storeTables) : fallbackTableLanes),
-    [storeTables]
-  )
-  const validTableIds = useMemo(() => new Set(tableLanes.map((l) => l.id)), [tableLanes])
+  const allLanes = useMemo<TableLane[]>(() => {
+    return tables
+      .slice()
+      .sort((a, b) => a.number - b.number)
+      .map((t) => ({
+        id: `T${t.number}`,
+        label: `T${t.number}`,
+        seats: t.capacity,
+        zone: getTimelineLaneGroupId(t),
+      }))
+  }, [tables])
+
+  const filteredLanes = useMemo(() => {
+    if (floorplanFilter === "all") return allLanes
+    return allLanes.filter((l) => l.zone === floorplanFilter)
+  }, [allLanes, floorplanFilter])
+
+  const timelineFloorplans = useMemo(() => {
+    const floorplanLabels = new Map((config.floorplans ?? []).map((p) => [p.id, p.name]))
+    const seen = new Set<string>()
+    const options = allLanes
+      .map((lane) => lane.zone)
+      .filter((id) => {
+        if (seen.has(id)) return false
+        seen.add(id)
+        return true
+      })
+      .map((id) => ({
+        id,
+        name: (
+          id === "__unassigned__"
+            ? "Unassigned"
+            : floorplanLabels.get(id) ?? getZoneLabel(id, config.sectionLabels)
+        ),
+      }))
+      .sort((a, b) => {
+        if (a.id === "__unassigned__") return -1
+        if (b.id === "__unassigned__") return 1
+        return a.name.localeCompare(b.name)
+      })
+    const hasUnassigned = options.some((plan) => plan.id === "__unassigned__")
+    return {
+      plans: options.filter((plan) => plan.id !== "__unassigned__"),
+      hasUnassigned,
+      options,
+    }
+  }, [allLanes, config.floorplans, config.sectionLabels])
+
+  const validTableIds = useMemo(() => new Set(filteredLanes.map((l) => l.id)), [filteredLanes])
   const uuidToDisplay = useMemo(() => {
     const m = new Map<string, string>()
-    for (const t of storeTables) m.set(t.id, `T${t.number}`)
+    for (const t of allLanes) {
+      const n = t.label?.trim()
+      m.set(t.id, n || t.id)
+    }
     return m
-  }, [storeTables])
+  }, [allLanes])
   const blocks = useMemo(() => {
     const resolveTable = (raw: string | null | undefined): string | null => {
       if (!raw?.trim()) return null
@@ -177,12 +230,11 @@ export function TimelineView() {
 
   const handleEmptySlotClick = useCallback((payload: { tableId: string; time: string; duration: number; durationMax: number; partySize: number }) => {
     const next = new URLSearchParams(searchParams.toString())
-    const selectedLane = tableLanes.find((lane) => lane.id === payload.tableId)
     next.set("action", "new")
     next.set("time", payload.time)
     next.set("table", payload.tableId)
-    if (selectedLane) next.set("zone", selectedLane.zone)
-    else next.delete("zone")
+    // Do not set zone preference from Timeline floorplan grouping.
+    next.delete("zone")
     next.set("date", selectedIsoDate)
     next.set("service", effectiveServicePeriodId)
     next.set("partySize", payload.partySize.toString())
@@ -192,7 +244,7 @@ export function TimelineView() {
     next.delete("detail")
     const query = next.toString()
     router.push(query ? `${pathname}?${query}` : pathname, { scroll: false })
-  }, [pathname, router, searchParams, selectedIsoDate, effectiveServicePeriodId, tableLanes])
+  }, [pathname, router, searchParams, selectedIsoDate, effectiveServicePeriodId])
 
   const handleScrollChange = useCallback(() => {}, [])
 
@@ -225,8 +277,9 @@ export function TimelineView() {
       <TimelineTopBar
         zoom={zoom}
         onZoomChange={setZoom}
-        zoneFilter={zoneFilter}
-        onZoneFilterChange={setZoneFilter}
+        floorplans={timelineFloorplans.options}
+        floorplanFilter={floorplanFilter}
+        onFloorplanFilterChange={setFloorplanFilter}
         partySizeFilter={partySizeFilter}
         onPartySizeFilterChange={setPartySizeFilter}
         showGhosts={showGhosts}
@@ -240,10 +293,11 @@ export function TimelineView() {
 
       {isMobile ? (
         <TimelineMobile
-          tableLanes={tableLanes}
+          tableLanes={filteredLanes}
+          zones={timelineFloorplans.options.map((p) => ({ id: p.id, name: p.name }))}
           blocks={displayedBlocks}
-          zoneFilter={zoneFilter}
-          onZoneFilterChange={setZoneFilter}
+          zoneFilter={floorplanFilter}
+          onZoneFilterChange={setFloorplanFilter}
           partySizeFilter={partySizeFilter}
           showGhosts={showGhosts}
           onBlockClick={handleBlockClick}
@@ -253,10 +307,11 @@ export function TimelineView() {
         />
       ) : (
         <TimelineGrid
-          tableLanes={tableLanes}
+          tableLanes={filteredLanes}
+          zones={timelineFloorplans.options.map((p) => ({ id: p.id, name: p.name }))}
           blocks={displayedBlocks}
           zoom={zoom}
-          zoneFilter={zoneFilter}
+          zoneFilter={floorplanFilter}
           partySizeFilter={partySizeFilter}
           showGhosts={showGhosts}
           detailOpen={detailOpen}

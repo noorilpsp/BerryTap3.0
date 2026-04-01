@@ -5,20 +5,9 @@ import React from "react"
 import { Edit3, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { TABLE_COLOR_STATES, getTableDetailColorState } from "@/lib/table-color-state"
 import type { Seat, TableStatus } from "@/lib/table-data"
 import { dietaryIcons, formatCurrency, getSeatTotal } from "@/lib/table-data"
-
-// Map table-data status to floor-map status colors
-const statusColors: Record<TableStatus, { bg: string; border: string; text: string }> = {
-  available: { bg: "hsl(220, 15%, 20%)", border: "hsl(220, 15%, 28%)", text: "text-muted-foreground" },
-  seated: { bg: "hsl(160, 30%, 22%)", border: "hsl(160, 35%, 30%)", text: "text-emerald-400" },
-  ordering: { bg: "hsl(160, 30%, 22%)", border: "hsl(160, 35%, 30%)", text: "text-emerald-400" },
-  in_kitchen: { bg: "hsl(38, 35%, 22%)", border: "hsl(38, 40%, 30%)", text: "text-amber-300" },
-  food_ready: { bg: "hsl(0, 40%, 24%)", border: "hsl(0, 45%, 32%)", text: "text-red-400" },
-  served: { bg: "hsl(38, 35%, 22%)", border: "hsl(38, 40%, 30%)", text: "text-amber-300" },
-  bill_requested: { bg: "hsl(215, 35%, 24%)", border: "hsl(215, 40%, 32%)", text: "text-blue-400" },
-  needs_attention: { bg: "hsl(0, 40%, 24%)", border: "hsl(0, 45%, 32%)", text: "text-red-400" },
-}
 
 interface TableVisualProps {
   tableNumber: number
@@ -85,7 +74,7 @@ export function TableVisual({
   onAddItemsForSeat,
 }: TableVisualProps) {
   const selected = seats.find((s) => s.number === selectedSeat)
-  const colors = statusColors[status]
+  const colorConfig = TABLE_COLOR_STATES[getTableDetailColorState(status)]
   const isTableSelected = selectedSeat === null
 
   return (
@@ -117,21 +106,21 @@ export function TableVisual({
               isTableSelected && "ring-2 ring-primary ring-offset-2 ring-offset-card scale-[1.02]"
             )}
             style={{
-              backgroundColor: colors.bg,
+              backgroundColor: colorConfig.fill,
               backgroundImage:
                 "linear-gradient(165deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.02) 38%, rgba(15,23,42,0.22) 100%), radial-gradient(120% 90% at 18% 16%, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0) 48%)",
-              borderColor: colors.border,
+              borderColor: "rgba(255,255,255,0.18)",
               filter: "brightness(1.1)",
-              boxShadow: `0 0 0 1px ${colors.border}2b, 0 7px 16px rgba(2,6,23,0.3), 0 0 10px ${colors.border}24, inset 0 1px 0 rgba(255,255,255,0.1), inset 0 -10px 14px rgba(2,6,23,0.24)`,
+              boxShadow: `0 0 0 1px rgba(255,255,255,0.08), 0 7px 16px rgba(2,6,23,0.3), ${colorConfig.glow}, inset 0 1px 0 rgba(255,255,255,0.1), inset 0 -10px 14px rgba(2,6,23,0.24)`,
             }}
           >
             <span
               className="pointer-events-none absolute -inset-3 -z-10 rounded-[16px] animate-table-aura"
-              style={{ backgroundColor: colors.border, filter: "blur(11px)" }}
+              style={{ backgroundColor: colorConfig.fill, filter: "blur(11px)" }}
             />
             <span className="pointer-events-none absolute inset-[3px] rounded-[10px] border border-white/7" />
             <span className="pointer-events-none absolute left-1/2 top-2 h-2 w-40 -translate-x-1/2 rounded-full bg-white/8 blur-[0.8px]" />
-            <span className={cn("relative z-10 text-xl font-bold tracking-[0.08em] drop-shadow-[0_1px_6px_rgba(2,6,23,0.55)]", colors.text)}>
+            <span className={cn("relative z-10 text-xl font-bold tracking-[0.08em] drop-shadow-[0_1px_6px_rgba(2,6,23,0.55)]", colorConfig.textClass)}>
               {"T-"}
               {tableNumber}
             </span>

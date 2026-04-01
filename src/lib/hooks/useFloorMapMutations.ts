@@ -23,6 +23,7 @@ export async function mutateThenRefresh<T>(opts: {
   optimisticPatch?: (prev: FloorMapView) => FloorMapView;
   requestFn: () => Promise<T>;
   onSuccess?: (result: T) => void;
+  skipRefreshOnSuccess?: boolean;
 }): Promise<T | null> {
   const snapshot = opts.view ? structuredClone(opts.view) : null;
 
@@ -32,7 +33,9 @@ export async function mutateThenRefresh<T>(opts: {
 
   try {
     const result = await opts.requestFn();
-    await opts.refresh(true);
+    if (!opts.skipRefreshOnSuccess) {
+      await opts.refresh(true);
+    }
     opts.onSuccess?.(result);
     return result;
   } catch (error) {
@@ -60,8 +63,9 @@ export function useFloorMapMutations({
       partySize: number;
       locationId: string;
       serverId: string;
+      skipRefreshOnSuccess?: boolean;
     }): Promise<boolean> => {
-      const { tableId, partySize, locationId, serverId } = params;
+      const { tableId, partySize, locationId, serverId, skipRefreshOnSuccess = false } = params;
       if (!view) return false;
 
       const optimisticPatch = (prev: FloorMapView): FloorMapView => {
@@ -97,6 +101,7 @@ export function useFloorMapMutations({
         refresh,
         view,
         optimisticPatch,
+        skipRefreshOnSuccess,
         requestFn: async () => {
           const res = await fetchPos("/api/sessions/ensure", {
             method: "POST",

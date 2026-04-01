@@ -76,6 +76,8 @@ export interface Bill {
 
 export interface TableDetail {
   id: string
+  /** Owning floor plan for /floor-map?floorplan= when returning from this table. */
+  floorPlanId?: string | null
   number: number
   shape: "rectangular" | "round" | "square"
   section: string

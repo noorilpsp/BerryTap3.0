@@ -3,26 +3,41 @@
  * Used by both getFloorMapView (server page) and GET /api/floor-map/view.
  */
 
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
+  reservations as reservationsTable,
   sessions,
   tables as tablesTable,
   orders as ordersTable,
   orderItems as orderItemsTable,
 } from "@/lib/db/schema/orders";
 import { staff } from "@/lib/db/schema/staff";
-import type { FloorMapView, FloorMapTable } from "@/lib/floor-map/floorMapView";
+import type {
+  FloorMapView,
+  FloorMapTable,
+  FloorMapTableReservation,
+} from "@/lib/floor-map/floorMapView";
 import { isFloorMapView } from "@/lib/floor-map/floorMapView";
 import {
   getFloorPlansWithActiveTrusted,
   getConvertedTablesForFloorPlanTrusted,
 } from "@/app/actions/floor-plans";
+import {
+  convertElementsToStoreTables,
+  getUsedTableNumbersExcludingPlan,
+} from "@/lib/floorplan-convert";
+import type { PlacedElement, FloorSection } from "@/lib/floorplan-types";
 import { getTablesForFloorPlanTrusted } from "@/app/actions/tables";
 import type { StoreTable } from "@/store/types";
+import {
+  deriveTablePageWaveStatusFromItems,
+  type RawWaveItemStatus,
+} from "@/lib/wave-status";
 
 function mapStoreStatusToFloorMap(s: StoreTable["status"]): FloorMapTable["status"] {
-  if (s === "reserved" || s === "cleaning") return "free";
+  if (s === "reserved") return "free";
+  if (s === "cleaning") return "closed";
   if (s === "urgent" || s === "active" || s === "billing" || s === "closed") return s;
   return s === "free" ? "free" : "active";
 }
@@ -32,10 +47,87 @@ function mapStoreSection(s: string | undefined): string {
   return s;
 }
 
+const DEFAULT_RESERVATION_DURATION_MINUTES = 120;
+
+/** Parse "HH:MM" or "HH:MM:SS" to minutes since midnight. */
+function parseTimeToMinutes(timeStr: string): number {
+  const parts = String(timeStr).trim().split(":");
+  const h = parseInt(parts[0] ?? "0", 10) || 0;
+  const m = parseInt(parts[1] ?? "0", 10) || 0;
+  return h * 60 + m;
+}
+
+/**
+ * Load today's reservations assigned to tables, compute which tables are within reservation window.
+ * Returns Map<tableId, { id, guestName, partySize, time }> for tables that are:
+ * - free (no open session)
+ * - assigned to a reservation with status pending/confirmed
+ * - current time within [reservationTime - 60min, reservationTime + duration]
+ * Sessions remain source of truth for status; this is a visual overlay only.
+ */
+async function getReservationOverlay(
+  locationId: string,
+  tableIds: string[],
+  occupiedTableIds: Set<string>
+): Promise<Map<string, FloorMapTableReservation>> {
+  if (tableIds.length === 0) return new Map();
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const rows = await db.query.reservations.findMany({
+    where: and(
+      eq(reservationsTable.locationId, locationId),
+      eq(reservationsTable.reservationDate, today),
+      or(
+        eq(reservationsTable.status, "pending"),
+        eq(reservationsTable.status, "confirmed")
+      ),
+      inArray(reservationsTable.tableId, tableIds)
+    ),
+    columns: {
+      id: true,
+      tableId: true,
+      customerName: true,
+      partySize: true,
+      reservationTime: true,
+    },
+  });
+
+  const tableIdSet = new Set(tableIds);
+  const result = new Map<string, FloorMapTableReservation>();
+  const now = new Date();
+  const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const nowMinutesSinceMidnight = (now.getTime() - dayStart) / 60000;
+
+  for (const r of rows) {
+    const tid = r.tableId;
+    if (!tid || !tableIdSet.has(tid) || occupiedTableIds.has(tid)) continue;
+
+    const timeMinutes = parseTimeToMinutes(r.reservationTime ?? "12:00");
+    const windowStart = timeMinutes - 60;
+    const windowEnd = timeMinutes + DEFAULT_RESERVATION_DURATION_MINUTES;
+    const inWindow =
+      nowMinutesSinceMidnight >= windowStart && nowMinutesSinceMidnight <= windowEnd;
+
+    if (inWindow) {
+      result.set(tid, {
+        id: r.id,
+        guestName: r.customerName ?? "Guest",
+        partySize: r.partySize ?? 1,
+        time: r.reservationTime ?? "12:00",
+      });
+    }
+  }
+
+  return result;
+}
+
 type TableEnrichment = {
   billTotal: number;
   waves: { type: string; status: string }[];
   serverName: string | null;
+  guestCount: number | null;
+  openedAt: Date | null;
 };
 
 async function getTableLiveEnrichment(
@@ -56,6 +148,8 @@ async function getTableLiveEnrichment(
         id: sessions.id,
         tableId: sessions.tableId,
         serverId: sessions.serverId,
+        guestCount: sessions.guestCount,
+        openedAt: sessions.openedAt,
       })
       .from(sessions)
       .where(and(eq(sessions.locationId, locationId), eq(sessions.status, "open"))),
@@ -88,6 +182,7 @@ async function getTableLiveEnrichment(
         wave: ordersTable.wave,
         total: ordersTable.total,
         status: ordersTable.status,
+        firedAt: ordersTable.firedAt,
       })
       .from(ordersTable)
       .where(
@@ -138,29 +233,24 @@ async function getTableLiveEnrichment(
 
   const te5 = DEV ? performance.now() : 0;
   const WAVE_TYPES = ["drinks", "food", "dessert"];
-  function itemStatusToWaveStatus(s: string): string {
-    if (s === "served") return "served";
-    if (s === "ready") return "ready";
-    if (s === "preparing") return "cooking";
-    return "held";
-  }
 
   const result = new Map<string, TableEnrichment>();
   for (const sess of openSessions) {
     const tableId = sess.tableId;
-    const displayId = tableId ? displayIdByTableId.get(tableId) : undefined;
-    if (!displayId) continue;
+    if (!tableId || !displayIdByTableId.get(tableId)) continue;
 
     const orders = ordersBySession.get(sess.id) ?? [];
     let billTotal = 0;
-    const waveItems = new Map<number, string[]>();
+    const waveItems = new Map<number, RawWaveItemStatus[]>();
+    const firedAtByWave = new Map<number, Date | null>();
     for (const o of orders) {
       const totalNum = parseFloat(String(o.total ?? 0));
       if (Number.isFinite(totalNum)) billTotal += totalNum;
       const items = itemsByOrderId.get(o.id) ?? [];
-      const statuses = items.map((i) => itemStatusToWaveStatus(i.status));
+      const statuses = items.map((i) => i.status as RawWaveItemStatus);
       const existing = waveItems.get(o.wave) ?? [];
       waveItems.set(o.wave, [...existing, ...statuses]);
+      firedAtByWave.set(o.wave, o.firedAt ?? null);
     }
     const waves: { type: string; status: string }[] = [];
     const waveNumbers = [...waveItems.keys()].sort((a, b) => a - b);
@@ -173,44 +263,77 @@ async function getTableLiveEnrichment(
     } else {
       for (const wn of waveNumbers) {
         const statuses = waveItems.get(wn) ?? [];
-        let status = "held";
-        if (statuses.length === 0) status = "held";
-        else if (statuses.every((s) => s === "served")) status = "served";
-        else if (statuses.some((s) => s === "ready")) status = "ready";
-        else if (statuses.some((s) => s === "cooking")) status = "cooking";
-        else if (statuses.some((s) => s === "held")) status = "held";
+        const firedAt = firedAtByWave.get(wn) ?? null;
         waves.push({
           type: WAVE_TYPES[(wn - 1) % WAVE_TYPES.length],
-          status,
+          status: deriveTablePageWaveStatusFromItems(statuses, firedAt),
         });
       }
     }
     const serverName = sess.serverId ? staffByName.get(sess.serverId) ?? null : null;
-    result.set(displayId, { billTotal, waves, serverName });
+    const guestCount =
+      typeof sess.guestCount === "number" && Number.isFinite(sess.guestCount)
+        ? sess.guestCount
+        : null;
+    const openedAt =
+      sess.openedAt instanceof Date && !Number.isNaN(sess.openedAt.getTime())
+        ? sess.openedAt
+        : null;
+    result.set(tableId, { billTotal, waves, serverName, guestCount, openedAt });
   }
   if (DEV) devTimer("  enrichment: result loop (waves, billTotal per session)", te5);
   return result;
 }
 
+async function getOccupiedTableIdsForFloorPlan(
+  locationId: string,
+  floorPlanId: string
+): Promise<Set<string>> {
+  const rows = await db
+    .select({ tableId: sessions.tableId })
+    .from(sessions)
+    .innerJoin(tablesTable, eq(sessions.tableId, tablesTable.id))
+    .where(
+      and(
+        eq(sessions.locationId, locationId),
+        eq(sessions.status, "open"),
+        eq(tablesTable.floorPlanId, floorPlanId)
+      )
+    );
+  return new Set(rows.map((r) => r.tableId).filter(Boolean));
+}
+
 function storeTablesToFloorMapTables(
   tables: StoreTable[],
-  enrichment?: Map<string, TableEnrichment>
+  enrichment?: Map<string, TableEnrichment>,
+  reservationOverlay?: Map<string, FloorMapTableReservation>
 ): FloorMapTable[] {
   return tables.map((t) => {
     const enrich = enrichment?.get(t.id);
+    const status = mapStoreStatusToFloorMap(t.status);
+    const reservation =
+      status === "free" && reservationOverlay?.get(t.id);
+    const guestCount =
+      (enrich && enrich.guestCount != null ? enrich.guestCount : undefined) ??
+      t.guests ??
+      0;
+    const seatedAt =
+      (t.seatedAt as string | null | undefined) ??
+      (enrich && enrich.openedAt ? enrich.openedAt.toISOString() : null);
     return {
       id: t.id,
+      ...(t.elementId ? { elementId: t.elementId } : {}),
       number: t.number,
       section: mapStoreSection(t.section),
-      status: mapStoreStatusToFloorMap(t.status),
+      status,
       capacity: t.capacity,
-      guests: t.guests ?? 0,
+      guests: guestCount,
       stage: (t.stage as FloorMapTable["stage"]) ?? null,
       position: t.position,
       shape: t.shape,
       serverId: t.serverId ?? null,
       serverName: enrich?.serverName ?? null,
-      seatedAt: t.seatedAt ?? null,
+      seatedAt,
       alerts: t.alerts ?? [],
       width: t.width,
       height: t.height,
@@ -218,6 +341,10 @@ function storeTablesToFloorMapTables(
       ...(enrich && {
         billTotal: enrich.billTotal,
         waves: enrich.waves,
+      }),
+      ...(reservation && {
+        reserved: true,
+        reservation,
       }),
     };
   });
@@ -313,17 +440,52 @@ export async function buildFloorMapView(
     if (DEV) devTimer("tables fetch (getTablesForFloorPlanTrusted / getConvertedTablesForFloorPlanTrusted)", t2);
   }
 
+  // MapCanvas matches scene elements to `view.tables` via convertElementsToStoreTables locally; that call omits
+  // cross-plan used numbers, so table *numbers* can disagree with server-assigned numbers. Attach stable elementId
+  // from the same convert run the server uses for numbering (DB-backed rows usually have no elementId).
+  if (activeFloorplan?.id && storeTables.length > 0 && (activeFloorplan.elements?.length ?? 0) > 0) {
+    const usedTableNumbers = getUsedTableNumbersExcludingPlan(
+      allPlans.map((p) => ({ id: p.id, elements: p.elements })),
+      activeFloorplan.id
+    );
+    const synthetic = convertElementsToStoreTables(
+      activeFloorplan.elements as PlacedElement[],
+      (activeFloorplan.sections as FloorSection[] | null) ?? undefined,
+      usedTableNumbers
+    );
+    const numberToElementId = new Map<number, string>();
+    for (const s of synthetic) {
+      if (s.elementId) numberToElementId.set(s.number, s.elementId);
+    }
+    storeTables = storeTables.map((t) => ({
+      ...t,
+      elementId: t.elementId ?? numberToElementId.get(t.number),
+    }));
+  }
+
   const t3 = DEV ? performance.now() : 0;
-  const [enrichment, currentServer] = await Promise.all([
+  const tableIds = storeTables.map((t) => t.id);
+  const [enrichment, currentServer, occupiedTableIds] = await Promise.all([
     activeFloorplan?.id
       ? getTableLiveEnrichment(locationId, activeFloorplan.id)
       : Promise.resolve(undefined),
     getCurrentServerForUser(locationId, userId),
+    activeFloorplan?.id
+      ? getOccupiedTableIdsForFloorPlan(locationId, activeFloorplan.id)
+      : Promise.resolve(new Set<string>()),
   ]);
-  if (DEV) devTimer("enrichment + getCurrentServerForUser (parallel)", t3);
+  const reservationOverlay =
+    tableIds.length > 0
+      ? await getReservationOverlay(locationId, tableIds, occupiedTableIds)
+      : new Map();
+  if (DEV) devTimer("enrichment + getCurrentServerForUser + reservationOverlay (parallel)", t3);
 
   const t4 = DEV ? performance.now() : 0;
-  const tables = storeTablesToFloorMapTables(storeTables, enrichment);
+  const tables = storeTablesToFloorMapTables(
+    storeTables,
+    enrichment,
+    reservationOverlay
+  );
   const statusCounts = {
     free: tables.filter((t) => t.status === "free").length,
     active: tables.filter((t) => t.status === "active").length,

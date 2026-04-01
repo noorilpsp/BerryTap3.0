@@ -34,9 +34,11 @@ import {
   formatTime12h,
 } from "@/lib/floorplan-data"
 import { useState } from "react"
+import type { ReservationZone } from "@/lib/reservations/zones"
 
 interface DetailPanelProps {
   state: FloorTableState | null
+  zones: ReservationZone[]
   open: boolean
   onClose: () => void
 }
@@ -53,12 +55,13 @@ function getTagIcon(tagType: string, size: string = "h-3 w-3") {
   }
 }
 
-export function FloorplanDetailPanel({ state, open, onClose }: DetailPanelProps) {
+export function FloorplanDetailPanel({ state, zones, open, onClose }: DetailPanelProps) {
   const [showHistory, setShowHistory] = useState(false)
 
   if (!state) return null
 
   const { table } = state
+  const zoneLabel = zones.find((z) => z.id === table.zone)?.name ?? table.zone
   const server = getServerForTable(table.id)
   const revenue = getRevenueForTable(table.id)
   const hasCurrent = state.currentGuest && (state.status === "seated" || state.status === "arriving-soon")
@@ -78,7 +81,7 @@ export function FloorplanDetailPanel({ state, open, onClose }: DetailPanelProps)
             </span>
           </SheetTitle>
           <SheetDescription className="flex items-center gap-2 text-xs">
-            <span>Zone: {table.zone === "main" ? "Main Dining" : table.zone === "patio" ? "Patio" : "Private Room"}</span>
+            <span>Zone: {zoneLabel}</span>
             {server && (
               <>
                 <span className="text-zinc-600">{"\u00B7"}</span>

@@ -27,6 +27,7 @@ import {
   getStatusBadge,
   getRiskDisplay,
   formatTime12h,
+  formatReservationDurationCompact,
   groupReservations,
 } from "@/lib/listview-data"
 import { cn } from "@/lib/utils"
@@ -137,9 +138,12 @@ function SwipeCard({
           </span>
         </div>
 
-        {/* Row 2: Party + Table + Server */}
+        {/* Row 2: Party + stay + table + server */}
         <div className="mt-1 text-xs text-zinc-400">
           {reservation.partySize} guests
+          {reservation.durationMinutes != null && (
+            <> &middot; {formatReservationDurationCompact(reservation.durationMinutes)}</>
+          )}
           {reservation.table && <> &middot; {reservation.table}</>}
           {reservation.server && <> &middot; {reservation.server}</>}
         </div>

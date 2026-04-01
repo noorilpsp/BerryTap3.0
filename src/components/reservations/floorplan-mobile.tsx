@@ -11,6 +11,7 @@ import {
   getCourseLabel,
   formatTime12h,
 } from "@/lib/floorplan-data"
+import type { ReservationZone } from "@/lib/reservations/zones"
 import {
   Star,
   Clock,
@@ -33,14 +34,8 @@ interface FloorplanMobileProps {
   tableStates: FloorTableState[]
   heatMap: HeatMapMode
   zone: ZoneId
+  zones: ReservationZone[]
   onSelectTable: (id: string) => void
-}
-
-const ZONE_ORDER = ["main", "patio", "private"] as const
-const ZONE_LABELS: Record<string, string> = {
-  main: "Main Dining",
-  patio: "Patio",
-  private: "Private Room",
 }
 
 function getStatusBg(status: FloorTableState["status"]): string {
@@ -110,6 +105,7 @@ export function FloorplanMobile({
   tableStates,
   heatMap,
   zone,
+  zones,
   onSelectTable,
 }: FloorplanMobileProps) {
   const [detailState, setDetailState] = useState<FloorTableState | null>(null)
@@ -129,14 +125,25 @@ export function FloorplanMobile({
       if (!groups[z]) groups[z] = []
       groups[z].push(s)
     }
-    return ZONE_ORDER.filter((z) => groups[z]).map((z) => ({
-      zone: z,
-      label: ZONE_LABELS[z],
-      tables: groups[z].sort((a, b) =>
-        a.table.label.localeCompare(b.table.label)
-      ),
-    }))
-  }, [filtered])
+    const labels = new Map(zones.map((z) => [z.id, z.name]))
+    const orderedZoneIds = zones.map((z) => z.id)
+    const inOrder = orderedZoneIds
+      .filter((z) => groups[z])
+      .map((z) => ({
+        zone: z,
+        label: labels.get(z) ?? z,
+        tables: groups[z].sort((a, b) => a.table.label.localeCompare(b.table.label)),
+      }))
+    const extras = Object.keys(groups)
+      .filter((z) => !orderedZoneIds.includes(z))
+      .sort((a, b) => a.localeCompare(b))
+      .map((z) => ({
+        zone: z,
+        label: z,
+        tables: groups[z].sort((a, b) => a.table.label.localeCompare(b.table.label)),
+      }))
+    return [...inOrder, ...extras]
+  }, [filtered, zones])
 
   return (
     <div className="flex flex-col gap-4 p-4 pb-24">
@@ -266,7 +273,7 @@ export function FloorplanMobile({
           className="max-h-[80vh] border-border/50 bg-background/95 backdrop-blur-xl"
         >
           {detailState && (
-            <MobileDetail state={detailState} />
+            <MobileDetail state={detailState} zones={zones} />
           )}
         </SheetContent>
       </Sheet>
@@ -274,7 +281,14 @@ export function FloorplanMobile({
   )
 }
 
-function MobileDetail({ state }: { state: FloorTableState }) {
+function MobileDetail({
+  state,
+  zones,
+}: {
+  state: FloorTableState
+  zones: ReservationZone[]
+}) {
+  const zoneLabel = zones.find((z) => z.id === table.zone)?.name ?? table.zone
   const { table } = state
   const server = getServerForTable(table.id)
   const revenue = getRevenueForTable(table.id)
@@ -299,7 +313,7 @@ function MobileDetail({ state }: { state: FloorTableState }) {
           <div>
             <div className="text-base font-semibold">{table.label}</div>
             <div className="text-xs font-normal text-muted-foreground">
-              {ZONE_LABELS[table.zone]} &middot; {table.seats} seats &middot;{" "}
+              {zoneLabel} &middot; {table.seats} seats &middot;{" "}
               {table.shape}
               {table.areaLabel ? ` \u00B7 ${table.areaLabel}` : ""}
             </div>

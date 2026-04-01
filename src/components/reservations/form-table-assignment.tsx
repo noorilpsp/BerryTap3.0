@@ -17,23 +17,28 @@ import {
 import {
   type TableAssignMode,
   type AvailableTable,
+  type ReservationServicePeriodLike,
+  computeManualTableOpeningFromContinuousWindow,
 } from "@/lib/reservation-form-data"
 import type { TableLane } from "@/lib/timeline-data"
-import {
-  tableLanes as fallbackTableLanes,
-  zones as timelineZones,
-  getBlocksForTable,
-  getMergedForTable,
-} from "@/lib/timeline-data"
+import { getZonesFromTableLanes } from "@/lib/reservations/zones"
+import type { Reservation } from "@/lib/reservations-data"
 
 interface FormTableAssignmentProps {
   tableLanes?: TableLane[]
+  zoneLabels?: Readonly<Record<string, string>>
   mode: TableAssignMode
   assignedTable: string | null
   zonePreference: string
   partySize: number
   selectedTime: string
   duration: number
+  /** ISO date YYYY-MM-DD for reservation day — blocks use store/API reservations for this day only. */
+  selectedDate: string
+  reservations: Reservation[]
+  /** Same service window as global fit / best table (continuous-window parity). */
+  servicePeriodId?: string
+  servicePeriods?: ReservationServicePeriodLike[]
   bestTable: AvailableTable | undefined
   onModeChange: (mode: TableAssignMode) => void
   onTableChange: (tableId: string | null) => void
@@ -52,71 +57,6 @@ interface ManualTableOption {
   score: number
 }
 
-type BlockingWindow = {
-  startTime: string
-  endTime: string
-}
-
-function toMinutes(timeValue: string): number {
-  const raw = timeValue.trim()
-  if (!raw) return Number.NaN
-
-  const match12 = raw.match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/)
-  if (match12) {
-    let h = Number.parseInt(match12[1], 10)
-    const m = Number.parseInt(match12[2], 10)
-    if (h < 1 || h > 12 || m < 0 || m > 59) return Number.NaN
-    const meridiem = match12[3].toUpperCase()
-    if (meridiem === "AM") h = h % 12
-    else h = (h % 12) + 12
-    return h * 60 + m
-  }
-
-  const match24 = raw.match(/^(\d{1,2}):(\d{2})$/)
-  if (!match24) return Number.NaN
-
-  const h = Number.parseInt(match24[1], 10)
-  const m = Number.parseInt(match24[2], 10)
-  if (h === 24 && m === 0) return 24 * 60
-  if (h < 0 || h > 23 || m < 0 || m > 59) return Number.NaN
-  return h * 60 + m
-}
-
-function toTime24(totalMinutes: number): string {
-  const normalized = ((totalMinutes % (24 * 60)) + (24 * 60)) % (24 * 60)
-  const h = Math.floor(normalized / 60).toString().padStart(2, "0")
-  const m = (normalized % 60).toString().padStart(2, "0")
-  return `${h}:${m}`
-}
-
-function normalizeBlockWindow(blockStart: number, blockEnd: number, anchor: number): { start: number; end: number } {
-  let start = blockStart
-  let end = blockEnd
-  if (end <= start) end += 24 * 60
-  while (end <= anchor) {
-    start += 24 * 60
-    end += 24 * 60
-  }
-  return { start, end }
-}
-
-function getBlockingWindowsForTable(tableId: string): BlockingWindow[] {
-  const reservationWindows = getBlocksForTable(tableId)
-    .filter((block) => block.status !== "unconfirmed")
-    .map((block) => ({
-      startTime: block.startTime,
-      endTime: block.endTime,
-    }))
-  const mergedWindow = getMergedForTable(tableId)
-  if (mergedWindow) {
-    reservationWindows.push({
-      startTime: mergedWindow.startTime,
-      endTime: mergedWindow.endTime,
-    })
-  }
-  return reservationWindows
-}
-
 function formatOpeningDelta(minutes: number): string {
   if (minutes <= 0) return "now"
   if (minutes < 60) return `${minutes}m`
@@ -128,48 +68,43 @@ function formatOpeningDelta(minutes: number): string {
 
 export function FormTableAssignment({
   tableLanes: tableLanesProp,
+  zoneLabels,
   mode,
   assignedTable,
   zonePreference,
   partySize,
   selectedTime,
   duration,
+  selectedDate,
+  reservations,
+  servicePeriodId,
+  servicePeriods,
   bestTable,
   onModeChange,
   onTableChange,
 }: FormTableAssignmentProps) {
-  const tableLanes = tableLanesProp ?? fallbackTableLanes
-  const slotStart = toMinutes(selectedTime)
-  const slotEnd = slotStart + duration
+  const tableLanes = tableLanesProp ?? []
+  const zones = useMemo(
+    () => getZonesFromTableLanes(tableLanes, zoneLabels),
+    [tableLanes, zoneLabels]
+  )
 
   const manualData = useMemo(() => {
     const buildOption = (lane: TableLane): ManualTableOption => {
-      const zoneLabel =
-        timelineZones.find((zone) => zone.id === lane.zone)?.name
-        ?? lane.zone
+      const zoneLabel = zones.find((z) => z.id === lane.zone)?.name ?? lane.zone
 
-      const overlapping = getBlockingWindowsForTable(lane.id).filter((window) => {
-        const rawStart = toMinutes(window.startTime)
-        const rawEnd = toMinutes(window.endTime)
-        if (!Number.isFinite(rawStart) || !Number.isFinite(rawEnd)) return false
-        const { start, end } = normalizeBlockWindow(rawStart, rawEnd, slotStart)
-        return slotStart < end && slotEnd > start
-      })
-
-      const available = overlapping.length === 0
-      const overlapEnds = overlapping
-        .map((window) => {
-          const rawStart = toMinutes(window.startTime)
-          const rawEnd = toMinutes(window.endTime)
-          if (!Number.isFinite(rawStart) || !Number.isFinite(rawEnd)) return undefined
-          return normalizeBlockWindow(rawStart, rawEnd, slotStart).end
-        })
-        .filter((value): value is number => typeof value === "number")
-      const nextAvailableMin = available
-        ? slotStart
-        : Math.max(...overlapEnds)
-
-      const openingInMin = Math.max(0, nextAvailableMin - slotStart)
+      const projection = computeManualTableOpeningFromContinuousWindow(
+        lane.id,
+        selectedTime,
+        duration,
+        selectedDate,
+        reservations,
+        servicePeriodId,
+        servicePeriods,
+        tableLanes
+      )
+      const available = projection.canHostFullDuration
+      const openingInMin = projection.openingInMin
       const capacityDelta = lane.seats - partySize
       const seatFitPenalty = Math.abs(capacityDelta) * 3
       const availabilityBonus = available ? 1000 : Math.max(0, 700 - openingInMin)
@@ -182,7 +117,7 @@ export function FormTableAssignment({
         zone: lane.zone,
         zoneLabel,
         available,
-        nextAvailable: available ? undefined : toTime24(nextAvailableMin),
+        nextAvailable: available ? undefined : projection.nextAvailable,
         openingInMin,
         capacityDelta,
         score,
@@ -228,7 +163,18 @@ export function FormTableAssignment({
       availableCount: sorted.filter((table) => table.available).length,
       recommended: bestNow[0] ?? sorted[0],
     }
-  }, [assignedTable, partySize, slotEnd, slotStart, zonePreference, tableLanes])
+  }, [
+    assignedTable,
+    duration,
+    partySize,
+    reservations,
+    selectedDate,
+    selectedTime,
+    servicePeriodId,
+    servicePeriods,
+    zonePreference,
+    tableLanes,
+  ])
 
   const selectedTableOption = useMemo(
     () => (assignedTable ? manualData.options.find((table) => table.id === assignedTable) : undefined),
@@ -430,7 +376,7 @@ export function FormTableAssignment({
                 </Select>
                 {manualData.options.length === 0 && (
                   <p className="text-xs text-muted-foreground">
-                    No tables match current party size and zone filter.
+                    No tables match current party size and floorplan preference.
                   </p>
                 )}
               </div>

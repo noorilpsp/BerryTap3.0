@@ -1,6 +1,21 @@
-import { getTimelineBlocksNoOverlap } from "./timeline-data"
+import type { Reservation } from "./reservations-data"
 
 // ── Reservation Create/Edit Form Data ────────────────────────────────────────
+//
+// Availability layers (used together by the reservation form):
+// 1) Global table-time fit — count of zone-eligible tables that have a long enough
+//    continuous free window at each slot (`buildTimeFitMap` in reservation-form-view).
+// 2) Selected-table window — `getContinuousWindowMetaForTable` for the assigned lane;
+//    drives duration max and whether the chosen time works for that table only.
+// 3) Restaurant capacity — seat demand from reservations overlapping the slot
+//    (`getCapacityAtTime`); independent of which table is selected.
+// 4) Recommendation — best table/heuristic; must use the same continuous-window + duration
+//    rule as (2) so auto-assign matches “can hold this sitting” logic.
+// 5) Manual table list — `computeManualTableOpeningFromContinuousWindow` uses the same
+//    continuous-window + duration rule as (2)/(4); “opening soon” walks block ends /
+//    next holds, not overlap with [slot, slot+duration] only.
+// 6) UI tone — slot list colors: global fit (open/busy/tight/short/full) and capacity %;
+//    selected-table mismatch is a separate inline hint, not mixed into the global fit bar.
 
 export interface GuestProfile {
   id: string
@@ -654,14 +669,365 @@ export function getRiskLevel(guest: GuestProfile | null): { level: "low" | "medi
   return { level: "low", label: "Low", color: "text-emerald-400" }
 }
 
-export function getCapacityAtTime(
-  time: string,
-  options?: { totalSeats?: number }
-): CapacitySnapshot | undefined {
-  const parseMinutes = (hhmm: string): number => {
-    const [h, m] = hhmm.split(":").map(Number)
+/** Statuses that do not consume seats for capacity / table blocking. */
+const RESERVATION_EXCLUDED_FROM_DEMAND = new Set<string>(["cancelled", "no-show", "completed"])
+
+/**
+ * True when a reservation row belongs to the same calendar day as the form date (YYYY-MM-DD).
+ * Handles plain date strings, full ISO timestamps, and minor format drift.
+ */
+/** True if the global fit snapshot says at least one table can host the party at this slot (full or partial window). */
+export function isTimeSlotGloballyViable(fit: { available: number; tone: string } | undefined): boolean {
+  if (!fit) return false
+  return fit.available > 0 || fit.tone === "short"
+}
+
+export function reservationMatchesServiceDate(reservationDateRaw: string | undefined, selectedDate: string): boolean {
+  const sel = selectedDate.trim().slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(sel)) return false
+  if (reservationDateRaw == null || !String(reservationDateRaw).trim()) return false
+  const raw = String(reservationDateRaw).trim()
+  const prefix = raw.slice(0, 10)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(prefix) && prefix === sel) return true
+  const ts = Date.parse(raw)
+  if (!Number.isNaN(ts)) {
+    const d = new Date(ts)
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, "0")
+    const day = String(d.getDate()).padStart(2, "0")
+    return `${y}-${m}-${day}` === sel
+  }
+  return false
+}
+
+function parseHhmmToMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(":").map(Number)
+  return h * 60 + m
+}
+
+function addMinutesToHhmm(start: string, delta: number): string {
+  const base = parseHhmmToMinutes(start)
+  if (!Number.isFinite(base)) return start
+  const normalized = ((base + delta) % (24 * 60) + (24 * 60)) % (24 * 60)
+  const h = Math.floor(normalized / 60).toString().padStart(2, "0")
+  const mm = (normalized % 60).toString().padStart(2, "0")
+  return `${h}:${mm}`
+}
+
+export type ReservationBlockingWindow = { startTime: string; endTime: string }
+
+/**
+ * Blocking intervals for manual table pick / fit math, scoped to one service date.
+ * Uses store/API reservations only (not timeline demo blocks).
+ */
+export function getBlockingWindowsFromReservations(
+  reservations: Reservation[],
+  tableId: string,
+  selectedDate: string
+): ReservationBlockingWindow[] {
+  return reservations
+    .filter((r) => r.table === tableId && reservationMatchesServiceDate(r.date, selectedDate))
+    .filter((r) => !RESERVATION_EXCLUDED_FROM_DEMAND.has(r.status))
+    .map((r) => {
+      const startTime = r.time
+      const endTime =
+        r.endTime ?? addMinutesToHhmm(startTime, r.durationMinutes ?? getDurationForParty(r.partySize))
+      return { startTime, endTime }
+    })
+}
+
+/** Service period bounds for reservation availability math (HH:MM, 24h or as stored). */
+export type ReservationServicePeriodLike = { id: string; start: string; end: string }
+
+const DEFAULT_RESERVATION_SERVICE_PERIODS: ReservationServicePeriodLike[] = [
+  { id: "dinner", start: "17:00", end: "23:00" },
+]
+
+/** Parse reservation form / picker times (12h or 24h, including 24:00 end-of-day). */
+export function parseReservationFormTimeToMinutes(timeValue: string): number {
+  const raw = timeValue.trim()
+  if (!raw) return Number.NaN
+
+  const match12 = raw.match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/)
+  if (match12) {
+    let h = Number.parseInt(match12[1], 10)
+    const m = Number.parseInt(match12[2], 10)
+    if (h < 1 || h > 12 || m < 0 || m > 59) return Number.NaN
+    const meridiem = match12[3].toUpperCase()
+    if (meridiem === "AM") h = h % 12
+    else h = (h % 12) + 12
     return h * 60 + m
   }
+
+  const match24 = raw.match(/^(\d{1,2}):(\d{2})$/)
+  if (!match24) return Number.NaN
+
+  const h = Number.parseInt(match24[1], 10)
+  const m = Number.parseInt(match24[2], 10)
+  if (h === 24 && m === 0) return 24 * 60
+  if (h < 0 || h > 23 || m < 0 || m > 59) return Number.NaN
+  return h * 60 + m
+}
+
+function formatReservationMinutesAsTime24(totalMinutes: number): string {
+  const normalized = ((totalMinutes % (24 * 60)) + (24 * 60)) % (24 * 60)
+  const h = Math.floor(normalized / 60).toString().padStart(2, "0")
+  const m = (normalized % 60).toString().padStart(2, "0")
+  return `${h}:${m}`
+}
+
+function normalizeReservationBlockWindow(
+  blockStart: number,
+  blockEnd: number,
+  anchor: number
+): { start: number; end: number } {
+  let start = blockStart
+  let end = blockEnd
+  if (end <= start) end += 24 * 60
+  while (end <= anchor) {
+    start += 24 * 60
+    end += 24 * 60
+  }
+  return { start, end }
+}
+
+function getReservationServiceBoundsMinutes(
+  time: string,
+  servicePeriodId?: string,
+  servicePeriods?: ReservationServicePeriodLike[]
+): { start: number; end: number } {
+  const periods =
+    (servicePeriods?.length ?? 0) > 0 ? (servicePeriods ?? []) : DEFAULT_RESERVATION_SERVICE_PERIODS
+  if (servicePeriodId) {
+    const forcedPeriod = periods.find((period) => period.id === servicePeriodId)
+    if (forcedPeriod) {
+      const start = parseReservationFormTimeToMinutes(forcedPeriod.start)
+      let end = parseReservationFormTimeToMinutes(forcedPeriod.end)
+      if (end <= start) end += 24 * 60
+      return { start, end }
+    }
+  }
+
+  const selectedMin = parseReservationFormTimeToMinutes(time)
+  const matching = periods
+    .map((period) => {
+      const start = parseReservationFormTimeToMinutes(period.start)
+      let end = parseReservationFormTimeToMinutes(period.end)
+      if (end <= start) end += 24 * 60
+      let selected = selectedMin
+      if (selected < start) selected += 24 * 60
+      if (selected >= start && selected < end) return { start, end }
+      return undefined
+    })
+    .find((value): value is { start: number; end: number } => typeof value !== "undefined")
+
+  if (matching) return matching
+
+  const fallback = periods.find((period) => period.id === "dinner") ?? periods[0]
+  const fallbackStart = parseReservationFormTimeToMinutes(fallback.start)
+  let fallbackEnd = parseReservationFormTimeToMinutes(fallback.end)
+  if (fallbackEnd <= fallbackStart) fallbackEnd += 24 * 60
+  return { start: fallbackStart, end: fallbackEnd }
+}
+
+/**
+ * Continuous free minutes from `startTime` until service end or the next reservation hold
+ * on this table (same rule as global fit / best-table / duration checks).
+ */
+export function getContinuousWindowMetaForTable(
+  tableId: string,
+  startTime: string,
+  servicePeriodId: string | undefined,
+  selectedDate: string | undefined,
+  tableLanes: { id: string; label: string }[] | undefined,
+  servicePeriods: ReservationServicePeriodLike[] | undefined,
+  reservations: Reservation[]
+): {
+  availableMinutes: number
+  boundaryKind: "none" | "service-end" | "next-reservation"
+  boundaryTime?: string
+  tableLabel: string
+} {
+  const selectedStart = parseReservationFormTimeToMinutes(startTime)
+  const tableLabel = tableLanes?.find((lane) => lane.id === tableId)?.label ?? tableId
+  if (!Number.isFinite(selectedStart)) {
+    return {
+      availableMinutes: 0,
+      boundaryKind: "none",
+      tableLabel,
+    }
+  }
+
+  const normalize = (value: number): number => {
+    let normalized = value
+    while (normalized <= selectedStart) normalized += 24 * 60
+    return normalized
+  }
+
+  const blockingWindows =
+    selectedDate && selectedDate.length > 0
+      ? getBlockingWindowsFromReservations(reservations, tableId, selectedDate)
+      : []
+
+  const hasOverlapAtStart = blockingWindows.some((window) => {
+    const rawStart = parseReservationFormTimeToMinutes(window.startTime)
+    const rawEnd = parseReservationFormTimeToMinutes(window.endTime)
+    if (!Number.isFinite(rawStart) || !Number.isFinite(rawEnd)) return false
+    const { start, end } = normalizeReservationBlockWindow(rawStart, rawEnd, selectedStart)
+    return selectedStart >= start && selectedStart < end
+  })
+  if (hasOverlapAtStart) {
+    return {
+      availableMinutes: 0,
+      boundaryKind: "next-reservation",
+      tableLabel,
+    }
+  }
+
+  let serviceEnd = getReservationServiceBoundsMinutes(startTime, servicePeriodId, servicePeriods).end
+  while (serviceEnd <= selectedStart) serviceEnd += 24 * 60
+
+  const nextReservationStart = blockingWindows
+    .map((window) => {
+      const rawStart = parseReservationFormTimeToMinutes(window.startTime)
+      if (!Number.isFinite(rawStart)) return undefined
+      return normalize(rawStart)
+    })
+    .filter((start): start is number => typeof start === "number")
+    .filter((start) => start > selectedStart)
+    .sort((a, b) => a - b)[0]
+
+  const boundaryCandidates: Array<{ minute: number; kind: "service-end" | "next-reservation" }> = [
+    { minute: serviceEnd, kind: "service-end" },
+  ]
+  if (typeof nextReservationStart === "number") {
+    boundaryCandidates.push({ minute: nextReservationStart, kind: "next-reservation" })
+  }
+
+  const earliestBoundary = boundaryCandidates.sort((a, b) => a.minute - b.minute)[0]
+  const availableMinutes = Math.max(0, earliestBoundary.minute - selectedStart)
+
+  return {
+    availableMinutes,
+    boundaryKind: earliestBoundary.kind,
+    boundaryTime: formatReservationMinutesAsTime24(earliestBoundary.minute),
+    tableLabel,
+  }
+}
+
+/**
+ * Manual table list: same “can host `duration` from a contiguous free window” rule as
+ * `getContinuousWindowMetaForTable`. When the slot cannot be hosted, estimates the earliest
+ * later start (within the service window) by walking block ends / next holds — not interval
+ * overlap with [slot, slot+duration] alone.
+ */
+export function computeManualTableOpeningFromContinuousWindow(
+  tableId: string,
+  selectedTime: string,
+  durationMinutes: number,
+  selectedDate: string,
+  reservations: Reservation[],
+  servicePeriodId: string | undefined,
+  servicePeriods: ReservationServicePeriodLike[] | undefined,
+  tableLanes: { id: string; label: string }[] | undefined
+): {
+  canHostFullDuration: boolean
+  openingInMin: number
+  nextAvailable?: string
+  availableMinutesAtSlot: number
+  tableLabel: string
+} {
+  const dateKey = selectedDate.trim()
+  const meta = getContinuousWindowMetaForTable(
+    tableId,
+    selectedTime,
+    servicePeriodId,
+    dateKey.length > 0 ? dateKey : undefined,
+    tableLanes,
+    servicePeriods,
+    reservations
+  )
+  const anchor = parseReservationFormTimeToMinutes(selectedTime)
+  if (!Number.isFinite(anchor)) {
+    return {
+      canHostFullDuration: false,
+      openingInMin: 24 * 60,
+      availableMinutesAtSlot: meta.availableMinutes,
+      tableLabel: meta.tableLabel,
+    }
+  }
+
+  if (meta.availableMinutes >= durationMinutes) {
+    return {
+      canHostFullDuration: true,
+      openingInMin: 0,
+      availableMinutesAtSlot: meta.availableMinutes,
+      tableLabel: meta.tableLabel,
+    }
+  }
+
+  const windows =
+    dateKey.length > 0
+      ? getBlockingWindowsFromReservations(reservations, tableId, dateKey)
+      : []
+
+  const extWindows = windows
+    .map((w) => {
+      const rawS = parseReservationFormTimeToMinutes(w.startTime)
+      const rawE = parseReservationFormTimeToMinutes(w.endTime)
+      if (!Number.isFinite(rawS) || !Number.isFinite(rawE)) return undefined
+      return normalizeReservationBlockWindow(rawS, rawE, anchor)
+    })
+    .filter((w): w is { start: number; end: number } => w != null)
+
+  let serviceEnd = getReservationServiceBoundsMinutes(selectedTime, servicePeriodId, servicePeriods).end
+  while (serviceEnd <= anchor) serviceEnd += 24 * 60
+
+  let t = anchor
+  for (let iter = 0; iter < 48; iter++) {
+    let svcEnd = serviceEnd
+    while (svcEnd <= t) svcEnd += 24 * 60
+
+    const covering = extWindows.filter((w) => t >= w.start && t < w.end)
+    if (covering.length > 0) {
+      t = Math.max(...covering.map((w) => w.end))
+      continue
+    }
+
+    const nextStart = extWindows
+      .map((w) => w.start)
+      .filter((s) => s > t)
+      .sort((a, b) => a - b)[0]
+    const boundary = typeof nextStart === "number" ? Math.min(svcEnd, nextStart) : svcEnd
+    const avail = Math.max(0, boundary - t)
+    if (avail >= durationMinutes) {
+      return {
+        canHostFullDuration: false,
+        openingInMin: Math.max(0, t - anchor),
+        nextAvailable: formatReservationMinutesAsTime24(t),
+        availableMinutesAtSlot: meta.availableMinutes,
+        tableLabel: meta.tableLabel,
+      }
+    }
+    if (boundary >= svcEnd) {
+      break
+    }
+    const blockingAtBoundary = extWindows.find((w) => w.start === boundary)
+    t = blockingAtBoundary ? blockingAtBoundary.end : boundary
+  }
+
+  return {
+    canHostFullDuration: false,
+    openingInMin: 24 * 60,
+    availableMinutesAtSlot: meta.availableMinutes,
+    tableLabel: meta.tableLabel,
+  }
+}
+
+export function getCapacityAtTime(
+  time: string,
+  options?: { totalSeats?: number; selectedDate?: string; reservations?: Reservation[] }
+): CapacitySnapshot | undefined {
   const toLabel = (hhmm: string): string => {
     const [h, m] = hhmm.split(":").map(Number)
     const hour12 = h % 12 === 0 ? 12 : h % 12
@@ -671,20 +1037,34 @@ export function getCapacityAtTime(
 
   const totalSeats = options?.totalSeats
   if (totalSeats == null || totalSeats <= 0) return undefined
-  const target = parseMinutes(time)
+  const selectedDate = options?.selectedDate
+  const reservations = options?.reservations ?? []
+  const target = parseHhmmToMinutes(time)
+  if (!Number.isFinite(target)) return undefined
 
-  const activeSeatDemand = getTimelineBlocksNoOverlap()
-    .filter((block) => block.status !== "no-show")
-    .filter((block) => {
-      const start = parseMinutes(block.startTime)
-      let end = parseMinutes(block.endTime)
+  if (!selectedDate) {
+    return {
+      time,
+      label: toLabel(time),
+      occupancyPct: 0,
+      seatsOccupied: 0,
+      totalSeats,
+    }
+  }
+
+  const activeSeatDemand = reservations
+    .filter((r) => reservationMatchesServiceDate(r.date, selectedDate))
+    .filter((r) => !RESERVATION_EXCLUDED_FROM_DEMAND.has(r.status))
+    .filter((r) => {
+      const start = parseHhmmToMinutes(r.time)
+      let end = parseHhmmToMinutes(r.endTime ?? addMinutesToHhmm(r.time, r.durationMinutes ?? getDurationForParty(r.partySize)))
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return false
       if (end <= start) end += 24 * 60
-
       let point = target
       if (point < start) point += 24 * 60
       return point >= start && point < end
     })
-    .reduce((sum, block) => sum + block.partySize, 0)
+    .reduce((sum, r) => sum + r.partySize, 0)
 
   const seatsOccupied = Math.min(totalSeats, Math.max(0, activeSeatDemand))
   const occupancyPct = Math.round((seatsOccupied / totalSeats) * 100)

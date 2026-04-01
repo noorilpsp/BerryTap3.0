@@ -724,8 +724,10 @@ function buildDetailFromOverview(
   const status = mapOverviewStatus(reservation.status)
   const mappedTags = mapOverviewTags(reservation.tags)
   const duration =
-    storeReservation?.duration ??
-    (reservation.partySize <= 2 ? 75 : reservation.partySize <= 4 ? 90 : reservation.partySize <= 6 ? 105 : 120)
+    reservation.durationMinutes != null && Number.isFinite(reservation.durationMinutes)
+      ? reservation.durationMinutes
+      : storeReservation?.duration ??
+        (reservation.partySize <= 2 ? 75 : reservation.partySize <= 4 ? 90 : reservation.partySize <= 6 ? 105 : 120)
   const safeGuestEmail = reservation.guestName
     ? `${reservation.guestName
         .toLowerCase()

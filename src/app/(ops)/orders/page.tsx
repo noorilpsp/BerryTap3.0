@@ -11,9 +11,15 @@ export default async function OrdersPage() {
     redirect("/login");
   }
 
+  const loadError =
+    result.error === "LOAD_ERROR"
+      ? result.message ?? "Failed to load orders. Please try again."
+      : null;
+
   return (
     <OrdersClient
-      initialOrdersView={result.error === "NO_LOCATION" ? null : result.data}
+      initialOrdersView={result.error === "NO_LOCATION" ? null : "data" in result ? result.data : null}
+      loadError={loadError}
     />
   );
 }

@@ -17,6 +17,11 @@ import type {
   OrdersPaymentState,
   OrdersPaymentMethod,
 } from "./ordersView";
+import {
+  deriveCanonicalWaveStatusFromItemStatuses,
+  mapCanonicalWaveStatusToStoreLikeStatus,
+  type RawWaveItemStatus,
+} from "@/lib/wave-status";
 
 const SECTION_LABELS: Record<string, string> = {
   main: "Main Dining",
@@ -26,10 +31,9 @@ const SECTION_LABELS: Record<string, string> = {
 };
 
 function itemStatusToWaveStatus(s: string): OrdersWaveStatus {
-  if (s === "served") return "served";
-  if (s === "ready") return "ready";
-  if (s === "preparing") return "cooking";
-  return "held";
+  return mapCanonicalWaveStatusToStoreLikeStatus(
+    deriveCanonicalWaveStatusFromItemStatuses([s as RawWaveItemStatus])
+  );
 }
 
 function mapDbItemStatus(s: string): string {

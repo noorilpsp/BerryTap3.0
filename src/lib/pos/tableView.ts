@@ -20,6 +20,8 @@ export type TableView = {
   table: {
     id: string
     locationId: string
+    /** Floor plan that owns this table row; used to return to the correct map without flashing another plan. */
+    floorPlanId: string | null
     number: number
     displayId: string | null
     status: string
@@ -101,6 +103,13 @@ export type TableView = {
   uiMode: TableViewUiMode
   /** Stage for header badge and TableVisual. Derived from items/waves. */
   serviceStage: TableViewServiceStage
+  /** When session originated from a reservation, linked reservation info. */
+  reservation?: {
+    id: string
+    guestName: string
+    partySize: number
+    reservationTime: string
+  }
 }
 
 function isRecord(x: unknown): x is Record<string, unknown> {
@@ -137,6 +146,8 @@ export function isTableView(x: unknown): x is TableView {
   if (typeof x.serviceStage !== "string" || !validStages.includes(x.serviceStage)) return false
 
   const table = x.table
+  const floorPlanIdNorm = "floorPlanId" in table ? table.floorPlanId : null
+  if (!isNullableString(floorPlanIdNorm)) return false
   if (
     !isString(table.id) ||
     !isString(table.locationId) ||

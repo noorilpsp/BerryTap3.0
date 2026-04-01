@@ -10,7 +10,10 @@ import {
   unlinkOrdersAndReservationsFromTableIds,
 } from "@/domain/serviceActions";
 import type { PlacedElement, FloorSection } from "@/lib/floorplan-types";
-import { convertElementsToStoreTables } from "@/lib/floorplan-convert";
+import {
+  convertElementsToStoreTables,
+  getUsedTableNumbersExcludingPlan,
+} from "@/lib/floorplan-convert";
 import type { StoreTable } from "@/store/types";
 
 export interface FloorPlanResult {
@@ -45,6 +48,7 @@ export async function getFloorPlansWithActiveTrusted(
 ): Promise<{ allPlans: FloorPlanResult[]; activePlan: FloorPlanResult | null }> {
   const rows = await db.query.floorPlans.findMany({
     where: eq(floorPlans.locationId, locationId),
+    orderBy: (fp, { asc }) => [asc(fp.createdAt), asc(fp.id)],
   });
   const allPlans = rows.map(mapFloorPlanRowToResult);
   const activeRow = rows.find((r) => r.isActive);
@@ -324,30 +328,6 @@ export async function deleteFloorPlan(
         eq(floorPlans.locationId, locationId)
       )
     );
-}
-
-function getUsedTableNumbersExcludingPlan(
-  allPlans: { id: string; elements: unknown }[],
-  excludePlanId: string
-): Set<number> {
-  // Assign each plan a block based on its position in the global order (createdAt).
-  // Plan 1 (first) → 1,2; Plan 2 (second) → 3,4; Plan 3 → 5,6. Current plan gets
-  // its own block; we return the union of blocks for all OTHER plans.
-  const used = new Set<number>();
-  let next = 1;
-  for (const plan of allPlans) {
-    const tableEls = ((plan.elements as PlacedElement[]) ?? []).filter(
-      (el) =>
-        (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
-    );
-    const blockStart = next;
-    next += tableEls.length;
-    if (plan.id === excludePlanId) continue;
-    for (let i = 0; i < tableEls.length; i++) {
-      used.add(blockStart + i);
-    }
-  }
-  return used;
 }
 
 function parseTableNumberFromDisplay(s: string): number | null {

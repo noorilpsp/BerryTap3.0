@@ -114,6 +114,8 @@ export interface StoreOrder {
 export interface StoreTable {
   /** Real identity: tables.id (UUID). Use for DB/API/sessions/orders. */
   id: string
+  /** Builder element id when this row was derived from a placed element (cross-plan number safety). */
+  elementId?: string
   /** Display number for UI only (e.g. T12). */
   number: number
   /** Section id - may be legacy (patio|bar|main|private) or custom from floor plan sections */
@@ -137,6 +139,8 @@ export interface StoreTable {
   session?: StoreTableSessionState | null
   /** DB session id when table has an open session. Use for mutations (recordSessionEvent, closeSession, etc.). */
   sessionId?: string | null
+  /** Builder floor plan id (tables.floor_plan_id) when known. */
+  floorPlanId?: string | null
 }
 
 export type StoreReservationStatus =

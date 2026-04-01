@@ -27,12 +27,14 @@ import {
   formatTime12h,
 } from "@/lib/reservations-data"
 import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
+import type { ReservationZone } from "@/lib/reservations/zones"
 
 interface FloorplanTopBarProps {
   heatMap: HeatMapMode
   onHeatMapChange: (mode: HeatMapMode) => void
   zone: ZoneId
   onZoneChange: (z: ZoneId) => void
+  zones: ReservationZone[]
   whatIfMode: boolean
   onToggleWhatIf: () => void
 }
@@ -45,21 +47,20 @@ const heatMapOptions: { value: HeatMapMode; label: string; icon: typeof Eye }[] 
   { value: "turn-time", label: "Turn Time", icon: Timer },
 ]
 
-const zoneOptions: { value: ZoneId; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "main", label: "Main Dining" },
-  { value: "patio", label: "Patio" },
-  { value: "private", label: "Private Room" },
-]
-
 export function FloorplanTopBar({
   heatMap,
   onHeatMapChange,
   zone,
   onZoneChange,
+  zones,
   whatIfMode,
   onToggleWhatIf,
 }: FloorplanTopBarProps) {
+  const zoneOptions: Array<{ value: ZoneId; label: string }> = [
+    { value: "all", label: "All" },
+    ...zones.map((z) => ({ value: z.id, label: z.name })),
+  ]
+
   const { config } = useReservationsData()
   const [currentTime, setCurrentTime] = useState(getCurrentLocalTime24)
 

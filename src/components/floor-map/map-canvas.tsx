@@ -21,17 +21,24 @@ import { useMapGestures, usePrefersReducedMotion } from "@/hooks/use-map-gesture
 import { useViewportPrefetch } from "@/hooks/use-viewport-prefetch"
 import type { PlacedElement } from "@/lib/floorplan-types"
 import { convertElementsToStoreTables } from "@/lib/floorplan-convert"
+import type { TableColorState } from "@/lib/table-color-state"
 
 interface MapCanvasProps {
   sectionConfig: Record<string, { name: string }>
   tables: FloorTable[]
+  /** Full table list for resolving statuses when the current `tables` are filtered. */
+  allTablesForScene?: FloorTable[]
+  /** Visible (filtered) table IDs; used to hide floorplan elements not in this set. */
+  visibleTableIds?: Set<string>
+  /** Canonical table color/state (used for filtering + dimming). */
+  tableColorById: Map<string, TableColorState>
   liveDetailByTableId: Map<string, FloorMapLiveDetail | null>
   currentServerId: string
   ownTableIds: string[]
   filterMode: string
   highlightedTableId: string | null
   highlightType: "search" | "alert" | null
-  statusFilter: string | null
+  statusFilter: TableColorState | null
   onTableTap: (tableId: string) => void
   onTablePrefetch?: (tableId: string) => void
   onTableLongPress: (tableId: string, e: React.MouseEvent | React.TouchEvent) => void
@@ -51,6 +58,9 @@ interface MapCanvasProps {
 export function MapCanvas({
   sectionConfig,
   tables,
+  allTablesForScene,
+  visibleTableIds,
+  tableColorById,
   liveDetailByTableId,
   currentServerId,
   ownTableIds,
@@ -126,9 +136,39 @@ export function MapCanvas({
   const sections = Object.keys(sectionConfig)
 
   const sortedForEntry = [...tables].sort((a, b) => {
-    const priority: Record<string, number> = { urgent: 0, active: 1, billing: 2, free: 3, closed: 4 }
-    return (priority[a.status] ?? 5) - (priority[b.status] ?? 5)
+    const priority: Record<TableColorState, number> = {
+      needs_attention: 0,
+      food_ready: 1,
+      bill_requested: 2,
+      occupied: 3,
+      reserved: 4,
+      available: 5,
+      cleaning: 6,
+    }
+    const sa = tableColorById.get(a.id) ?? "available"
+    const sb = tableColorById.get(b.id) ?? "available"
+    return (priority[sa] ?? 9) - (priority[sb] ?? 9)
   })
+
+  const sceneTables = allTablesForScene ?? tables
+
+  const resolveSceneTable = React.useCallback(
+    (
+      canonical: ReturnType<typeof convertElementsToStoreTables>[number] | undefined,
+      tableByRealId: Map<string, FloorTable>,
+      tableByNumber: Map<number, FloorTable>,
+      tableByElementId: Map<string, FloorTable>
+    ): FloorTable | undefined => {
+      if (!canonical) return undefined
+      if (canonical.elementId) {
+        const byEl = tableByElementId.get(canonical.elementId)
+        if (byEl) return byEl
+      }
+      const canonicalId = canonical.id.toLowerCase()
+      return tableByRealId.get(canonicalId) ?? tableByNumber.get(canonical.number)
+    },
+    []
+  )
   // ── Build FloorplanScene props from FloorTable data ───────────────────
   // Match elements to tables by table number (t1, t2, …), not by index.
   // DB returns tables in createdAt order; element order comes from the floorplan.
@@ -138,12 +178,17 @@ export function MapCanvas({
       (el) => (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
     )
     const canonicalTables = convertElementsToStoreTables(floorplanElements)
-    const tablesById = new Map(tables.map((t) => [t.id.toLowerCase(), t]))
+    const tablesById = new Map(sceneTables.map((t) => [t.id.toLowerCase(), t]))
+    const tablesByNumber = new Map(sceneTables.map((t) => [t.number, t]))
+    const tablesByElementId = new Map<string, FloorTable>()
+    for (const t of sceneTables) {
+      if (t.elementId) tablesByElementId.set(t.elementId, t)
+    }
     return tableEls.map((el, i) => {
       const canonical = canonicalTables[i]
-      const tableId = canonical?.id ?? `t${i + 1}`
-      const table = tablesById.get(tableId) ?? tablesById.get(tableId.toLowerCase())
+      const table = resolveSceneTable(canonical, tablesById, tablesByNumber, tablesByElementId)
       const detail = table ? liveDetailByTableId.get(table.id) ?? null : null
+      const tableWithReserved = table as FloorTable & { reserved?: boolean; reservation?: { id: string; guestName: string; partySize: number; time: string } }
       return {
         elementId: el.id,
         tableNumber: table?.number ?? canonical?.number ?? i + 1,
@@ -154,11 +199,14 @@ export function MapCanvas({
         seatedAt: table?.seatedAt,
         serverName: detail?.server?.name ?? null,
         serverId: detail?.server?.id ?? null,
+        billTotal: detail?.billTotal ?? 0,
         waves: detail?.waves ?? [],
         alerts: detail?.alerts ?? [],
+        reserved: tableWithReserved?.reserved,
+        reservation: tableWithReserved?.reservation,
       }
     })
-  }, [floorplanElements, liveDetailByTableId, tables])
+  }, [floorplanElements, liveDetailByTableId, resolveSceneTable, sceneTables])
 
   const dimmedTableIds = React.useMemo(() => {
     const set = new Set<string>()
@@ -167,20 +215,52 @@ export function MapCanvas({
       (el) => (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
     )
     const canonicalTables = convertElementsToStoreTables(floorplanElements)
-    const tablesById = new Map(tables.map((t) => [t.id.toLowerCase(), t]))
+    const tablesById = new Map(sceneTables.map((t) => [t.id.toLowerCase(), t]))
+    const tablesByNumber = new Map(sceneTables.map((t) => [t.number, t]))
+    const tablesByElementId = new Map<string, FloorTable>()
+    for (const t of sceneTables) {
+      if (t.elementId) tablesByElementId.set(t.elementId, t)
+    }
     tableEls.forEach((el, i) => {
       const canonical = canonicalTables[i]
-      const tableId = canonical?.id ?? `t${i + 1}`
-      const table = tablesById.get(tableId) ?? tablesById.get(tableId.toLowerCase())
+      const table = resolveSceneTable(canonical, tablesById, tablesByNumber, tablesByElementId)
       if (!table) return
-      const dimmedByStatus = statusFilter !== null && table.status !== statusFilter
+      const dimmedByStatus = statusFilter !== null && tableColorById.get(table.id) !== statusFilter
       const dimmedByFocus = focusedTableId !== null && table.id !== focusedTableId
       if (dimmedByStatus || dimmedByFocus) {
         set.add(el.id)
       }
     })
     return set
-  }, [floorplanElements, tables, statusFilter, focusedTableId])
+  }, [floorplanElements, sceneTables, statusFilter, focusedTableId, resolveSceneTable, tableColorById])
+
+  const hiddenElementIds = React.useMemo(() => {
+    const set = new Set<string>()
+    if (floorplanElements.length === 0) return set
+    if (!visibleTableIds) return set
+
+    const tableEls = floorplanElements.filter(
+      (el) => (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
+    )
+    const canonicalTables = convertElementsToStoreTables(floorplanElements)
+    const tablesById = new Map(sceneTables.map((t) => [t.id.toLowerCase(), t]))
+    const tablesByNumber = new Map(sceneTables.map((t) => [t.number, t]))
+    const tablesByElementId = new Map<string, FloorTable>()
+    for (const t of sceneTables) {
+      if (t.elementId) tablesByElementId.set(t.elementId, t)
+    }
+
+    tableEls.forEach((el, i) => {
+      const canonical = canonicalTables[i]
+      const table = resolveSceneTable(canonical, tablesById, tablesByNumber, tablesByElementId)
+      const tableId = table?.id
+      if (!tableId || !visibleTableIds.has(tableId)) {
+        set.add(el.id)
+      }
+    })
+
+    return set
+  }, [floorplanElements, sceneTables, resolveSceneTable, visibleTableIds])
 
   // Map element ID taps back to table IDs (match by table number from conversion)
   const elementToTableId = React.useMemo(() => {
@@ -190,15 +270,19 @@ export function MapCanvas({
       (el) => (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
     )
     const canonicalTables = convertElementsToStoreTables(floorplanElements)
-    const tablesById = new Map(tables.map((t) => [t.id.toLowerCase(), t]))
+    const tablesById = new Map(sceneTables.map((t) => [t.id.toLowerCase(), t]))
+    const tablesByNumber = new Map(sceneTables.map((t) => [t.number, t]))
+    const tablesByElementId = new Map<string, FloorTable>()
+    for (const t of sceneTables) {
+      if (t.elementId) tablesByElementId.set(t.elementId, t)
+    }
     tableEls.forEach((el, i) => {
       const canonical = canonicalTables[i]
-      const tableId = canonical?.id ?? `t${i + 1}`
-      const table = tablesById.get(tableId) ?? tablesById.get(tableId.toLowerCase())
-      map.set(el.id, table?.id ?? tableId)
+      const table = resolveSceneTable(canonical, tablesById, tablesByNumber, tablesByElementId)
+      map.set(el.id, table?.id ?? canonical?.id ?? `t${i + 1}`)
     })
     return map
-  }, [floorplanElements, tables])
+  }, [floorplanElements, sceneTables, resolveSceneTable])
 
   const handleSceneTableTap = useCallback(
     (elementId: string) => {
@@ -273,6 +357,7 @@ export function MapCanvas({
             ownTableIds={ownTableIds}
             highlightedId={highlightedTableId}
             dimmedIds={dimmedTableIds}
+            hiddenIds={hiddenElementIds}
             onTableTap={handleSceneTableTap}
             onTablePrefetch={prefetchForElement}
             onTableLongPress={handleSceneTableLongPress}
@@ -306,7 +391,7 @@ export function MapCanvas({
                     focusedTableId && !isFocusedByTable && "focus-dim-active",
                     focusedSection && !isFocusedSection && "opacity-15 blur-[2px] scale-95",
                     isSelectedSection && "ring-2 ring-primary/40 bg-primary/5 scale-105 shadow-2xl shadow-primary/20",
-                    !focusedSection && "hover:bg-white/[0.02] hover:ring-1 hover:ring-white/10",
+                    !focusedSection && "hover:bg-white/2 hover:ring-1 hover:ring-white/10",
                   )}
                   style={{
                     left: bounds.x,
@@ -318,7 +403,7 @@ export function MapCanvas({
                 >
                   <span
                     className={cn(
-                      "absolute -top-0 left-4 rounded-b-md px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-widest",
+                      "absolute top-0 left-4 rounded-b-md px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-widest",
                       "transition-all duration-500",
                       isSelectedSection
                         ? "bg-primary/80 text-primary-foreground shadow-lg shadow-primary/30"
@@ -336,7 +421,7 @@ export function MapCanvas({
             {/* Default table nodes for demo data */}
             {sortedForEntry.map((table, i) => {
               const isOwn = ownTableIds.includes(table.id)
-              const dimmedByStatus = statusFilter !== null && table.status !== statusFilter
+              const dimmedByStatus = statusFilter !== null && tableColorById.get(table.id) !== statusFilter
               const dimmedByFocus = focusedTableId !== null && table.id !== focusedTableId
               const isHighlighted = highlightedTableId === table.id
 
@@ -382,16 +467,19 @@ export function MapCanvas({
             {tables.map((t) => {
               const x = (t.position.x / 1060) * 88 + 4
               const y = (t.position.y / 380) * 52 + 4
+              const state = tableColorById.get(t.id) ?? "available"
               return (
                 <span
                   key={t.id}
                   className={cn(
                     "absolute block h-1.5 w-1.5 rounded-full",
-                    t.status === "free" && "bg-emerald-400",
-                    t.status === "active" && "bg-amber-400",
-                    t.status === "urgent" && "bg-red-400",
-                    t.status === "billing" && "bg-blue-400",
-                    t.status === "closed" && "bg-muted-foreground/30"
+                    state === "available" && "bg-emerald-400",
+                    state === "reserved" && "bg-violet-400",
+                    state === "occupied" && "bg-sky-400",
+                    state === "food_ready" && "bg-yellow-300",
+                    state === "bill_requested" && "bg-orange-400",
+                    state === "needs_attention" && "bg-red-400",
+                    state === "cleaning" && "bg-muted-foreground/30"
                   )}
                   style={{ left: x, top: y }}
                 />
@@ -612,7 +700,7 @@ function DefaultTableNode({
       ) : (
         <>
           {/* ── Top accent gradient line ── */}
-          <div className={cn("h-[2px] w-full bg-gradient-to-r shrink-0", accentColors[table.status])} />
+          <div className={cn("h-[2px] w-full bg-linear-to-r shrink-0", accentColors[table.status])} />
 
           {/* ── Header row: number + guests + time ── */}
           <div className="flex items-center gap-1 px-1.5 pt-1">

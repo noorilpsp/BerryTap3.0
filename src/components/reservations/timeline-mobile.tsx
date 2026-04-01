@@ -21,7 +21,6 @@ import { cn } from "@/lib/utils"
 import {
   type TimelineBlock,
   type TableLane,
-  zones,
   getGhostsForTable,
   getMergedForTable,
   getBlockColor,
@@ -30,9 +29,11 @@ import {
   getStatusLabel,
   formatTime24h,
 } from "@/lib/timeline-data"
+import type { ReservationZone } from "@/lib/reservations/zones"
 
 interface TimelineMobileProps {
   tableLanes: TableLane[]
+  zones: ReservationZone[]
   blocks: TimelineBlock[]
   zoneFilter: string
   onZoneFilterChange: (zone: string) => void
@@ -46,6 +47,7 @@ interface TimelineMobileProps {
 
 export function TimelineMobile({
   tableLanes,
+  zones,
   blocks,
   zoneFilter,
   onZoneFilterChange,

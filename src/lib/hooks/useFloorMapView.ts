@@ -5,6 +5,22 @@ import type { FloorMapView } from "@/lib/floor-map/floorMapView";
 import { isFloorMapView } from "@/lib/floor-map/floorMapView";
 import { getFloorMapCache, setFloorMapCache } from "@/lib/view-cache";
 
+function pickInitialFloorMapView(
+  initialData: FloorMapView | null | undefined,
+  locationId: string | null,
+  floorplanId: string | null | undefined
+): FloorMapView | null {
+  if (!locationId) {
+    return null;
+  }
+  const fid = floorplanId ?? null;
+  if (initialData) {
+    const matches = fid == null || fid === "" || initialData.floorplan.activeId === fid;
+    if (matches) return initialData;
+  }
+  return getFloorMapCache(locationId, fid) ?? null;
+}
+
 export type UseFloorMapViewResult = {
   view: FloorMapView | null;
   loading: boolean;
@@ -27,10 +43,8 @@ export function useFloorMapView(
   options?: UseFloorMapViewOptions
 ): UseFloorMapViewResult {
   const initialData = options?.initialData;
-  const [view, setView] = useState<FloorMapView | null>(
-    () =>
-      initialData ??
-      (locationId ? getFloorMapCache(locationId, floorplanId ?? null) ?? null : null)
+  const [view, setView] = useState<FloorMapView | null>(() =>
+    pickInitialFloorMapView(initialData, locationId, floorplanId)
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +52,7 @@ export function useFloorMapView(
   const refreshInFlightRef = useRef(false);
   const viewRef = useRef<FloorMapView | null>(null);
   viewRef.current = view;
+  const prevLocationIdRef = useRef<string | null>(null);
 
   const refresh = useCallback(
     async (silent = false): Promise<boolean> => {
@@ -106,19 +121,43 @@ export function useFloorMapView(
 
   useEffect(() => {
     if (!locationId) {
+      prevLocationIdRef.current = null;
       setView(null);
       setError(null);
       setStaleError(null);
       return;
     }
+    const switchedLocation =
+      prevLocationIdRef.current != null && prevLocationIdRef.current !== locationId;
+    prevLocationIdRef.current = locationId;
+
     const fromServer = initialDataRef.current;
     if (!consumedInitialDataRef.current && fromServer) {
       consumedInitialDataRef.current = true;
-      setFloorMapCache(locationId, floorplanId ?? null, fromServer);
-      setLoading(false);
-      setError(null);
-      setStaleError(null);
-      void refresh(true);
+      const matchesPlan =
+        floorplanId == null ||
+        floorplanId === "" ||
+        fromServer.floorplan.activeId === floorplanId;
+      if (matchesPlan) {
+        setFloorMapCache(locationId, floorplanId ?? null, fromServer);
+        setLoading(false);
+        setError(null);
+        setStaleError(null);
+        void refresh(true);
+        return;
+      }
+      const cachedMismatch = getFloorMapCache(locationId, floorplanId ?? null);
+      if (cachedMismatch) {
+        setView(cachedMismatch);
+        setLoading(false);
+        setError(null);
+        setStaleError(null);
+        void refresh(true);
+        return;
+      }
+      const keepUiMismatch =
+        viewRef.current != null && !switchedLocation;
+      void refresh(keepUiMismatch);
       return;
     }
     const cached = getFloorMapCache(locationId, floorplanId ?? null);
@@ -129,7 +168,9 @@ export function useFloorMapView(
       setStaleError(null);
       void refresh(true);
     } else {
-      void refresh();
+      const keepUi =
+        viewRef.current != null && !switchedLocation;
+      void refresh(keepUi);
     }
   }, [refresh, locationId, floorplanId]);
 

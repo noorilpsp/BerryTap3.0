@@ -7,26 +7,55 @@
 import type { FloorMapView } from "@/lib/floor-map/floorMapView";
 import type { TableView } from "@/lib/pos/tableView";
 
-// Floor map: key = locationId + floorplanId (never locationId-only)
-let floorMapCache: { locationId: string; floorplanId: string; view: FloorMapView } | null = null;
+const FLOOR_MAP_CACHE_MAX_ENTRIES = 12;
+
+type FloorMapCacheEntry = {
+  locationId: string;
+  floorplanId: string;
+  view: FloorMapView;
+};
+
+/** LRU-ish: Map insertion order; get/set "touch" moves key to the end. */
+const floorMapCacheMap = new Map<string, FloorMapCacheEntry>();
 
 // Table: key = tableId
 let tableCache: { tableId: string; view: TableView } | null = null;
 
-function floorMapKey(locationId: string, floorplanId: string | null): string {
+function floorMapCacheKey(locationId: string, floorplanId: string | null): string {
   return `${locationId}|${floorplanId ?? "active"}`;
+}
+
+function touchFloorMapCache(key: string, entry: FloorMapCacheEntry): void {
+  floorMapCacheMap.delete(key);
+  floorMapCacheMap.set(key, entry);
+}
+
+function trimFloorMapCache(): void {
+  while (floorMapCacheMap.size > FLOOR_MAP_CACHE_MAX_ENTRIES) {
+    const oldest = floorMapCacheMap.keys().next().value;
+    if (oldest === undefined) break;
+    floorMapCacheMap.delete(oldest);
+  }
 }
 
 export function getFloorMapCache(
   locationId: string,
   floorplanId: string | null
 ): FloorMapView | null {
-  if (!floorMapCache) return null;
-  const key = floorMapKey(locationId, floorplanId);
-  const cachedKey = floorMapKey(floorMapCache.locationId, floorMapCache.floorplanId);
-  if (key === cachedKey) return floorMapCache.view;
-  // Fallback: when floorplanId is null (first render before getActiveFloorplanDb), return cache for same location
-  if (floorplanId == null && floorMapCache.locationId === locationId) return floorMapCache.view;
+  const key = floorMapCacheKey(locationId, floorplanId);
+  const direct = floorMapCacheMap.get(key);
+  if (direct) {
+    touchFloorMapCache(key, direct);
+    return direct.view;
+  }
+  if (floorplanId == null) {
+    for (const [k, entry] of [...floorMapCacheMap.entries()].reverse()) {
+      if (entry.locationId === locationId) {
+        touchFloorMapCache(k, entry);
+        return entry.view;
+      }
+    }
+  }
   return null;
 }
 
@@ -36,7 +65,10 @@ export function setFloorMapCache(
   view: FloorMapView
 ): void {
   const fpId = view.floorplan?.activeId ?? floorplanId ?? "active";
-  floorMapCache = { locationId, floorplanId: fpId, view };
+  const key = floorMapCacheKey(locationId, fpId);
+  const entry: FloorMapCacheEntry = { locationId, floorplanId: fpId, view };
+  touchFloorMapCache(key, entry);
+  trimFloorMapCache();
 }
 
 export function getTableCache(tableId: string): TableView | null {
@@ -59,10 +91,13 @@ export function setTableCache(tableId: string, view: TableView): void {
   tableCache = { tableId, view };
 }
 
-/** Clear floor map cache when location matches. Call after seating so next mount/refresh is fresh. */
+/** Clear all floor map entries for a location. Call after seating so next refresh is fresh. */
 export function invalidateFloorMapCache(locationId: string): void {
-  if (floorMapCache && floorMapCache.locationId === locationId) {
-    floorMapCache = null;
+  for (const k of [...floorMapCacheMap.keys()]) {
+    const e = floorMapCacheMap.get(k);
+    if (e?.locationId === locationId) {
+      floorMapCacheMap.delete(k);
+    }
   }
 }
 

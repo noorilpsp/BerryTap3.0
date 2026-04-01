@@ -1,8 +1,8 @@
 "use client"
 
-import React from "react"
+import React, { useRef } from "react"
 
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback, useEffect, startTransition } from "react"
 import { FloorMapPageSkeleton } from "@/components/floor-map/FloorMapPageSkeleton"
 import { FloorMapNoLocationState } from "@/components/floor-map/FloorMapNoLocationState"
 import { FloorMapErrorState } from "@/components/floor-map/FloorMapErrorState"
@@ -14,25 +14,23 @@ import { GridView } from "@/components/floor-map/grid-view"
 import { QuickActionsMenu } from "@/components/floor-map/quick-actions-menu"
 import { SeatPartyModal } from "@/components/floor-map/seat-party-modal"
 import {
-  getStatusCounts,
   filterTablesByMode,
-  filterTablesByStatus,
   buildSectionConfig,
-  floorStatusConfig,
   getSectionBounds,
 } from "@/lib/floor-map-data"
 import { buildFloorMapLiveDetail, type FloorMapLiveDetail } from "@/lib/floor-map-live-detail"
 import { getActiveFloorplanDb, setActiveFloorplanIdDb } from "@/lib/floorplan-storage-db"
 import type { SavedFloorplan } from "@/lib/floorplan-storage-db"
 import { useFloorMapView } from "@/lib/hooks/useFloorMapView"
+import { prefetchFloorMapView } from "@/lib/floor-map/prefetchFloorMapView"
 import { useFloorMapMutations } from "@/lib/hooks/useFloorMapMutations"
 import {
   viewTablesToFloorTables,
 } from "@/lib/floor-map/floorMapView"
 import { useLocation } from "@/lib/contexts/LocationContext"
-import { OPS_POST_SEATING_EVENT, type PostSeatingDetail } from "@/lib/view-cache"
+import { OPS_POST_SEATING_EVENT, postSeatingInvalidate, type PostSeatingDetail } from "@/lib/view-cache"
 import { FloorplanSelector } from "@/components/floor-map/floorplan-selector"
-import type { FilterMode, ViewMode, FloorTableStatus, SectionId, SeatPartyForm } from "@/lib/floor-map-data"
+import type { FilterMode, ViewMode, SectionId, SeatPartyForm } from "@/lib/floor-map-data"
 import { Plus, Hammer } from "lucide-react"
 import Link from "next/link"
 import {
@@ -43,9 +41,10 @@ import {
 } from "@/lib/animation-config"
 import { usePrefersReducedMotion } from "@/hooks/use-map-gestures"
 import { useIsMobile } from "@/hooks/use-mobile"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { prefetchRoute } from "@/components/ui/link"
 import type { FloorMapView } from "@/lib/floor-map/floorMapView"
+import { getFloorTableColorState, TABLE_COLOR_STATES, type TableColorState } from "@/lib/table-color-state"
 
 type FloorMapClientProps = {
   initialFloorMapView: FloorMapView | null;
@@ -53,27 +52,37 @@ type FloorMapClientProps = {
 
 export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const floorplanParam = searchParams.get("floorplan")?.trim() || null
+  const searchParamsSnapshot = searchParams.toString()
   const { currentLocationId, loading: locationLoading } = useLocation()
   const locationIdResolved = !locationLoading
-  const [initialFloorplanId, setInitialFloorplanId] = React.useState<string | null>(null)
+  /**
+   * URL `?floorplan=` is restored on browser back and is available on the first client render, so we don’t flash
+   * the DB default before async IDB hydration. When the param is absent, fall back to stored active floorplan.
+   */
+  const [idbActiveFloorplanId, setIdbActiveFloorplanId] = React.useState<string | null>(null)
   React.useEffect(() => {
     if (!currentLocationId) {
-      setInitialFloorplanId(null)
+      setIdbActiveFloorplanId(null)
       return
     }
     let cancelled = false
     getActiveFloorplanDb(currentLocationId).then((fp) => {
-      if (!cancelled) setInitialFloorplanId(fp?.id ?? null)
+      if (!cancelled) setIdbActiveFloorplanId(fp?.id ?? null)
     })
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [currentLocationId])
+  const selectedFloorplanId = floorplanParam ?? idbActiveFloorplanId ?? null
   const isMobile = useIsMobile()
   const reducedMotion = usePrefersReducedMotion()
   const windowWidth = typeof window !== "undefined" ? window.innerWidth : 1024
 
   const { view, loading: viewLoading, error: viewError, staleError, refresh, patch } = useFloorMapView(
     currentLocationId,
-    initialFloorplanId,
+    selectedFloorplanId,
     { initialData: initialFloorMapView }
   )
   const { seatParty } = useFloorMapMutations({ patch, refresh, view })
@@ -101,6 +110,33 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
     [view?.allFloorplans]
   )
   const activeFloorplanId = view?.floorplan.activeId ?? null
+  /** Prefer explicit selection so Map/Grid and dropdowns match before the new view finishes loading. */
+  const displayActiveFloorplanId = selectedFloorplanId ?? activeFloorplanId
+
+  const prefetchFloorplanKey = React.useMemo(() => {
+    if (!currentLocationId || !view?.allFloorplans?.length || !view.floorplan.activeId) return null
+    const active = view.floorplan.activeId
+    const others = view.allFloorplans
+      .map((fp) => fp.id)
+      .filter((id): id is string => Boolean(id) && id !== active)
+    if (others.length === 0) return null
+    return { locationId: currentLocationId, ids: [...new Set(others)].sort().join(",") }
+  }, [currentLocationId, view?.floorplan.activeId, view?.allFloorplans])
+
+  React.useEffect(() => {
+    if (!prefetchFloorplanKey) return
+    const { locationId, ids } = prefetchFloorplanKey
+    for (const floorplanId of ids.split(",").filter(Boolean)) {
+      void prefetchFloorMapView(locationId, floorplanId)
+    }
+  }, [prefetchFloorplanKey])
+
+  const planViewPending = Boolean(
+    selectedFloorplanId &&
+      view &&
+      !staleError &&
+      view.floorplan.activeId !== selectedFloorplanId
+  )
 
   const liveDetailByTableId = React.useMemo(() => {
     const map = new Map<string, FloorMapLiveDetail | null>()
@@ -110,25 +146,37 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
     return map
   }, [tables])
 
+  const applyFloorplanSelection = useCallback(
+    async (floorplanId: string | null) => {
+      if (!currentLocationId) return
+      setIdbActiveFloorplanId(floorplanId)
+      await setActiveFloorplanIdDb(currentLocationId, floorplanId)
+      const next = new URLSearchParams(searchParamsSnapshot)
+      if (floorplanId) next.set("floorplan", floorplanId)
+      else next.delete("floorplan")
+      const q = next.toString()
+      router.replace(q ? `/floor-map?${q}` : `/floor-map`, { scroll: false })
+    },
+    [currentLocationId, router, searchParamsSnapshot]
+  )
+
   const handleFloorplanChange = useCallback(
     async (floorplan: SavedFloorplan | null) => {
-      if (!currentLocationId) return
-      await setActiveFloorplanIdDb(currentLocationId, floorplan?.id ?? null)
-      void refresh()
+      await applyFloorplanSelection(floorplan?.id ?? null)
     },
-    [currentLocationId, refresh]
+    [applyFloorplanSelection]
   )
 
   const handleFloorplanIdChange = useCallback(
     (floorplanId: string) => {
-      void setActiveFloorplanIdDb(currentLocationId!, floorplanId).then(() => refresh())
+      void applyFloorplanSelection(floorplanId)
     },
-    [currentLocationId, refresh]
+    [applyFloorplanSelection]
   )
 
   const [filterMode, setFilterMode] = useState<FilterMode>("all")
   const [viewMode, setViewMode] = useState<ViewMode>("map")
-  const [statusFilter, setStatusFilter] = useState<FloorTableStatus | null>(null)
+  const [statusFilter, setStatusFilter] = useState<TableColorState | null>(null)
   const [sectionFilter, setSectionFilter] = useState<SectionId | null>(null)
 
   const [scale, setScale] = useState(ZOOM_LEVELS.level1.scale)
@@ -144,9 +192,12 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
     tableNumber: number
     position: { x: number; y: number }
   } | null>(null)
+  const [navigatingTableId, setNavigatingTableId] = useState<string | null>(null)
 
   const [seatPartyOpen, setSeatPartyOpen] = useState(false)
   const [seatPartyPreSelect, setSeatPartyPreSelect] = useState<string | null>(null)
+
+  const mapContainerRef = useRef<HTMLDivElement | null>(null)
 
   const [viewTransition, setViewTransition] = useState<
     "none" | "grid-exit" | "map-enter" | "map-exit" | "grid-enter"
@@ -176,12 +227,51 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
     return () => window.removeEventListener(OPS_POST_SEATING_EVENT, handler as EventListener)
   }, [currentLocationId, refresh])
 
+  const tableColorById = React.useMemo(() => {
+    const map = new Map<string, TableColorState>()
+    for (const t of tables) {
+      const detail = liveDetailByTableId.get(t.id) ?? null
+      const reserved = Boolean((t as unknown as { reserved?: boolean }).reserved)
+      map.set(
+        t.id,
+        getFloorTableColorState({
+          status: t.status,
+          reserved,
+          alerts: detail?.alerts ?? [],
+          waves: detail?.waves ?? [],
+        })
+      )
+    }
+    return map
+  }, [tables, liveDetailByTableId])
+
   let filteredByMode = filterTablesByMode(tables, filterMode, currentServer)
   if (sectionFilter) {
     filteredByMode = filteredByMode.filter((t) => t.section === sectionFilter)
   }
-  const displayTables = filterTablesByStatus(filteredByMode, statusFilter)
-  const counts = getStatusCounts(filteredByMode)
+  const displayTables = React.useMemo(() => {
+    if (!statusFilter) return filteredByMode
+    return filteredByMode.filter((t) => tableColorById.get(t.id) === statusFilter)
+  }, [filteredByMode, statusFilter, tableColorById])
+
+  const visibleTableIds = React.useMemo(() => new Set(displayTables.map((t) => t.id)), [displayTables])
+
+  const counts = React.useMemo(() => {
+    const base: Record<TableColorState, number> = {
+      available: 0,
+      reserved: 0,
+      occupied: 0,
+      food_ready: 0,
+      bill_requested: 0,
+      needs_attention: 0,
+      cleaning: 0,
+    }
+    for (const t of filteredByMode) {
+      const s = tableColorById.get(t.id)
+      if (s) base[s] += 1
+    }
+    return base
+  }, [filteredByMode, tableColorById])
 
   const activeFilterChips: string[] = []
   if (filterMode !== "all") {
@@ -195,7 +285,7 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
     activeFilterChips.push(sectionConfig[sectionFilter]?.name ?? sectionFilter)
   }
   if (statusFilter) {
-    activeFilterChips.push(floorStatusConfig[statusFilter].label)
+    activeFilterChips.push(TABLE_COLOR_STATES[statusFilter].label)
   }
 
   const handleClearAllFilters = useCallback(() => {
@@ -226,7 +316,9 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
   const handleFitToScreen = useCallback(() => {
     const PADDING = 32
     const containerWidth = windowWidth
-    const containerHeight = typeof window !== "undefined" ? window.innerHeight - 104 : 600
+    const containerHeight =
+      mapContainerRef.current?.clientHeight ??
+      (typeof window !== "undefined" ? window.innerHeight - 104 : 600)
 
     let minX: number, minY: number, maxX: number, maxY: number
     if (floorplanElements.length > 0) {
@@ -305,19 +397,29 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
 
   const handleTableTap = useCallback(
     (tableId: string) => {
-      const table = tables.find((t) => t.id === tableId)
-      if (!table) return
-      prefetchRoute(`/table/${tableId}`, router)
-      router.push(`/table/${tableId}`)
+      const base = `/table/${encodeURIComponent(tableId)}`
+      const href =
+        selectedFloorplanId && selectedFloorplanId !== ""
+          ? `${base}?floorplan=${encodeURIComponent(selectedFloorplanId)}`
+          : base
+      setNavigatingTableId(tableId)
+      startTransition(() => {
+        router.push(href)
+      })
     },
-    [tables, router]
+    [router, selectedFloorplanId]
   )
 
   const prefetchTable = useCallback(
     (tableId: string) => {
-      prefetchRoute(`/table/${tableId}`, router)
+      const base = `/table/${encodeURIComponent(tableId)}`
+      const href =
+        selectedFloorplanId && selectedFloorplanId !== ""
+          ? `${base}?floorplan=${encodeURIComponent(selectedFloorplanId)}`
+          : base
+      prefetchRoute(href, router)
     },
-    [router]
+    [router, selectedFloorplanId]
   )
 
   const handleOpenSeatParty = useCallback((preSelectTableId?: string) => {
@@ -332,7 +434,7 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
 
   const handlePartySeated = useCallback(
     async (formData: SeatPartyForm) => {
-      if (!formData.tableId || !currentLocationId) return
+      if (!formData.tableId || !currentLocationId) return false
 
       const ok = await seatParty({
         tableId: formData.tableId,
@@ -341,11 +443,21 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
         serverId: currentServer.id,
       })
       if (ok) {
+        postSeatingInvalidate(currentLocationId, formData.tableId)
         setSeatPartyOpen(false)
         setSeatPartyPreSelect(null)
       }
+      return ok
     },
     [currentLocationId, currentServer.id, seatParty]
+  )
+
+  const handleViewTable = useCallback(
+    (tableId: string) => {
+      handleSeatPartyClose()
+      handleTableTap(tableId)
+    },
+    [handleSeatPartyClose, handleTableTap]
   )
 
   const handleTableLongPress = useCallback(
@@ -526,7 +638,7 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
         activeFilterChips={activeFilterChips}
         ownTableIds={currentServer.assignedTables}
         allFloorplans={allFloorplans}
-        activeFloorplanId={activeFloorplanId}
+        activeFloorplanId={displayActiveFloorplanId}
         onFilterModeChange={setFilterMode}
         onViewModeChange={handleViewModeChange}
         onTableSelect={handleSearchSelect}
@@ -542,7 +654,17 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
         onStatusFilter={setStatusFilter}
       />
 
-      <div className="relative flex-1 min-h-0">
+      {planViewPending && (
+        <div
+          className="shrink-0 px-4 py-1.5 text-center text-sm bg-muted/80 text-muted-foreground border-b border-border"
+          role="status"
+          aria-live="polite"
+        >
+          Loading selected floor plan…
+        </div>
+      )}
+
+      <div className="relative flex-1 min-h-0" ref={mapContainerRef}>
         {viewMode === "map" ? (
           <div
             className={
@@ -557,6 +679,9 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
               <MapCanvas
                 sectionConfig={sectionConfig}
                 tables={displayTables}
+                allTablesForScene={tables}
+                visibleTableIds={visibleTableIds}
+                tableColorById={tableColorById}
                 liveDetailByTableId={liveDetailByTableId}
                 currentServerId={currentServer.id}
                 ownTableIds={currentServer.assignedTables}
@@ -619,7 +744,7 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
       <div className="fixed top-20 left-4 z-50">
         <FloorplanSelector
           allFloorplans={view?.allFloorplans}
-          activeFloorplanId={activeFloorplanId}
+          activeFloorplanId={displayActiveFloorplanId}
           onFloorplanChange={handleFloorplanChange}
         />
       </div>
@@ -643,6 +768,13 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {navigatingTableId && (
+        <div className="fixed top-20 right-4 z-50 rounded-full border border-primary/30 bg-[hsl(224,18%,12%)]/92 px-3 py-2 text-xs font-medium text-primary shadow-xl backdrop-blur-xl">
+          Opening table T{view?.tables.find((t) => t.id === navigatingTableId)?.number ?? ""}
+          ...
         </div>
       )}
 
@@ -672,6 +804,7 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
         preSelectedTableId={seatPartyPreSelect}
         onClose={handleSeatPartyClose}
         onSeated={handlePartySeated}
+        onViewTable={handleViewTable}
       />
     </div>
   )

@@ -10,17 +10,17 @@ import {
   type ZoomLevel,
   type TimelineBlock as TBlock,
   type TableLane,
-  zones,
-  getTablesForZone,
   getGhostsForTable,
   getMergedForTable,
   getTimeLabels,
   getSlotWidth,
 } from "@/lib/timeline-data"
+import type { ReservationZone } from "@/lib/reservations/zones"
 import { ReservationBlock, GhostBlockComponent, MergedBlockComponent } from "./timeline-block"
 
 interface TimelineGridProps {
   tableLanes: TableLane[]
+  zones: ReservationZone[]
   blocks: TBlock[]
   zoom: ZoomLevel
   zoneFilter: string
@@ -46,6 +46,7 @@ const WIDTH_RESIZE_THRESHOLD_PX = 24
 
 export function TimelineGrid({
   tableLanes,
+  zones,
   blocks,
   zoom,
   zoneFilter,
@@ -224,7 +225,7 @@ export function TimelineGrid({
   const filteredTablesByZone = useMemo(() => {
     return new Map(
       filteredZones.map((zone) => {
-        const tables = getTablesForZone(zone.id, tableLanes).filter((table) => {
+        const tables = tableLanes.filter((t) => t.zone === zone.id).filter((table) => {
           if (partySizeFilter === "all") return true
           // Show table if it has a direct block matching the party filter
           if (displayedBlocks.some((block) => (

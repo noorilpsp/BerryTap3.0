@@ -92,6 +92,16 @@ export interface GuestsViewSegmentCounts {
   flagged: number;
 }
 
+/** Neutral fallback when segment counts are temporarily absent. Use real data from GuestsView in production. */
+export const EMPTY_SEGMENT_COUNTS: GuestsViewSegmentCounts = {
+  all: 0,
+  vip: 0,
+  regular: 0,
+  new: 0,
+  at_risk: 0,
+  flagged: 0,
+};
+
 export interface GuestsView {
   locationId: string;
   locationName: string;

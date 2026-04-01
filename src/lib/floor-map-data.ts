@@ -31,6 +31,8 @@ export interface FloorTable {
   width?: number
   height?: number
   rotation?: number
+  /** Links to floorplan element for map scene matching. */
+  elementId?: string
 }
 
 export interface Section {
@@ -65,11 +67,11 @@ export const floorStatusConfig: Record<
   FloorTableStatus,
   { color: string; darkColor: string; label: string; pulse?: boolean }
 > = {
-  free: { color: "#10b981", darkColor: "#34d399", label: "Free" },
-  active: { color: "#f59e0b", darkColor: "#fbbf24", label: "Active" },
-  urgent: { color: "#ef4444", darkColor: "#f87171", label: "Urgent", pulse: true },
-  billing: { color: "#3b82f6", darkColor: "#60a5fa", label: "Billing" },
-  closed: { color: "#6b7280", darkColor: "#9ca3af", label: "Closed" },
+  free: { color: "#22c55e", darkColor: "#4ade80", label: "Available" },
+  active: { color: "#38bdf8", darkColor: "#7dd3fc", label: "Occupied" },
+  urgent: { color: "#ef4444", darkColor: "#f87171", label: "Needs Server", pulse: true },
+  billing: { color: "#fb923c", darkColor: "#fdba74", label: "Bill Requested" },
+  closed: { color: "#94a3b8", darkColor: "#cbd5e1", label: "Cleaning" },
 }
 
 export const stageConfig: Record<MealStage, { icon: string; label: string }> = {
@@ -116,7 +118,8 @@ export const restaurant: Restaurant = {
 
 // Tables are read from the restaurant store. This mapper converts StoreTable to FloorTable for floor components.
 function mapStoreStatusToFloor(s: StoreTable["status"]): FloorTableStatus {
-  if (s === "reserved" || s === "cleaning") return "free"
+  if (s === "reserved") return "free"
+  if (s === "cleaning") return "closed"
   return s
 }
 

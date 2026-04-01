@@ -8,6 +8,11 @@ import type {
   StoreTableSessionState,
 } from "@/store/types"
 import type { DetailAlert, Wave, WaveStatus } from "@/lib/table-detail-data"
+import {
+  deriveCanonicalWaveStatusFromItems,
+  mapCanonicalWaveStatusToDetailStatus,
+  mapStoreLikeWaveStatusToCanonical,
+} from "@/lib/wave-status"
 
 const WAVE_TYPE_ORDER: Array<Wave["type"]> = ["drinks", "food", "dessert"]
 const OCCASION_KEYWORDS = ["birthday", "anniversary", "graduation", "celebration", "vip"]
@@ -52,13 +57,9 @@ function getItemWaveNumber(item: StoreOrderItem): number | null {
 }
 
 function getWaveStatus(items: StoreOrderItem[]): WaveStatus {
-  const activeItems = items.filter((item) => item.status !== "void")
-  if (activeItems.length === 0) return "held"
-  if (activeItems.every((item) => item.status === "served")) return "served"
-  if (activeItems.some((item) => item.status === "ready")) return "ready"
-  if (activeItems.some((item) => item.status === "cooking")) return "cooking"
-  if (activeItems.some((item) => item.status === "sent")) return "fired"
-  return "held"
+  return mapCanonicalWaveStatusToDetailStatus(
+    deriveCanonicalWaveStatusFromItems(items)
+  )
 }
 
 function buildSessionWaves(session: StoreTableSessionState | null | undefined): Wave[] {
@@ -98,11 +99,9 @@ function buildSessionWaves(session: StoreTableSessionState | null | undefined): 
 }
 
 function mapOrderWaveStatusToDetail(status: StoreOrder["waves"][number]["status"]): WaveStatus {
-  if (status === "served") return "served"
-  if (status === "ready") return "ready"
-  if (status === "cooking") return "cooking"
-  if (status === "sent") return "fired"
-  return "held"
+  return mapCanonicalWaveStatusToDetailStatus(
+    mapStoreLikeWaveStatusToCanonical(status)
+  )
 }
 
 function buildOrderWaves(order: StoreOrder | null | undefined): Wave[] {

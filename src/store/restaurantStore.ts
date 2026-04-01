@@ -11,6 +11,10 @@ import type {
   StoreTableStatus,
 } from "./types"
 import { resolveTableUuidFromStore } from "@/lib/resolveTableUuid"
+import {
+  deriveCanonicalWaveStatusFromItems,
+  mapCanonicalWaveStatusToStoreLikeStatus,
+} from "@/lib/wave-status"
 
 /**
  * Default state: empty. Data is hydrated from Neon when location is set.
@@ -65,13 +69,9 @@ function getOrderItemWaveNumber(item: StoreOrderItem): number {
 }
 
 function getWaveStatus(items: StoreOrderItem[]): StoreOrder["waves"][number]["status"] {
-  const activeItems = items.filter((item) => item.status !== "void")
-  if (activeItems.length === 0) return "held"
-  if (activeItems.every((item) => item.status === "served")) return "served"
-  if (activeItems.some((item) => item.status === "ready")) return "ready"
-  if (activeItems.some((item) => item.status === "cooking")) return "cooking"
-  if (activeItems.some((item) => item.status === "sent")) return "sent"
-  return "held"
+  return mapCanonicalWaveStatusToStoreLikeStatus(
+    deriveCanonicalWaveStatusFromItems(items)
+  )
 }
 
 function hasSessionData(session: StoreTableSessionState): boolean {

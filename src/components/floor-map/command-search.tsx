@@ -18,12 +18,11 @@ import type { FloorTable, SectionId, SearchHistoryEntry } from "@/lib/floor-map-
 import {
   defaultSectionConfig,
   searchTables,
-  floorStatusConfig,
   minutesAgo,
-  getQuickSearchActions,
   defaultSearchHistory,
 } from "@/lib/floor-map-data"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { TABLE_COLOR_STATES, type TableColorState } from "@/lib/table-color-state"
 
 interface CommandSearchProps {
   sectionConfig?: Record<string, { name: string }>
@@ -49,7 +48,41 @@ export function CommandSearch({
   const [recentHistory] = useState<SearchHistoryEntry[]>(defaultSearchHistory)
 
   const results = query ? searchTables(tables, query).slice(0, 10) : []
-  const quickActions = !query ? getQuickSearchActions(tables) : []
+  const quickActions = React.useMemo(() => {
+    if (query) return []
+
+    const counts: Partial<Record<TableColorState, number>> = {}
+    for (const t of tables) {
+      const state: TableColorState =
+        t.status === "urgent"
+          ? "needs_attention"
+          : t.alerts?.includes("food_ready")
+            ? "food_ready"
+            : t.status === "billing"
+              ? "bill_requested"
+              : t.status === "active"
+                ? "occupied"
+                : t.status === "closed"
+                  ? "cleaning"
+                  : "available"
+      counts[state] = (counts[state] ?? 0) + 1
+    }
+
+    const actions: Array<{ label: string; state: TableColorState; count: number; colorClass: string }> = []
+    if ((counts.needs_attention ?? 0) > 0) {
+      actions.push({ label: "Show needs-attention tables", state: "needs_attention", count: counts.needs_attention!, colorClass: "text-red-400" })
+    }
+    if ((counts.food_ready ?? 0) > 0) {
+      actions.push({ label: "Show food-ready tables", state: "food_ready", count: counts.food_ready!, colorClass: "text-yellow-300" })
+    }
+    if ((counts.bill_requested ?? 0) > 0) {
+      actions.push({ label: "Show bill-requested tables", state: "bill_requested", count: counts.bill_requested!, colorClass: "text-orange-400" })
+    }
+    if ((counts.available ?? 0) > 0) {
+      actions.push({ label: "Show available tables", state: "available", count: counts.available!, colorClass: "text-emerald-400" })
+    }
+    return actions
+  }, [query, tables])
   const recentTables = !query
     ? recentHistory
         .map((h) => tables.find((t) => t.id === h.tableId))
@@ -115,8 +148,8 @@ export function CommandSearch({
         const qIdx = selectedIndex
         if (qIdx < quickActions.length) {
           // Quick action
-          if (onStatusFilter && quickActions[qIdx].filter.status) {
-            onStatusFilter(quickActions[qIdx].filter.status![0])
+          if (onStatusFilter) {
+            onStatusFilter(quickActions[qIdx].state)
           }
           close()
         } else {
@@ -225,8 +258,8 @@ export function CommandSearch({
                       type="button"
                       data-search-item
                       onClick={() => {
-                        if (onStatusFilter && action.filter.status) {
-                          onStatusFilter(action.filter.status[0])
+                        if (onStatusFilter) {
+                          onStatusFilter(action.state)
                         }
                         close()
                       }}
@@ -237,7 +270,7 @@ export function CommandSearch({
                           : "text-muted-foreground hover:bg-accent/50"
                       )}
                     >
-                      <AlertTriangle className={cn("h-4 w-4 shrink-0", action.color)} />
+                      <AlertTriangle className={cn("h-4 w-4 shrink-0", action.colorClass)} />
                       <span>{action.label}</span>
                       <span className="ml-auto font-mono text-xs text-muted-foreground/70">
                         ({action.count})
@@ -344,8 +377,8 @@ export function CommandSearch({
                         type="button"
                         data-search-item
                         onClick={() => {
-                          if (onStatusFilter && action.filter.status) {
-                            onStatusFilter(action.filter.status[0])
+                          if (onStatusFilter) {
+                            onStatusFilter(action.state)
                           }
                           close()
                         }}
@@ -356,7 +389,7 @@ export function CommandSearch({
                             : "text-muted-foreground hover:bg-accent/40"
                         )}
                       >
-                        <AlertTriangle className={cn("h-3.5 w-3.5 shrink-0", action.color)} />
+                        <AlertTriangle className={cn("h-3.5 w-3.5 shrink-0", action.colorClass)} />
                         <span className="text-xs">{action.label}</span>
                         <span className="ml-auto rounded-md bg-secondary/80 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
                           {action.count}
@@ -425,7 +458,19 @@ function SearchResultItem({
   showTimestamp?: boolean
   id?: string
 }) {
-  const cfg = floorStatusConfig[table.status]
+  const cfg = TABLE_COLOR_STATES[
+    table.status === "urgent"
+      ? "needs_attention"
+      : table.alerts?.includes("food_ready")
+        ? "food_ready"
+        : table.status === "billing"
+          ? "bill_requested"
+          : table.status === "active"
+            ? "occupied"
+            : table.status === "closed"
+              ? "cleaning"
+              : "available"
+  ]
   const seatedMins = table.seatedAt ? minutesAgo(table.seatedAt) : null
 
   return (
@@ -443,8 +488,7 @@ function SearchResultItem({
     >
       {/* Status dot */}
       <span
-        className="h-2.5 w-2.5 shrink-0 rounded-full"
-        style={{ backgroundColor: cfg.color, boxShadow: `0 0 6px ${cfg.color}` }}
+        className={cn("h-2.5 w-2.5 shrink-0 rounded-full", cfg.dotClass)}
       />
 
       {/* Info */}
@@ -473,11 +517,13 @@ function SearchResultItem({
       <span
         className={cn(
           "shrink-0 rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold",
-          table.status === "free" && "bg-emerald-500/15 text-emerald-400",
-          table.status === "active" && "bg-amber-500/15 text-amber-400",
-          table.status === "urgent" && "bg-red-500/15 text-red-400",
-          table.status === "billing" && "bg-blue-500/15 text-blue-400",
-          table.status === "closed" && "bg-secondary text-muted-foreground"
+          cfg.label === "Available" && "bg-emerald-500/15 text-emerald-400",
+          cfg.label === "Reserved" && "bg-violet-500/15 text-violet-300",
+          cfg.label === "Occupied" && "bg-sky-500/15 text-sky-300",
+          cfg.label === "Food Ready" && "bg-yellow-500/15 text-yellow-200",
+          cfg.label === "Bill Requested" && "bg-orange-500/15 text-orange-300",
+          cfg.label === "Needs Server" && "bg-red-500/15 text-red-400",
+          cfg.label === "Cleaning" && "bg-secondary text-muted-foreground"
         )}
       >
         {cfg.label}

@@ -17,6 +17,7 @@ import {
   formatTime12h,
   formatDateFull,
 } from "@/lib/detail-modal-data"
+import { formatReservationDurationCompact } from "@/lib/listview-data"
 import { cn } from "@/lib/utils"
 
 interface DetailHeaderProps {
@@ -261,7 +262,7 @@ export function DetailHeader({ reservation, onClose, onCancelReservation, onSeat
             <h2 className="truncate text-lg font-bold text-foreground">{reservation.guestName}</h2>
           </div>
           <p className="mt-0.5 text-sm text-zinc-400">
-            Party of {reservation.partySize} &middot; {formatDateFull(reservation.date)} &middot; {formatTime12h(reservation.time)}
+            Party of {reservation.partySize} &middot; {formatReservationDurationCompact(reservation.duration)} stay &middot; {formatDateFull(reservation.date)} &middot; {formatTime12h(reservation.time)}
           </p>
         </div>
         <button

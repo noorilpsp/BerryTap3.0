@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import type { GuestSegment, SortOption, ViewMode } from "@/lib/guests-data"
-import { SEGMENT_COUNTS } from "@/lib/guests-data"
 import type { GuestsViewSegmentCounts } from "@/lib/guests/guestsView"
+import { EMPTY_SEGMENT_COUNTS } from "@/lib/guests/guestsView"
 
 interface GuestTopBarProps {
   search: string
@@ -51,7 +51,7 @@ export function GuestTopBar({
   const inputRef = useRef<HTMLInputElement>(null)
   const [searchFocused, setSearchFocused] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
-  const segments = buildSegments(segmentCounts ?? SEGMENT_COUNTS)
+  const segments = buildSegments(segmentCounts ?? EMPTY_SEGMENT_COUNTS)
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {

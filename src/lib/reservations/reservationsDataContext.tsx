@@ -17,6 +17,8 @@ import {
   type Reservation,
   type WaitlistParty,
 } from "@/lib/reservations-data";
+import { getTableLanesFromStore } from "@/lib/timeline-data";
+import { getZonesFromTableLanes, type ReservationZone } from "@/lib/reservations/zones";
 import { refreshReservationsView } from "./refreshReservationsView";
 import type { ReservationsView, ReservationsViewConfig } from "./reservationsView";
 import { getDefaultCapacitySlots } from "./buildCapacitySlots";
@@ -30,6 +32,8 @@ export type ReservationsConfigCompatible = {
   totalSeats: number;
   totalTables: number;
   servicePeriods: Array<{ id: string; name: string; label: string; start: string; end: string }>;
+  sectionLabels?: Record<string, string>;
+  floorplans?: Array<{ id: string; name: string; isActive: boolean }>;
 };
 
 function toCompatibleConfig(c: ReservationsViewConfig): ReservationsConfigCompatible {
@@ -44,6 +48,8 @@ function toCompatibleConfig(c: ReservationsViewConfig): ReservationsConfigCompat
       start: p.start,
       end: p.end,
     })),
+    ...(c.sectionLabels ? { sectionLabels: c.sectionLabels } : {}),
+    ...(c.floorplans ? { floorplans: c.floorplans } : {}),
   };
 }
 
@@ -51,6 +57,14 @@ type ReservationsDataValue = {
   reservations: Reservation[];
   waitlistParties: WaitlistParty[];
   refresh: ReservationsRefreshFn;
+  /** Real tables for the location (authoritative). */
+  tables: import("@/store/types").StoreTable[];
+  /** Timeline lanes derived from real tables. */
+  tableLanes: ReturnType<typeof getTableLanesFromStore>;
+  /** Canonical zone list derived from table lanes. */
+  zones: ReservationZone[];
+  /** Section id -> display name from Builder floor plan sections. */
+  zoneLabels: Readonly<Record<string, string>>;
   /** Real config from ReservationsView; minimal fallback only when config unavailable. */
   config: ReservationsConfigCompatible;
   /** Real capacity slots from engine; fallback when view has none. */
@@ -83,11 +97,16 @@ export function ReservationsDataProvider({
 }: ReservationsDataProviderProps) {
   const { currentLocationId } = useLocation();
   const [hasSynced, setHasSynced] = useState(false);
+  const [reservationTables, setReservationTables] = useState(
+    () => initialReservationsView?.tables ?? []
+  );
   const storeData = useReservationsFromStore();
   const storeCapacitySlots = useRestaurantStore((s) => s.capacitySlots);
   const setReservations = useRestaurantStore((s) => s.setReservations);
   const setWaitlist = useRestaurantStore((s) => s.setWaitlist);
   const setCapacitySlots = useRestaurantStore((s) => s.setCapacitySlots);
+  const storeTables = useRestaurantStore((s) => s.tables);
+  const setTables = useRestaurantStore((s) => s.setTables);
 
   const refresh = useCallback<ReservationsRefreshFn>(
     async (silent) => {
@@ -110,6 +129,10 @@ export function ReservationsDataProvider({
     setReservations(initialReservationsView.reservations);
     setWaitlist(initialReservationsView.waitlist);
     setCapacitySlots(initialReservationsView.capacitySlots);
+    if (Array.isArray(initialReservationsView.tables)) {
+      setReservationTables(initialReservationsView.tables);
+      setTables(initialReservationsView.tables);
+    }
     setHasSynced(true);
   }, [
     initialReservationsView,
@@ -117,7 +140,14 @@ export function ReservationsDataProvider({
     setReservations,
     setWaitlist,
     setCapacitySlots,
+    setReservationTables,
+    setTables,
   ]);
+
+  useEffect(() => {
+    if (!Array.isArray(initialReservationsView?.tables)) return;
+    setReservationTables(initialReservationsView.tables);
+  }, [initialReservationsView?.tables]);
 
   const config = useMemo<ReservationsConfigCompatible>(() => {
     const c = initialReservationsView?.config;
@@ -137,10 +167,30 @@ export function ReservationsDataProvider({
     return getDefaultCapacitySlots(config.totalSeats || 78);
   }, [storeCapacitySlots, initialReservationsView?.capacitySlots, config.totalSeats]);
 
+  const effectiveTables = reservationTables.length > 0 ? reservationTables : storeTables;
+  const tableLanes = useMemo(
+    () => (effectiveTables.length > 0 ? getTableLanesFromStore(effectiveTables) : []),
+    [effectiveTables]
+  );
+  const zoneLabels = useMemo(() => config.sectionLabels ?? {}, [config.sectionLabels]);
+  const zones = useMemo(
+    () => getZonesFromTableLanes(tableLanes, zoneLabels),
+    [tableLanes, zoneLabels]
+  );
+
   const value = useMemo<ReservationsDataValue>(() => {
     const data =
       initialMapped && !hasSynced ? initialMapped : storeData;
-    return { ...data, refresh, config, capacitySlots };
+    return {
+      ...data,
+      refresh,
+      config,
+      capacitySlots,
+      tables: effectiveTables,
+      tableLanes,
+      zones,
+      zoneLabels,
+    };
   }, [
     initialMapped,
     hasSynced,
@@ -149,6 +199,10 @@ export function ReservationsDataProvider({
     refresh,
     config,
     capacitySlots,
+    effectiveTables,
+    tableLanes,
+    zones,
+    zoneLabels,
   ]);
 
   return (

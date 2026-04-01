@@ -49,7 +49,8 @@ interface SeatPartyModalProps {
   tables: FloorTable[]
   preSelectedTableId?: string | null
   onClose: () => void
-  onSeated: (formData: SeatPartyForm) => void
+  onSeated: (formData: SeatPartyForm) => Promise<boolean>
+  onViewTable?: (tableId: string) => void
 }
 
 // ── Dietary icons ────────────────────────────────────────────────────────────
@@ -73,7 +74,7 @@ const occasionIcons: Record<OccasionId, typeof Cake> = {
 
 // ── Main Component ───────────────────────────────────────────────────────────
 
-export function SeatPartyModal({ sectionConfig = defaultSectionConfig, currentServer: currentServerProp, open, tables, preSelectedTableId, onClose, onSeated }: SeatPartyModalProps) {
+export function SeatPartyModal({ sectionConfig = defaultSectionConfig, currentServer: currentServerProp, open, tables, preSelectedTableId, onClose, onSeated, onViewTable }: SeatPartyModalProps) {
   const currentServer = currentServerProp ?? defaultCurrentServer
   const isMobile = useIsMobile()
   const inputRef = useRef<HTMLInputElement>(null)
@@ -95,6 +96,7 @@ export function SeatPartyModal({ sectionConfig = defaultSectionConfig, currentSe
   const [showNotes, setShowNotes] = useState(false)
   const [tableFilter, setTableFilter] = useState<SectionId | null>(null)
   const [validationError, setValidationError] = useState<string | null>(null)
+  const [submissionError, setSubmissionError] = useState<string | null>(null)
 
   // Reset when modal opens/closes
   useEffect(() => {
@@ -118,6 +120,7 @@ export function SeatPartyModal({ sectionConfig = defaultSectionConfig, currentSe
       setShowOccasion(false)
       setShowNotes(false)
       setValidationError(null)
+      setSubmissionError(null)
       setTableFilter(null)
       setCustomSize("")
     }
@@ -223,17 +226,19 @@ export function SeatPartyModal({ sectionConfig = defaultSectionConfig, currentSe
 
   const handleSeat = useCallback(() => {
     if (!form.tableId) return
+    setSubmissionError(null)
     setModalState("seating")
-    // Simulate seating (300ms)
-    setTimeout(() => {
-      setModalState("success")
-    }, 500)
-  }, [form.tableId])
+    void onSeated(form).then((ok) => {
+      if (ok) {
+        setModalState("success")
+        return
+      }
+      setSubmissionError("Failed to seat party. Please try again.")
+      setModalState("form")
+    })
+  }, [form, onSeated])
 
   const handleSuccess = useCallback((action: "view" | "another") => {
-    if (form.tableId) {
-      onSeated(form)
-    }
     if (action === "another") {
       setForm({ partySize: 2, tableId: null, dietary: [], occasion: null, notes: "" })
       setStep("size")
@@ -242,10 +247,14 @@ export function SeatPartyModal({ sectionConfig = defaultSectionConfig, currentSe
       setShowDietary(false)
       setShowOccasion(false)
       setShowNotes(false)
+      setSubmissionError(null)
     } else {
+      if (form.tableId) {
+        onViewTable?.(form.tableId)
+      }
       onClose()
     }
-  }, [form, onSeated, onClose])
+  }, [form.tableId, onClose, onViewTable])
 
   // ── Keyboard shortcuts ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -440,6 +449,11 @@ export function SeatPartyModal({ sectionConfig = defaultSectionConfig, currentSe
       {validationError && (
         <div className="flex items-center gap-2 border-t border-red-400/10 bg-red-500/[0.06] px-5 py-2.5">
           <span className="text-xs font-medium text-red-400">{validationError}</span>
+        </div>
+      )}
+      {submissionError && (
+        <div className="flex items-center gap-2 border-t border-red-400/10 bg-red-500/[0.06] px-5 py-2.5">
+          <span className="text-xs font-medium text-red-400">{submissionError}</span>
         </div>
       )}
 

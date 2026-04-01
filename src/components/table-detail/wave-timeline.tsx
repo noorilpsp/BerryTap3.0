@@ -4,6 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { ChevronLeft, ChevronRight, Flame, ChevronDown, ChevronUp, Send } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import {
+  getWaveStatusChipClass,
+  getWaveStatusPulseRgb,
+} from "@/components/shared/wave-badges"
 import type { Wave, Seat, WaveType } from "@/lib/table-data"
 import { waveStatusConfig, statusConfig, minutesAgo } from "@/lib/table-data"
 
@@ -27,29 +31,6 @@ function getWaveItems(seats: Seat[], waveType: WaveType) {
     }
   }
   return items
-}
-
-function getWaveChipClass(status: Wave["status"]): string {
-  if (status === "served") {
-    return "border-emerald-500/45 bg-emerald-500/15 text-emerald-200"
-  }
-  if (status === "ready") {
-    return "border-red-400/45 bg-red-500/15 text-red-200"
-  }
-  if (status === "preparing") {
-    return "border-amber-400/45 bg-amber-500/15 text-amber-200"
-  }
-  if (status === "fired") {
-    return "border-cyan-300/45 bg-cyan-400/15 text-cyan-100"
-  }
-  return "border-muted-foreground/35 bg-muted/40 text-muted-foreground"
-}
-
-function getWaveChipPulseRgb(status: Wave["status"]): string | null {
-  if (status === "ready") return "248 113 113"
-  if (status === "preparing") return "251 191 36"
-  if (status === "fired") return "103 232 249"
-  return null
 }
 
 export function WaveTimeline({
@@ -283,12 +264,12 @@ export function WaveTimeline({
               >
                 <span
                   style={{
-                    ["--ring-rgb" as string]: getWaveChipPulseRgb(wave.status) ?? "248 113 113",
+                    ["--ring-rgb" as string]: getWaveStatusPulseRgb(wave.status) ?? "248 113 113",
                   }}
                   className={cn(
                     "inline-flex h-6 items-center rounded border px-2 text-[11px] font-semibold",
-                    getWaveChipClass(wave.status),
-                    getWaveChipPulseRgb(wave.status) && "animate-status-ring"
+                    getWaveStatusChipClass(wave.status),
+                    getWaveStatusPulseRgb(wave.status) && "animate-status-ring"
                   )}
                 >
                   {waveChipLabel}

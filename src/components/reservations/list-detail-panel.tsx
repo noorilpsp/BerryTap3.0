@@ -17,6 +17,7 @@ import {
   Users,
   UtensilsCrossed,
   StickyNote,
+  Timer,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -31,6 +32,7 @@ import {
   getStatusBadge,
   getRiskDisplay,
   formatTime12h,
+  formatReservationDurationCompact,
 } from "@/lib/listview-data"
 import { cn } from "@/lib/utils"
 
@@ -108,7 +110,7 @@ export function ListDetailPanel({ reservation, open, onClose, onCancel }: ListDe
 
           <div className="flex-1 space-y-5 px-5 py-4">
             {/* Quick info grid */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               <div className="flex items-center gap-2 rounded-lg bg-zinc-900/60 p-2.5">
                 <Clock className="h-4 w-4 text-zinc-500" />
                 <div>
@@ -124,6 +126,15 @@ export function ListDetailPanel({ reservation, open, onClose, onCancel }: ListDe
                 </div>
               </div>
               <div className="flex items-center gap-2 rounded-lg bg-zinc-900/60 p-2.5">
+                <Timer className="h-4 w-4 text-zinc-500" />
+                <div>
+                  <div className="text-[10px] text-zinc-500">Stay</div>
+                  <div className="text-xs font-medium text-foreground">
+                    {formatReservationDurationCompact(reservation.durationMinutes)}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 rounded-lg bg-zinc-900/60 p-2.5">
                 <MapPin className="h-4 w-4 text-zinc-500" />
                 <div>
                   <div className="text-[10px] text-zinc-500">Table</div>
@@ -135,7 +146,7 @@ export function ListDetailPanel({ reservation, open, onClose, onCancel }: ListDe
                   </div>
                 </div>
               </div>
-              <div className="flex items-center gap-2 rounded-lg bg-zinc-900/60 p-2.5">
+              <div className="flex items-center gap-2 rounded-lg bg-zinc-900/60 p-2.5 sm:col-span-2">
                 <UtensilsCrossed className="h-4 w-4 text-zinc-500" />
                 <div>
                   <div className="text-[10px] text-zinc-500">Server</div>

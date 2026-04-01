@@ -104,8 +104,6 @@ export function ElementRenderer({
           const py = cy + Math.sin(angle) * pr
           return <circle key={`p${i}`} cx={px} cy={py} r={Math.min(4, tableR * 0.12)} fill="rgba(255,255,255,0.1)" stroke="rgba(255,255,255,0.06)" strokeWidth="0.5" />
         })}
-        {/* center */}
-        <circle cx={cx} cy={cy} r={Math.min(5, tableR * 0.12)} fill="rgba(0,0,0,0.2)" />
       </svg>
     )
   }
@@ -140,7 +138,6 @@ export function ElementRenderer({
         {/* table */}
         <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill={c} stroke="rgba(255,255,255,0.25)" strokeWidth="2" />
         <ellipse cx={cx} cy={cy} rx={rx - 8} ry={ry - 6} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
-        <ellipse cx={cx} cy={cy} rx={6} ry={4} fill="rgba(0,0,0,0.2)" />
       </svg>
     )
   }

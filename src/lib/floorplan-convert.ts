@@ -90,6 +90,7 @@ export function convertElementsToStoreTables(
     const shape = getTableShape(el) as StoreTableShape;
     return {
       id: `t${tableNumber}`,
+      elementId: el.id,
       number: tableNumber,
       section,
       capacity,
@@ -126,4 +127,29 @@ export function getAssignedTableNumberForElement(
   const idx = tableElements.findIndex((el) => el.id === elementId);
   if (idx < 0 || idx >= storeTables.length) return null;
   return storeTables[idx].number;
+}
+
+/**
+ * Numbers “reserved” by other floor plans’ element order (same ordering as historical builder blocks).
+ * Pass into `convertElementsToStoreTables` as `usedTableNumbers` so multi-plan numbering matches DB sync / getConverted.
+ */
+export function getUsedTableNumbersExcludingPlan(
+  allPlans: { id: string; elements: unknown }[],
+  excludePlanId: string
+): Set<number> {
+  const used = new Set<number>();
+  let next = 1;
+  for (const plan of allPlans) {
+    const tableEls = ((plan.elements as PlacedElement[]) ?? []).filter(
+      (el) =>
+        (el.category === "tables" || el.category === "seating") && (el.seats ?? 0) > 0
+    );
+    const blockStart = next;
+    next += tableEls.length;
+    if (plan.id === excludePlanId) continue;
+    for (let i = 0; i < tableEls.length; i++) {
+      used.add(blockStart + i);
+    }
+  }
+  return used;
 }

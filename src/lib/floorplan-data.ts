@@ -1,4 +1,6 @@
-export type ZoneId = "all" | "main" | "patio" | "private"
+import type { StoreTable } from "@/store/types"
+
+export type ZoneId = "all" | string
 export type HeatMapMode =
   | "off"
   | "availability"
@@ -28,7 +30,7 @@ export type FloorTable = {
   id: string
   label: string
   seats: number
-  zone: Exclude<ZoneId, "all">
+  zone: string
   areaLabel?: string
   x: number
   y: number
@@ -148,6 +150,7 @@ export const restaurantConfig = {
   ],
 }
 
+/** Demo fallback only. Real reservations floorplan should use location tables from ReservationsView.tables. */
 export const floorTables: FloorTable[] = [
   { id: "t1", label: "T1", seats: 2, zone: "main", x: 10, y: 18, width: 8, height: 8, shape: "round" },
   { id: "t2", label: "T2", seats: 2, zone: "main", x: 23, y: 18, width: 8, height: 8, shape: "round" },
@@ -225,10 +228,50 @@ function makeReservation(id: string, minute: number, partySize: number): Reserva
 }
 
 export function getFloorTableStates(scrubTime: string): FloorTableState[] {
+  return getFloorTableStatesFromTables(scrubTime, undefined)
+}
+
+function buildFloorTablesFromStoreTables(tables: StoreTable[]): FloorTable[] {
+  if (tables.length === 0) return floorTables
+  return tables
+    .slice()
+    .sort((a, b) => a.number - b.number)
+    .map((t, i) => {
+      const gridX = 10 + (i % 6) * 14
+      const gridY = 18 + Math.floor(i / 6) * 16
+      const px = typeof t.position?.x === "number" ? t.position.x : gridX
+      const py = typeof t.position?.y === "number" ? t.position.y : gridY
+      const w = typeof t.width === "number" ? t.width : 10
+      const h = typeof t.height === "number" ? t.height : 8
+      return {
+        id: t.id,
+        label: `T${t.number}`,
+        seats: Math.max(1, t.capacity || 1),
+        zone: t.section || "main",
+        areaLabel: t.section || undefined,
+        x: px,
+        y: py,
+        width: w,
+        height: h,
+        shape:
+          t.shape === "square"
+            ? "square"
+            : t.shape === "rectangle" || t.shape === "booth"
+              ? "rectangle"
+              : "round",
+      } satisfies FloorTable
+    })
+}
+
+export function getFloorTableStatesFromTables(
+  scrubTime: string,
+  tables?: StoreTable[]
+): FloorTableState[] {
   const [h = "0", m = "0"] = scrubTime.split(":")
   const minute = Number(h) * 60 + Number(m)
+  const sourceTables = buildFloorTablesFromStoreTables(tables ?? [])
 
-  return floorTables.map((table, i) => {
+  return sourceTables.map((table, i) => {
     const status = statusForTable(i, minute)
     const seatedAt = minutesToTime(Math.max(DINNER_START_MIN, minute - (20 + i * 3)))
     const estClearTime = minutesToTime(Math.min(DINNER_END_MIN + 30, minute + (35 + i * 2)))

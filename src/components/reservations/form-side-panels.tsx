@@ -17,6 +17,7 @@ import {
   MINI_TL_NOW_OFFSET,
   formTagDefs,
 } from "@/lib/reservation-form-data"
+import type { Reservation } from "@/lib/reservations-data"
 
 interface SidePanelsProps {
   formData: ReservationFormData
@@ -24,11 +25,16 @@ interface SidePanelsProps {
   bestTable: AvailableTable | undefined
   conflicts: ConflictWarning[]
   totalSeats?: number
+  reservations?: Reservation[]
 }
 
-export function FormSidePanels({ formData, guest, bestTable, conflicts, totalSeats }: SidePanelsProps) {
+export function FormSidePanels({ formData, guest, bestTable, conflicts, totalSeats, reservations = [] }: SidePanelsProps) {
   const risk = getRiskLevel(guest)
-  const capacity = getCapacityAtTime(formData.time, totalSeats != null ? { totalSeats } : undefined)
+  const capacity = getCapacityAtTime(formData.time, {
+    totalSeats,
+    selectedDate: formData.date,
+    reservations,
+  })
   const timeLabel = (() => {
     const [h, m] = formData.time.split(":").map(Number)
     const hour = h > 12 ? h - 12 : h === 0 ? 12 : h

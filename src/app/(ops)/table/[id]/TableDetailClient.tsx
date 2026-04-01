@@ -1,8 +1,9 @@
 "use client"
 
-import { useState, useCallback, useMemo, useEffect, useRef } from "react"
+import { useState, useCallback, useMemo, useEffect, useRef, startTransition } from "react"
 import { useRouter } from "next/navigation"
 import { AlertTriangle, Trash2, Users } from "lucide-react"
+import { toast } from "sonner"
 import { TopBar } from "@/components/table-detail/top-bar"
 import { TableVisual } from "@/components/table-detail/table-visual"
 import { WaveTimeline } from "@/components/table-detail/wave-timeline"
@@ -55,11 +56,18 @@ import { useLocation } from "@/lib/contexts/LocationContext"
 import { isTableView, type TableView, type TableViewItemStatus, type TableViewUiMode } from "@/lib/pos/tableView"
 import type { StoreTable, StoreTableSessionState } from "@/store/types"
 import { storeTablesToFloorTables } from "@/lib/floor-map-data"
+import { floorMapPath } from "@/lib/floor-map/floorMapNav"
+import { prefetchFloorMapView } from "@/lib/floor-map/prefetchFloorMapView"
+import { prefetchRoute } from "@/components/ui/link"
 import { fetchPos, getPosCorrelationId, makeIdempotencyKey } from "@/lib/pos/fetchPos"
 import { fireAndForget } from "@/lib/pos/fireAndForget"
 import { posDebugError } from "@/lib/pos/posDebugError"
 import { TablePageSkeleton } from "@/components/table-detail/TablePageSkeleton"
-import { getTableCache, setTableCache, OPS_POST_SEATING_EVENT, type PostSeatingDetail } from "@/lib/view-cache"
+import { getTableCache, setTableCache, invalidateFloorMapCache, invalidateTableCache, OPS_POST_SEATING_EVENT, type PostSeatingDetail } from "@/lib/view-cache"
+import {
+  deriveCanonicalWaveStatusFromItems,
+  mapCanonicalWaveStatusToTablePageStatus,
+} from "@/lib/wave-status"
 
 function getAutoSelectedOptions(item: MenuItem): Record<string, string> {
   const options: Record<string, string> = {}
@@ -192,16 +200,9 @@ function getDraftItemWaveNumber(item: TakeOrderItem): number {
 
 /** Wave is ready only when all non-void items are ready or served (no partial station readiness). */
 function getMealWaveStatus(items: TableOrderItem[]): WaveStatus {
-  const activeItems = items.filter((item) => item.status !== "void")
-  if (activeItems.length === 0) return "held"
-  if (activeItems.every((item) => item.status === "served")) return "served"
-  const allReadyOrServed = activeItems.every(
-    (item) => item.status === "ready" || item.status === "served"
+  return mapCanonicalWaveStatusToTablePageStatus(
+    deriveCanonicalWaveStatusFromItems(items)
   )
-  if (allReadyOrServed && activeItems.some((item) => item.status === "ready")) return "ready"
-  if (activeItems.some((item) => item.status === "cooking")) return "preparing"
-  if (activeItems.some((item) => item.status === "sent")) return "fired"
-  return "held"
 }
 
 function getNextHeldWaveNumberFromItems(items: TableOrderItem[]): number | null {
@@ -298,6 +299,17 @@ function cloneTableItems(items: StoreTableSessionState["tableItems"] | undefined
   }))
 }
 
+/** Format "19:30" or "07:30" to "7:30 PM" / "7:30 AM" */
+function formatReservationTime(timeStr: string): string {
+  const parts = String(timeStr).trim().split(":")
+  const h = parseInt(parts[0] ?? "12", 10) || 0
+  const m = parseInt(parts[1] ?? "0", 10) || 0
+  const hour12 = h % 12 || 12
+  const ampm = h < 12 ? "AM" : "PM"
+  const minStr = m > 0 ? `:${String(m).padStart(2, "0")}` : ""
+  return `${hour12}${minStr} ${ampm}`
+}
+
 /** Wave number to type: 1->drinks, 2->food, 3->dessert, then cycle */
 function waveNumberToType(n: number): "drinks" | "food" | "dessert" {
   const i = ((n - 1) % 3) + 1
@@ -313,6 +325,7 @@ function mapPosShapeToUi(shape: string): TableDetail["shape"] {
 function createEmptyTableDetail(tableId: string): TableDetail {
   return {
     id: tableId,
+    floorPlanId: null,
     number: 0,
     shape: "round",
     section: "Main Dining",
@@ -395,6 +408,7 @@ function projectTableView(view: TableView | null, tableId: string): {
   const table: TableDetail = {
     ...createEmptyTableDetail(view.table.id),
     id: view.table.id,
+    floorPlanId: view.table.floorPlanId ?? null,
     number: view.table.number,
     section: view.table.section,
     shape: mapPosShapeToUi(view.table.shape),
@@ -460,6 +474,8 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
   const mutationInFlightRef = useRef(0)
   const refreshInFlightRef = useRef(false)
   const rollbackSnapshotRef = useRef<{ items?: TableView["items"]; waves?: TableView["waves"] } | null>(null)
+  /** If user exits ordering before wave creation finishes, delete once the wave exists. */
+  const pendingAutoDeleteWaveRef = useRef<number | null>(null)
   const [selectedSeat, setSelectedSeat] = useState<number | null>(null)
   const [infoOpen, setInfoOpen] = useState(false)
   const [alertDismissed, setAlertDismissed] = useState(false)
@@ -473,6 +489,7 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
   const [editingOrderItemId, setEditingOrderItemId] = useState<string | null>(null)
   const [orderItems, setOrderItems] = useState<TakeOrderItem[]>([])
   const [selectedWaveNumber, setSelectedWaveNumber] = useState(1)
+  const [autoCreatedWaveNumber, setAutoCreatedWaveNumber] = useState<number | null>(null)
   const [summaryScope, setSummaryScope] = useState<"seat" | "all">("all")
   const [warningDialog, setWarningDialog] = useState<{
     open: boolean
@@ -504,10 +521,12 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
   )
   const [tableViewError, setTableViewError] = useState<string | null>(null)
   const [kitchenDelayDismissed, setKitchenDelayDismissed] = useState(false)
+  const [closePendingLabel, setClosePendingLabel] = useState<string | null>(null)
   const waveHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const seatHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const waveHoldTriggeredRef = useRef<number | null>(null)
   const addContextPulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const closeToastRef = useRef<string | number | null>(null)
   const [addContextPulse, setAddContextPulse] = useState<{
     id: number
     targetLabel: string
@@ -542,6 +561,18 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
     () => applyOptimisticSeats(table.seats, optimisticSeatOps),
     [table.seats, optimisticSeatOps]
   )
+  const backToFloorMapHref = useMemo(() => floorMapPath(table.floorPlanId), [table.floorPlanId])
+
+  useEffect(() => {
+    prefetchRoute(backToFloorMapHref, router)
+  }, [backToFloorMapHref, router])
+
+  useEffect(() => {
+    const locationId = currentLocationId ?? tableView?.table.locationId ?? null
+    const floorplanId = table.floorPlanId?.trim() || null
+    if (!locationId || !floorplanId) return
+    void prefetchFloorMapView(locationId, floorplanId)
+  }, [currentLocationId, tableView?.table.locationId, table.floorPlanId])
 
   useEffect(() => {
     if (process.env.NODE_ENV !== "production") {
@@ -655,11 +686,18 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
   }, [applyTableView, id])
 
   const mutateThenRefresh = useCallback(
-    async <T,>(label: string, endpoint: string, fn: () => Promise<T>): Promise<T | null> =>
+    async <T,>(
+      label: string,
+      endpoint: string,
+      fn: () => Promise<T>,
+      options?: { skipRefreshOnSuccess?: boolean }
+    ): Promise<T | null> =>
       withMutation(async () => {
         try {
           const result = await fn()
-          refreshTableView({ silent: true })
+          if (!options?.skipRefreshOnSuccess) {
+            refreshTableView({ silent: true })
+          }
           return result
         } catch (error) {
           const normalized = isPosMutationError(error)
@@ -817,14 +855,30 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
     const backend = (tableView?.waves ?? []).map((w) => w.waveNumber)
     const deletedSet = new Set(optimisticWavesDeleted)
     const filtered = backend.filter((n) => !deletedSet.has(n))
-    const base = filtered.length > 0 ? filtered : [1]
+    const base = filtered
     const addedNums = optimisticWavesAdded.map((a) => a.waveNumber)
     const withOptimistic = [...new Set([...base, ...addedNums])].sort((a, b) => a - b)
-    if (withOptimistic.length === 0 || !withOptimistic.includes(1)) {
-      return [1, ...withOptimistic.filter((n) => n !== 1)].sort((a, b) => a - b)
-    }
     return withOptimistic
   }, [tableView?.waves, optimisticWavesAdded, optimisticWavesDeleted])
+
+  const heldWaveNumbers = useMemo(() => {
+    const held = new Set<number>()
+    for (const w of tableView?.waves ?? []) {
+      if (w.status === "held") held.add(w.waveNumber)
+    }
+    for (const a of optimisticWavesAdded) {
+      held.add(a.waveNumber)
+    }
+    for (const d of optimisticWavesDeleted) {
+      held.delete(d)
+    }
+    return [...held].sort((a, b) => a - b)
+  }, [optimisticWavesAdded, optimisticWavesDeleted, tableView?.waves])
+
+  const isHeldWaveNumber = useCallback(
+    (waveNumber: number) => heldWaveNumbers.includes(waveNumber),
+    [heldWaveNumbers]
+  )
   const mealProgress = useMemo(() => {
     const serverWaves = tableView?.waves ?? []
     const allItemsWithSeat = [
@@ -1098,7 +1152,7 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
   )
 
   const handleDeleteWave = useCallback(
-    (waveNumber: number) => {
+    (waveNumber: number, opts?: { force?: boolean; silent?: boolean }) => {
       const timerId = process.env.NODE_ENV !== "production" ? `[perf] deleteWave ${performance.now()}` : ""
       if (timerId) console.time(timerId)
       if (process.env.NODE_ENV !== "production") {
@@ -1111,7 +1165,7 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
         if (timerId) console.timeEnd(timerId)
         return
       }
-      if (!tableView?.actions.canDeleteWave) {
+      if (!opts?.force && !tableView?.actions.canDeleteWave) {
         if (timerId) console.timeEnd(timerId)
         setWarningDialog({
           open: true,
@@ -1168,6 +1222,9 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
         successLabel: "deleteWave",
         onSuccessPatch: (data: { deletedWaveNumber?: number }) => {
           const deleted = data?.deletedWaveNumber ?? waveNumber
+          if (pendingAutoDeleteWaveRef.current === deleted) {
+            pendingAutoDeleteWaveRef.current = null
+          }
           patchTableView((prev) => {
             const waves = prev.waves.filter((w) => w.waveNumber !== deleted)
             const waveCount = waves.length
@@ -1199,6 +1256,9 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
           const payload = res ? (await res.json().catch(() => null)) as { ok?: boolean; data?: { deletedWaveNumber?: number }; error?: unknown } | null : null
           if (process.env.NODE_ENV !== "production") console.timeEnd(`[perf] deleteWave DELETE waves/${waveNumber}`)
           if (!res?.ok || payload?.ok === false) {
+            if (opts?.silent) {
+              throw mutationError("silent")
+            }
             throw mutationError(
               toUiErrorMessage(payload?.error, res ? "Could not remove wave. Please try again." : "Network error. Please try again."),
               payload,
@@ -1217,6 +1277,141 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
       ensureSessionForMutations,
       fireAndReconcile,
       patchTableView,
+    ]
+  )
+
+  const ensureNewHeldWaveTarget = useCallback(
+    async (reason: "add_items" | "wave_picker" = "add_items") => {
+      if (!tableView?.actions.canAddWave && effectiveSessionId) {
+        setWarningDialog({
+          open: true,
+          title: "Cannot add wave",
+          description: "Adding a wave is not allowed right now.",
+        })
+        return null
+      }
+
+      // If the backend still provides an empty placeholder Wave 1 (held, 0 items),
+      // treat it as "not yet created" and adopt it as the new target instead of creating Wave 2.
+      // This keeps first Add Items on a fresh table showing only Wave 1.
+      const existingWaves = (tableView?.waves ?? []).filter((w) => !optimisticWavesDeleted.includes(w.waveNumber))
+      const hasAnyNonVoidItems = (tableView?.items ?? []).some((i) => i.status !== "void")
+      const placeholderW1 =
+        existingWaves.length === 1 &&
+        existingWaves[0]?.waveNumber === 1 &&
+        existingWaves[0]?.status === "held" &&
+        (existingWaves[0]?.itemCount ?? 0) === 0 &&
+        !hasAnyNonVoidItems
+      if (placeholderW1) {
+        setSelectedWaveNumber(1)
+        setAutoCreatedWaveNumber(1)
+        if (reason === "add_items") setArmedWaveDelete(null)
+        return 1
+      }
+
+      const nextWave = waveNumbers.length > 0 ? Math.max(...waveNumbers) + 1 : 1
+      const prevSelected = selectedWaveNumber
+      const opId = crypto.randomUUID()
+      const addEntry = { opId, waveNumber: nextWave }
+
+      setAutoCreatedWaveNumber(nextWave)
+      setWaveAddInFlight(true)
+
+      try {
+        await fireAndReconcile({
+          label: "Failed to add wave",
+          endpoint: "/api/sessions/{sid}/waves/next",
+          optimisticApply: () => {
+            setOptimisticWavesAdded((prev) => [...prev, addEntry])
+            setSelectedWaveNumber(nextWave)
+            if (reason === "add_items") setArmedWaveDelete(null)
+          },
+          optimisticRollback: () => {
+            setWaveAddInFlight(false)
+            setOptimisticWavesAdded((prev) => prev.filter((a) => a.opId !== opId))
+            setSelectedWaveNumber(prevSelected)
+            setAutoCreatedWaveNumber(null)
+          },
+          onSuccessClearOptimistic: () => {
+            setWaveAddInFlight(false)
+            setOptimisticWavesAdded((prev) => prev.filter((a) => a.opId !== opId))
+          },
+          successLabel: "addWave",
+          onSuccessPatch: (data: { waveNumber?: number }) => {
+            const waveNum = data?.waveNumber ?? nextWave
+            patchTableView((prev) => {
+              const newWave = {
+                waveNumber: waveNum,
+                status: "held" as const,
+                itemCount: 0,
+                canFire: false,
+                canAdvanceToPreparing: false,
+                canAdvanceToReady: false,
+                canAdvanceToServed: false,
+              }
+              const waves = [...prev.waves, newWave].sort((a, b) => a.waveNumber - b.waveNumber)
+              const waveCount = waves.length
+              return {
+                ...prev,
+                waves,
+                openSession: prev.openSession
+                  ? { ...prev.openSession, waveCount }
+                  : null,
+                actions: {
+                  ...prev.actions,
+                  canDeleteWave: true,
+                },
+              }
+            })
+            queueMicrotask(() => {
+              const pending = pendingAutoDeleteWaveRef.current
+              if (pending == null || pending !== waveNum) return
+              handleDeleteWave(pending, { force: true, silent: true })
+            })
+          },
+          requestFn: async () => {
+            const sid = await ensureSessionForMutations()
+            if (!sid) throw mutationError("Could not open a session for this table.")
+            const url = `/api/sessions/${encodeURIComponent(sid)}/waves/next`
+            const res = await fetchPos(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ eventSource: "table_page" }),
+            }).catch(() => null)
+            const payload = res ? await res.json().catch(() => null) : null
+            if (!res?.ok || payload?.ok === false) {
+              throw mutationError(
+                toUiErrorMessage(
+                  (payload as { error?: unknown })?.error,
+                  res ? "Could not create wave. Please try again." : "Network error. Please try again."
+                ),
+                payload,
+                res
+              )
+            }
+            const data = (payload as { ok?: boolean; data?: { waveNumber?: number } })?.data
+            return data ? { waveNumber: data.waveNumber ?? nextWave } : { waveNumber: nextWave }
+          },
+        })
+      } catch {
+        // fireAndReconcile handles UI; rollback already occurred
+        return null
+      }
+
+      return nextWave
+    },
+    [
+      effectiveSessionId,
+      ensureSessionForMutations,
+      fireAndReconcile,
+      handleDeleteWave,
+      patchTableView,
+      selectedWaveNumber,
+      tableView?.actions.canAddWave,
+      waveNumbers,
+      optimisticWavesDeleted,
+      tableView?.items,
+      tableView?.waves,
     ]
   )
 
@@ -1987,7 +2182,10 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
     if (projectedSeats.length === 0) return
     setSelectedSeat(seatNumber)
     setIsOrderingInline(true)
-  }, [projectedSeats.length])
+    // Policy: Add Items always targets a NEW held wave by default.
+    // Create/select the new wave immediately (optimistically) so users start in the right target.
+    void ensureNewHeldWaveTarget("add_items")
+  }, [ensureNewHeldWaveTarget, projectedSeats.length])
 
   const handleQuantityChange = useCallback((itemId: string, delta: number) => {
     setOrderItems((prev) =>
@@ -2003,15 +2201,27 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
     setOrderItems((prev) => prev.filter((item) => item.id !== itemId))
   }, [])
 
-  const handleExitOrderingView = useCallback(() => {
+  const handleExitOrderingView = useCallback((opts?: { draftItems?: TakeOrderItem[] }) => {
     clearWaveHoldTimer()
     clearSeatHoldTimer()
     setArmedWaveDelete(null)
     setArmedSeatDelete(null)
+    // Cleanup: if we created a new wave but no items were actually added, delete it.
+    if (autoCreatedWaveNumber !== null) {
+      const draftItems = opts?.draftItems ?? orderItems
+      const draftHasItemsInWave = draftItems.some((d) => getDraftItemWaveNumber(d) === autoCreatedWaveNumber)
+      const persistedHasItemsInWave =
+        (tableView?.items ?? []).some((i) => i.status !== "void" && i.waveNumber === autoCreatedWaveNumber)
+      if (!draftHasItemsInWave && !persistedHasItemsInWave) {
+        pendingAutoDeleteWaveRef.current = autoCreatedWaveNumber
+        handleDeleteWave(autoCreatedWaveNumber, { force: true, silent: true })
+      }
+      setAutoCreatedWaveNumber(null)
+    }
     setIsOrderingInline(false)
     setSelectedSeat(null)
     setDiscardDraftDialogOpen(false)
-  }, [clearSeatHoldTimer, clearWaveHoldTimer])
+  }, [autoCreatedWaveNumber, clearSeatHoldTimer, clearWaveHoldTimer, handleDeleteWave, orderItems, tableView?.items])
 
   const handleSendCurrentOrder = useCallback(async () => {
     if (orderItems.length === 0 && !nextSendableWaveNumber) return
@@ -2258,22 +2468,28 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
   const handleCloseTable = useCallback(
     async (
       arg?: { force?: boolean } | { mode: string; method: string; subtotal: number; tip: number; total: number; charges: Array<{ label: string; amount: number }> }
-    ) => mutateThenRefresh("Cannot close table", "/api/sessions/{sid}/close", async () => {
-      const idempotencyKey = makeIdempotencyKey()
-      const isPaymentSummary = arg != null && "total" in arg
-      const options = isPaymentSummary ? undefined : (arg as { force?: boolean } | undefined)
-      const payment = isPaymentSummary
-        ? {
-            amount: (arg as { total: number }).total,
-            tipAmount: (arg as { tip: number }).tip ?? 0,
-            method: ((arg as { method: string }).method ?? "other") as "card" | "cash" | "mobile" | "other",
-          }
-        : {
-            amount: table.bill?.total ?? 0,
-            tipAmount: 0,
-            method: "other" as const,
-          }
-      if (currentLocationId && activeStoreTable?.id) {
+    ) => {
+      const isForceClose = arg != null && !("total" in arg) && arg.force === true
+      const pendingLabel = isForceClose ? "Force closing table..." : "Closing table..."
+      setClosePendingLabel(pendingLabel)
+      closeToastRef.current = toast.loading(pendingLabel)
+
+      const result = await mutateThenRefresh("Cannot close table", "/api/sessions/{sid}/close", async () => {
+        const idempotencyKey = makeIdempotencyKey()
+        const isPaymentSummary = arg != null && "total" in arg
+        const options = isPaymentSummary ? undefined : (arg as { force?: boolean } | undefined)
+        const payment = isPaymentSummary
+          ? {
+              amount: (arg as { total: number }).total,
+              tipAmount: (arg as { tip: number }).tip ?? 0,
+              method: ((arg as { method: string }).method ?? "other") as "card" | "cash" | "mobile" | "other",
+            }
+          : {
+              amount: table.bill?.total ?? 0,
+              tipAmount: 0,
+              method: "other" as const,
+            }
+
         type CloseResult = {
           ok: boolean
           reason?: string
@@ -2284,34 +2500,38 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
           paymentsTotal?: number
           correlationId?: string
         }
+
         const sid = effectiveSessionId
-        const result: CloseResult = sid
-          ? await fetchPos(`/api/sessions/${sid}/close`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                payment,
-                options,
-                eventSource: "table_page",
-              }),
-            }, { idempotencyKey })
-              .then(async (response) => {
-                const payload = await response.json().catch(() => null)
-                if (payload && typeof payload === "object") {
-                  return payload as CloseResult
-                }
-                return {
-                  ok: false,
-                  reason: response.ok ? "unknown_error" : "request_failed",
-                  error: response.ok ? "Unknown response" : response.statusText,
-                } satisfies CloseResult
-              })
-              .catch(() => ({ ok: false, reason: "network_error", error: "Network request failed" }) satisfies CloseResult)
-          : ({ ok: false, reason: "session_not_open" } satisfies CloseResult)
-        if (!result.ok) {
-          const fallbackReason = toUiErrorMessage(result.error, "")
+        if (!sid) {
+          throw mutationError("Session is not open.")
+        }
+
+        const closeResult: CloseResult = await fetchPos(`/api/sessions/${sid}/close`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            payment,
+            options,
+            eventSource: "table_page",
+          }),
+        }, { idempotencyKey })
+          .then(async (response) => {
+            const payload = await response.json().catch(() => null)
+            if (payload && typeof payload === "object") {
+              return payload as CloseResult
+            }
+            return {
+              ok: false,
+              reason: response.ok ? "unknown_error" : "request_failed",
+              error: response.ok ? "Unknown response" : response.statusText,
+            } satisfies CloseResult
+          })
+          .catch(() => ({ ok: false, reason: "network_error", error: "Network request failed" }) satisfies CloseResult)
+
+        if (!closeResult.ok) {
+          const fallbackReason = toUiErrorMessage(closeResult.error, "")
           const reason =
-            result.reason ??
+            closeResult.reason ??
             (fallbackReason === "unfinished_items" ||
             fallbackReason === "unpaid_balance" ||
             fallbackReason === "invalid_tip" ||
@@ -2322,11 +2542,11 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
               : undefined)
           const msg =
             reason === "unfinished_items"
-              ? typeof result.items?.length === "number"
-                ? `Cannot close: ${result.items.length} item(s) still pending, preparing, or ready. Finish or void them first.`
+              ? typeof closeResult.items?.length === "number"
+                ? `Cannot close: ${closeResult.items.length} item(s) still pending, preparing, or ready. Finish or void them first.`
                 : "Cannot close: items are still pending, preparing, or ready. Finish or void them first."
               : reason === "unpaid_balance"
-                ? `Cannot close: $${(result.remaining ?? 0).toFixed(2)} unpaid. Session total: $${(result.sessionTotal ?? 0).toFixed(2)}, payments: $${(result.paymentsTotal ?? 0).toFixed(2)}.`
+                ? `Cannot close: $${(closeResult.remaining ?? 0).toFixed(2)} unpaid. Session total: $${(closeResult.sessionTotal ?? 0).toFixed(2)}, payments: $${(closeResult.paymentsTotal ?? 0).toFixed(2)}.`
                 : reason === "invalid_tip"
                   ? "Tip amount must be >= 0."
                   : reason === "payment_in_progress"
@@ -2335,11 +2555,10 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
                       ? "Cannot close: items sent to kitchen but not yet started."
                       : reason === "session_not_open"
                         ? "Session is not open."
-                        : toUiErrorMessage(result.error, "Cannot close table.")
-          throw mutationError(msg, result, null)
-          return
+                        : toUiErrorMessage(closeResult.error, "Cannot close table.")
+          throw mutationError(msg, closeResult, null)
         }
-      if (sid && result.ok) {
+
         fireAndForget(
           fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
             method: "POST",
@@ -2351,21 +2570,38 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
           }),
           "record payment_completed event"
         )
-      }
-    }
-    if (activeStoreTable?.orderId) {
-      closeOrder(activeStoreTable.orderId, table.bill)
-    }
 
-    setOrderItems([])
-    setSelectedSeat(null)
-    setIsOrderingInline(false)
-    setPaymentOpen(false)
-    setInfoOpen(false)
-    setAlertDismissed(false)
-    router.push("/floor-map")
-  }),
-    [activeStoreTable, closeOrder, currentLocationId, table.bill, router, effectiveSessionId, mutateThenRefresh]
+        return { sessionId: sid }
+      }, { skipRefreshOnSuccess: true })
+
+      if (!result) {
+        setClosePendingLabel(null)
+        if (closeToastRef.current != null) {
+          toast.error("Table was not closed.", { id: closeToastRef.current })
+          closeToastRef.current = null
+        }
+        return
+      }
+
+      if (activeStoreTable?.orderId) {
+        closeOrder(activeStoreTable.orderId, table.bill)
+      }
+
+      invalidateTableCache(id)
+      if (currentLocationId) {
+        invalidateFloorMapCache(currentLocationId)
+      }
+
+      if (closeToastRef.current != null) {
+        toast.success("Table closed.", { id: closeToastRef.current })
+        closeToastRef.current = null
+      }
+
+      startTransition(() => {
+        router.push(floorMapPath(table.floorPlanId))
+      })
+    },
+    [activeStoreTable, closeOrder, currentLocationId, table.bill, table.floorPlanId, router, effectiveSessionId, id, mutateThenRefresh]
   )
 
   const handlePaymentComplete = handleCloseTable
@@ -2400,6 +2636,11 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
 
   const handleQuickAddMenuItem = useCallback((item: MenuItem) => {
     const seatNumber = selectedSeatNumber ?? 0
+    if (!isHeldWaveNumber(selectedWaveNumber)) {
+      // Safety: never add into locked waves.
+      void ensureNewHeldWaveTarget("add_items")
+      return
+    }
     const selectedOptions = getAutoSelectedOptions(item)
     const optionUpcharge = getAutoOptionUpcharge(item, selectedOptions)
     const unitPrice = item.price + optionUpcharge
@@ -2419,9 +2660,10 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
 
     setOrderItems((prev) => [...prev, newOrderItem])
     triggerAddContextPulse(seatNumber, selectedWaveNumber)
-  }, [selectedSeatNumber, selectedWaveNumber, triggerAddContextPulse])
+  }, [ensureNewHeldWaveTarget, isHeldWaveNumber, selectedSeatNumber, selectedWaveNumber, triggerAddContextPulse])
 
-  const handleSeated = useCallback(async (formData: import("@/lib/floor-map-data").SeatPartyForm) => mutateThenRefresh("Failed to seat party", "/api/sessions/ensure", async () => {
+  const handleSeated = useCallback(async (formData: import("@/lib/floor-map-data").SeatPartyForm) => {
+    const result = await mutateThenRefresh("Failed to seat party", "/api/sessions/ensure", async () => {
     if (!currentLocationId) {
       setWarningDialog({
         open: true,
@@ -2471,7 +2713,9 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
     setArmedWaveDelete(null)
     setArmedSeatDelete(null)
     setOrderItems([])
-  }), [activeStoreTable, currentLocationId, id, mutateThenRefresh, openOrderForTable])
+    })
+    return result !== null
+  }, [activeStoreTable, currentLocationId, id, mutateThenRefresh, openOrderForTable])
 
   if (tableView === null && !tableViewError) {
     return <TablePageSkeleton />
@@ -2484,7 +2728,15 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
         table={table}
         onToggleInfo={() => setInfoOpen((v) => !v)}
         onCloseTable={handleCloseTable}
+        closePendingLabel={closePendingLabel}
       />
+
+      {closePendingLabel && (
+        <div className="mx-3 mt-2 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200 md:mx-4">
+          <span className="inline-block h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
+          <span>{closePendingLabel}</span>
+        </div>
+      )}
 
       {tableViewError && (
         <div className="mx-3 mt-2 flex items-center justify-between rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200 md:mx-4">
@@ -2555,7 +2807,7 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
                   </div>
                   <Button
                     variant="outline"
-                    onClick={() => router.push("/floor-map")}
+                    onClick={() => router.push(floorMapPath(table.floorPlanId))}
                     className="gap-2"
                   >
                     Back to floor map
@@ -2602,14 +2854,20 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
                         </span>
                         <div className="relative z-30 -mx-2 my-[-8px] flex min-w-0 max-w-[min(36vw,22rem)] items-center gap-1 overflow-x-auto scrollbar-none px-2 py-2">
                           {waveNumbers.map((waveNumber) => (
+                            (() => {
+                              const isHeld = isHeldWaveNumber(waveNumber)
+                              const locked = !isHeld
+                              return (
                             <div key={waveNumber} className="relative flex shrink-0 items-center">
                               <button
                                 type="button"
+                                disabled={locked}
                                 onClick={() => {
                                   if (waveHoldTriggeredRef.current === waveNumber) {
                                     waveHoldTriggeredRef.current = null
                                     return
                                   }
+                                  if (!isHeld) return
                                   if (selectedWaveNumber === waveNumber) {
                                     setArmedWaveDelete((prev) =>
                                       prev === waveNumber ? null : waveNumber
@@ -2632,15 +2890,18 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
                                 onPointerCancel={clearWaveHoldTimer}
                                 onContextMenu={(e) => {
                                   e.preventDefault()
+                                  if (!isHeld) return
                                   setArmedWaveDelete(waveNumber)
                                 }}
                                 className={`h-7 shrink-0 rounded-md border px-2 text-[11px] font-semibold transition-colors ${
                                   selectedWaveNumber === waveNumber
                                     ? "relative z-40 border-amber-400 bg-amber-500/15 text-amber-200 animate-selected-chip [--chip-glow:rgba(251,191,36,0.5)]"
-                                    : "border-border bg-background text-muted-foreground hover:bg-accent"
+                                    : locked
+                                      ? "border-border/50 bg-background/30 text-muted-foreground/40 cursor-not-allowed"
+                                      : "border-border bg-background text-muted-foreground hover:bg-accent"
                                 }`}
                                 aria-label={`Wave ${waveNumber}`}
-                                title="Hold to reveal delete"
+                                title={locked ? "Wave is locked (not editable)" : "Hold to reveal delete"}
                               >
                                 W{waveNumber}
                               </button>
@@ -2660,11 +2921,15 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
                                 </button>
                               )}
                             </div>
+                              )
+                            })()
                           ))}
                           <button
                             type="button"
                             disabled={waveAddInFlight}
-                            onClick={handleAddWave}
+                            onClick={() => {
+                              void ensureNewHeldWaveTarget("wave_picker")
+                            }}
                             className="relative z-50 h-7 shrink-0 rounded-md border border-border bg-background px-2 text-[11px] font-semibold text-muted-foreground transition-colors hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation"
                             aria-label="Add wave"
                             title="Add wave"
@@ -2854,10 +3119,10 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
                         >
                           <div className="animate-add-context-burst rounded-2xl border border-sky-300/40 bg-slate-950/45 px-7 py-5 shadow-[0_24px_64px_rgba(2,6,23,0.68)] backdrop-blur-[2px]">
                             <div className="flex items-center gap-4">
-                              <span className="inline-flex h-20 min-w-[8.5rem] items-center justify-center rounded-2xl border border-amber-300/60 bg-gradient-to-b from-amber-300/30 to-amber-700/24 px-5 text-4xl font-black tracking-[0.08em] text-amber-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.4),0_14px_28px_rgba(245,158,11,0.32)]">
+                              <span className="inline-flex h-20 min-w-34 items-center justify-center rounded-2xl border border-amber-300/60 bg-linear-to-b from-amber-300/30 to-amber-700/24 px-5 text-4xl font-black tracking-[0.08em] text-amber-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.4),0_14px_28px_rgba(245,158,11,0.32)]">
                                 {addContextPulse.waveLabel}
                               </span>
-                              <span className="inline-flex h-20 min-w-[8.5rem] items-center justify-center rounded-2xl border border-sky-300/60 bg-gradient-to-b from-sky-300/32 to-sky-700/24 px-5 text-4xl font-black tracking-[0.08em] text-sky-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.46),0_14px_28px_rgba(14,165,233,0.34)]">
+                              <span className="inline-flex h-20 min-w-34 items-center justify-center rounded-2xl border border-sky-300/60 bg-linear-to-b from-sky-300/32 to-sky-700/24 px-5 text-4xl font-black tracking-[0.08em] text-sky-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.46),0_14px_28px_rgba(14,165,233,0.34)]">
                                 {addContextPulse.targetLabel}
                               </span>
                             </div>
@@ -2902,6 +3167,22 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
                 </div>
               ) : (
                 <>
+                  {/* Reservation info - when session originated from reservation */}
+                  {tableView?.reservation && (
+                    <div className="mx-3 mt-3 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-2.5 md:mx-4 md:mt-4 lg:mx-5 lg:mt-5">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-400/90">
+                        Reserved for
+                      </p>
+                      <p className="mt-0.5 font-medium text-foreground">
+                        {tableView.reservation.guestName}
+                      </p>
+                      <p className="mt-0.5 text-sm text-muted-foreground">
+                        {formatReservationTime(tableView.reservation.reservationTime)}
+                        {" · "}
+                        Party of {tableView.reservation.partySize}
+                      </p>
+                    </div>
+                  )}
                   {/* Wave Timeline */}
                   {hasMealProgress && (
                     <div className="mb-4 px-3 pb-1 pt-3 md:px-4 md:pb-1 md:pt-4 lg:px-5 lg:pb-1 lg:pt-5">
@@ -3104,7 +3385,7 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
         seats={orderSeats}
         defaultSeat={customizeDefaults?.seat ?? selectedSeat ?? projectedSeats[0]?.number ?? 1}
         defaultWave={customizeDefaults?.wave ?? selectedWaveNumber}
-        waveOptions={waveNumbers}
+        waveOptions={heldWaveNumbers}
         submitLabel={editingOrderItemId ? "Save Changes" : "Add to Order"}
         open={!!customizingItem}
         onClose={() => {
@@ -3167,7 +3448,8 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
                 setCustomizingItem(null)
                 setCustomizeDefaults(null)
                 setEditingOrderItemId(null)
-                handleExitOrderingView()
+                // Discard clears drafts immediately; run cleanup against the post-discard empty draft state.
+                handleExitOrderingView({ draftItems: [] })
               }}
             >
               Discard

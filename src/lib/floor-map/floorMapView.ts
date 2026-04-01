@@ -19,8 +19,18 @@ export type FloorMapTableStage =
   | "bill"
   | null;
 
+/** Reservation overlay when table is reserved (free but assigned to upcoming reservation). */
+export interface FloorMapTableReservation {
+  id: string;
+  guestName: string;
+  partySize: number;
+  time: string;
+}
+
 export interface FloorMapTable {
   id: string;
+  /** Builder placed-element id; links scene elements to `tables` when numbers differ across floor plans. */
+  elementId?: string;
   number: number;
   section: string;
   status: FloorMapTableStatus;
@@ -38,6 +48,9 @@ export interface FloorMapTable {
   rotation?: number;
   waves?: { type: string; status: string }[];
   billTotal?: number;
+  /** True when table is free but assigned to an upcoming reservation within window. Visual overlay only; sessions remain source of truth for status. */
+  reserved?: boolean;
+  reservation?: FloorMapTableReservation;
 }
 
 export interface FloorMapView {
@@ -141,7 +154,7 @@ export function viewTablesToStoreTables(
   }));
 }
 
-/** Map FloorMapTable[] to FloorTable format for MapCanvas/GridView. Includes optional waves/billTotal/serverId for live detail. */
+/** Map FloorMapTable[] to FloorTable format for MapCanvas/GridView. Includes optional waves/billTotal/serverId for live detail, reserved/reservation for overlay. */
 export function viewTablesToFloorTables(
   tables: FloorMapTable[]
 ): Array<{
@@ -163,6 +176,8 @@ export function viewTablesToFloorTables(
   width?: number;
   height?: number;
   rotation?: number;
+  reserved?: boolean;
+  reservation?: FloorMapTableReservation;
 }> {
   return tables.map((t) => ({
     id: t.id,
@@ -174,6 +189,7 @@ export function viewTablesToFloorTables(
     stage: t.stage,
     position: t.position,
     shape: t.shape,
+    ...(t.elementId ? { elementId: t.elementId } : {}),
     server: t.serverName ?? t.serverId ?? null,
     serverId: t.serverId ?? null,
     seatedAt: t.seatedAt ?? undefined,
@@ -183,5 +199,7 @@ export function viewTablesToFloorTables(
     width: t.width,
     height: t.height,
     rotation: t.rotation,
+    reserved: t.reserved,
+    reservation: t.reservation,
   }));
 }

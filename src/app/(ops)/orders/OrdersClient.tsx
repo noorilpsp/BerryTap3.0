@@ -1,10 +1,24 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+
+/**
+ * Extract error message from API payload. Handles { error: { message?: string } }.
+ * Returns fallback when payload shape is unexpected.
+ */
+function getPayloadErrorMessage(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== "object") return fallback
+  const err = (payload as { error?: unknown }).error
+  if (!err || typeof err !== "object" || !("message" in err)) return fallback
+  const msg = (err as { message?: unknown }).message
+  return typeof msg === "string" && msg.trim() ? msg : fallback
+}
+import Link from "next/link"
 import { AlertTriangle, Armchair, Banknote, CheckCircle2, ChevronDown, ChevronUp, Clock3, CreditCard, Flame, HandPlatter, MapPinned, RefreshCw, Search, ShoppingBag, Store, Users } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
+import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { fetchPos } from "@/lib/pos/fetchPos"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
@@ -479,12 +493,54 @@ function OrderCard({
   )
 }
 
-interface OrdersClientProps {
-  initialOrdersView: OrdersView | null
+function OrdersNoLocationState() {
+  return (
+    <div className="flex h-full min-h-[400px] flex-col items-center justify-center gap-4 bg-[radial-gradient(circle_at_12%_8%,rgba(34,211,238,0.16),transparent_35%),radial-gradient(circle_at_84%_0%,rgba(16,185,129,0.12),transparent_32%),hsl(222,24%,8%)] text-foreground px-4">
+      <Store className="h-12 w-12 text-muted-foreground/60" strokeWidth={1.5} />
+      <p className="text-center text-base font-medium text-muted-foreground max-w-sm">
+        No location selected. Select a store in dashboard or settings.
+      </p>
+      <Link
+        href="/dashboard"
+        className="rounded-lg border border-white/15 bg-white/[0.06] px-4 py-2 text-sm font-medium text-foreground/90 hover:bg-white/10 transition-colors"
+      >
+        Go to Dashboard
+      </Link>
+    </div>
+  )
 }
 
-export function OrdersClient({ initialOrdersView }: OrdersClientProps) {
+function OrdersErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="flex h-full min-h-[400px] flex-col items-center justify-center gap-4 bg-[radial-gradient(circle_at_12%_8%,rgba(34,211,238,0.16),transparent_35%),radial-gradient(circle_at_84%_0%,rgba(16,185,129,0.12),transparent_32%),hsl(222,24%,8%)] px-4 text-foreground">
+      <AlertTriangle className="h-12 w-12 text-amber-500/80" strokeWidth={1.5} />
+      <p className="max-w-sm text-center text-base font-medium text-muted-foreground">{message}</p>
+      <Button
+        onClick={onRetry}
+        variant="outline"
+        className="rounded-lg border-white/15 bg-white/[0.06] text-foreground/90 hover:bg-white/10"
+      >
+        Retry
+      </Button>
+    </div>
+  )
+}
+
+interface OrdersClientProps {
+  initialOrdersView: OrdersView | null
+  /** When set, show error state instead of board. Retry re-fetches via router.refresh(). */
+  loadError?: string | null
+}
+
+export function OrdersClient({ initialOrdersView, loadError }: OrdersClientProps) {
   const router = useRouter()
+
+  if (loadError) {
+    return <OrdersErrorState message={loadError} onRetry={() => router.refresh()} />
+  }
+  if (initialOrdersView === null) {
+    return <OrdersNoLocationState />
+  }
   const [query, setQuery] = useState("")
   const [boardMode, setBoardMode] = useState<BoardMode>("live")
   const [sourceFilter, setSourceFilter] = useState<"all" | OrderSource>("all")
@@ -528,11 +584,7 @@ export function OrdersClient({ initialOrdersView }: OrdersClientProps) {
           toast.success(`${order.label} marked served`)
           router.refresh()
         } else {
-          const msg =
-            (payload?.error && typeof payload.error === "object" && "message" in payload.error
-              ? (payload.error as { message?: string }).message
-              : null) ?? "Failed to mark served. Please try again."
-          toast.error(msg)
+          toast.error(getPayloadErrorMessage(payload, "Failed to mark served. Please try again."))
         }
       } catch {
         toast.error("Request failed. Please try again.")
@@ -681,11 +733,7 @@ export function OrdersClient({ initialOrdersView }: OrdersClientProps) {
           toast.success(`${order.label} — Wave ${nextWave} fired`)
           router.refresh()
         } else {
-          const msg =
-            (payload?.error && typeof payload.error === "object" && "message" in payload.error
-              ? (payload.error as { message?: string }).message
-              : null) ?? "Failed to fire wave. Please try again."
-          toast.error(msg)
+          toast.error(getPayloadErrorMessage(payload, "Failed to fire wave. Please try again."))
         }
       } catch {
         toast.error("Request failed. Please try again.")

@@ -26,7 +26,7 @@ export function ListView() {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const { reservations, waitlistParties } = useReservationsData()
+  const { reservations, waitlistParties, zones } = useReservationsData()
   const { deleteReservation, removeFromWaitlist } = useRestaurantMutations()
 
   const [detailReservation, setDetailReservation] = useState<ListReservation | null>(null)
@@ -281,6 +281,7 @@ export function ListView() {
             onGroupByChange={setGroupBy}
             activeGroupBy={groupBy}
             activeFilters={activeFilters}
+            zoneOptions={zones.map((z) => z.name)}
             onAddFilter={handleAddFilter}
             onRemoveFilter={handleRemoveFilter}
             onClearFilters={handleClearFilters}

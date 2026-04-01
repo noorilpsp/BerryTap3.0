@@ -5,7 +5,7 @@
 
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { tables, sessions, seats, orders, orderItems } from "@/lib/db/schema/orders";
+import { tables, sessions, seats, orders, orderItems, reservations } from "@/lib/db/schema/orders";
 import type { OutstandingItemsResult } from "@/app/actions/session-close-validation";
 import { computeKitchenDelaysFromOrderItems } from "@/lib/pos/computeKitchenDelays";
 import { computeOutstanding } from "@/lib/pos/computeOutstanding";
@@ -112,6 +112,7 @@ export async function buildTableView(
           columns: {
             id: true,
             locationId: true,
+            floorPlanId: true,
             tableNumber: true,
             displayId: true,
             status: true,
@@ -135,6 +136,7 @@ export async function buildTableView(
           columns: {
             id: true,
             locationId: true,
+            floorPlanId: true,
             tableNumber: true,
             displayId: true,
             status: true,
@@ -160,11 +162,33 @@ export async function buildTableView(
       guestCount: true,
       openedAt: true,
       status: true,
+      reservationId: true,
     },
     orderBy: (s, { desc }) => [desc(s.openedAt)],
   });
 
   const sessionId = openSession?.id ?? null;
+
+  let reservation: TableView["reservation"] = undefined;
+  if (openSession?.reservationId) {
+    const resRow = await db.query.reservations.findFirst({
+      where: eq(reservations.id, openSession.reservationId),
+      columns: {
+        id: true,
+        customerName: true,
+        partySize: true,
+        reservationTime: true,
+      },
+    });
+    if (resRow) {
+      reservation = {
+        id: resRow.id,
+        guestName: resRow.customerName ?? "Guest",
+        partySize: resRow.partySize ?? 1,
+        reservationTime: resRow.reservationTime ?? "12:00",
+      };
+    }
+  }
 
   const [seatRows, orderRows] = sessionId
     ? await Promise.all([
@@ -403,6 +427,7 @@ export async function buildTableView(
     table: {
       id: table.id,
       locationId: table.locationId,
+      floorPlanId: table.floorPlanId ?? null,
       number: tableNumberToInt(table.tableNumber || table.displayId),
       displayId: table.displayId ?? table.tableNumber,
       status: furnitureStatus,
@@ -449,6 +474,7 @@ export async function buildTableView(
       items,
       table.stage ?? null
     ),
+    ...(reservation && { reservation }),
   };
 
   if (!isTableView(tableView)) return null;

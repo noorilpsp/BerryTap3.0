@@ -17,11 +17,13 @@ import {
   getCourseLabel,
   formatTime12h,
 } from "@/lib/floorplan-data"
+import type { ReservationZone } from "@/lib/reservations/zones"
 
 interface TableNodeProps {
   state: FloorTableState
   heatMap: HeatMapMode
   zone: ZoneId
+  zones: ReservationZone[]
   isSelected: boolean
   whatIfMode: boolean
   onSelect: (tableId: string) => void
@@ -94,7 +96,9 @@ export function FloorplanTableNode({
   state,
   heatMap,
   zone,
+  zones,
   isSelected,
+  const zoneLabel = zones.find((z) => z.id === table.zone)?.name ?? table.zone
   whatIfMode,
   onSelect,
   onDragOver,
@@ -152,7 +156,7 @@ export function FloorplanTableNode({
   const isPulsing = state.status === "arriving-soon" || state.status === "high-risk"
 
   // ARIA label
-  const ariaLabel = `Table ${table.label}, ${table.seats} seats${table.areaLabel ? `, ${table.areaLabel} area` : ""}, ${table.zone === "main" ? "Main Dining" : table.zone === "patio" ? "Patio" : "Private Room"}${state.currentGuest ? `, currently occupied by ${state.currentGuest}` : ""}${state.nextReservation ? `, next reservation ${state.nextReservation.guestName} at ${formatTime12h(state.nextReservation.time)}` : ""}`
+  const ariaLabel = `Table ${table.label}, ${table.seats} seats${table.areaLabel ? `, ${table.areaLabel} area` : ""}, ${zoneLabel}${state.currentGuest ? `, currently occupied by ${state.currentGuest}` : ""}${state.nextReservation ? `, next reservation ${state.nextReservation.guestName} at ${formatTime12h(state.nextReservation.time)}` : ""}`
 
   return (
     <button

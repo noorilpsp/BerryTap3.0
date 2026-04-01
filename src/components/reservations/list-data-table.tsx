@@ -33,6 +33,7 @@ import {
   getStatusBadge,
   getRiskDisplay,
   formatTimeShort,
+  formatReservationDurationCompact,
   groupReservations,
 } from "@/lib/listview-data"
 import { cn } from "@/lib/utils"
@@ -203,7 +204,7 @@ export function ListDataTable({
     <div ref={tableRef} className="flex-1 overflow-auto" role="table" aria-label="Reservations list">
       {/* Table header */}
       <div
-        className="sticky top-0 z-10 grid grid-cols-[40px_repeat(9,minmax(0,1fr))_40px] items-center gap-2 border-b border-zinc-800 bg-zinc-950/90 px-4 py-2 backdrop-blur-sm lg:px-6"
+        className="sticky top-0 z-10 grid grid-cols-[40px_repeat(10,minmax(0,1fr))_40px] items-center gap-2 border-b border-zinc-800 bg-zinc-950/90 px-4 py-2 backdrop-blur-sm lg:px-6"
         role="row"
       >
         <div role="columnheader">
@@ -220,6 +221,7 @@ export function ListDataTable({
         <SortHeader field="time">Time</SortHeader>
         <SortHeader field="guestName">Guest</SortHeader>
         <SortHeader field="partySize">Party</SortHeader>
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Stay</div>
         <SortHeader field="table">Table</SortHeader>
         <SortHeader field="status">Status</SortHeader>
         <SortHeader field="risk">Risk</SortHeader>
@@ -269,7 +271,7 @@ export function ListDataTable({
                   onClick={() => onOpenDetail(r)}
                   onMouseEnter={() => onFocusRow(r.id)}
                   className={cn(
-                    "group grid cursor-pointer grid-cols-[40px_repeat(9,minmax(0,1fr))_40px] items-center gap-2 border-b border-zinc-800/30 px-4 py-2 transition-colors lg:px-6",
+                    "group grid cursor-pointer grid-cols-[40px_repeat(10,minmax(0,1fr))_40px] items-center gap-2 border-b border-zinc-800/30 px-4 py-2 transition-colors lg:px-6",
                     "hover:bg-zinc-800/50",
                     isFocused && "bg-zinc-800/40",
                     isSelected && "bg-emerald-500/5",
@@ -278,7 +280,7 @@ export function ListDataTable({
                     idx < 20 && "list-row-stagger"
                   )}
                   style={{ "--row-index": idx } as React.CSSProperties}
-                  aria-label={`${formatTimeShort(r.time)}, ${r.guestName}, party of ${r.partySize}, ${r.table ?? "no table"}, ${statusBadge.label}, ${riskDisplay.label} risk`}
+                  aria-label={`${formatTimeShort(r.time)}, ${r.guestName}, party of ${r.partySize}, ${formatReservationDurationCompact(r.durationMinutes)} stay, ${r.table ?? "no table"}, ${statusBadge.label}, ${riskDisplay.label} risk`}
                 >
                   {/* Checkbox */}
                   <div role="cell" onClick={(e) => e.stopPropagation()}>
@@ -311,6 +313,11 @@ export function ListDataTable({
                   {/* Party */}
                   <div role="cell" className="text-center text-xs tabular-nums text-zinc-300">
                     {r.partySize}
+                  </div>
+
+                  {/* Duration */}
+                  <div role="cell" className="text-xs tabular-nums text-zinc-400">
+                    {formatReservationDurationCompact(r.durationMinutes)}
                   </div>
 
                   {/* Table */}

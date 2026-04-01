@@ -23,12 +23,12 @@ import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
 import { formatTime24h, type ZoomLevel } from "@/lib/timeline-data"
 import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
-
 interface TimelineTopBarProps {
   zoom: ZoomLevel
   onZoomChange: (z: ZoomLevel) => void
-  zoneFilter: string
-  onZoneFilterChange: (zone: string) => void
+  floorplans: Array<{ id: string; name: string }>
+  floorplanFilter: string
+  onFloorplanFilterChange: (floorplanId: string) => void
   partySizeFilter: string
   onPartySizeFilterChange: (filter: string) => void
   showGhosts: boolean
@@ -43,8 +43,9 @@ interface TimelineTopBarProps {
 export function TimelineTopBar({
   zoom,
   onZoomChange,
-  zoneFilter,
-  onZoneFilterChange,
+  floorplans,
+  floorplanFilter,
+  onFloorplanFilterChange,
   partySizeFilter,
   onPartySizeFilterChange,
   showGhosts,
@@ -59,12 +60,10 @@ export function TimelineTopBar({
   const [desktopDateOpen, setDesktopDateOpen] = useState(false)
   const [mobileDateOpen, setMobileDateOpen] = useState(false)
 
-  const zoneLabels: Record<string, string> = {
-    all: "All Zones",
-    main: "Main Dining",
-    patio: "Patio",
-    private: "Private Room",
-  }
+  const planLabels: Array<{ id: string; name: string }> = [
+    { id: "all", name: "All floorplans" },
+    ...floorplans,
+  ]
   const partyFilterLabels: Record<string, string> = {
     all: "All Parties",
     "1-2": "1-2p",
@@ -173,20 +172,20 @@ export function TimelineTopBar({
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="sm" className="h-7 px-2.5 text-xs text-muted-foreground hover:text-foreground">
-                  {zoneLabels[zoneFilter]}
+                  {planLabels.find((p) => p.id === floorplanFilter)?.name ?? "All floorplans"}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent className="border-zinc-700 bg-zinc-900">
-                {Object.entries(zoneLabels).map(([key, label]) => (
+                {planLabels.map(({ id, name }) => (
                   <DropdownMenuItem
-                    key={key}
-                    onClick={() => onZoneFilterChange(key)}
+                    key={id}
+                    onClick={() => onFloorplanFilterChange(id)}
                     className={cn(
                       "text-foreground focus:bg-zinc-800 focus:text-foreground",
-                      zoneFilter === key && "bg-zinc-800"
+                      floorplanFilter === id && "bg-zinc-800"
                     )}
                   >
-                    {label}
+                    {name}
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>
@@ -266,7 +265,7 @@ export function TimelineTopBar({
         </div>
       </div>
 
-      {/* Row 2: Zoom, zone filter, ghost toggle */}
+      {/* Row 2: Zoom, floorplan filter, ghost toggle */}
       <div className="flex items-center justify-between border-t border-zinc-800/50 px-4 py-2 md:hidden lg:px-6">
         <div className="flex items-center gap-3">
           {/* Zoom levels */}
@@ -292,26 +291,26 @@ export function TimelineTopBar({
           {/* Separator */}
           <div className="hidden h-5 w-px bg-zinc-700/50 sm:block" />
 
-          {/* Zone filter */}
+          {/* Floorplan filter */}
           <div className="hidden items-center gap-1.5 sm:flex">
             <Filter className="h-3.5 w-3.5 text-muted-foreground" />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="sm" className="h-7 px-2.5 text-xs text-muted-foreground hover:text-foreground">
-                  {zoneLabels[zoneFilter]}
+                  {planLabels.find((p) => p.id === floorplanFilter)?.name ?? "All floorplans"}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent className="border-zinc-700 bg-zinc-900">
-                {Object.entries(zoneLabels).map(([key, label]) => (
+                {planLabels.map(({ id, name }) => (
                   <DropdownMenuItem
-                    key={key}
-                    onClick={() => onZoneFilterChange(key)}
+                    key={id}
+                    onClick={() => onFloorplanFilterChange(id)}
                     className={cn(
                       "text-foreground focus:bg-zinc-800 focus:text-foreground",
-                      zoneFilter === key && "bg-zinc-800"
+                      floorplanFilter === id && "bg-zinc-800"
                     )}
                   >
-                    {label}
+                    {name}
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>

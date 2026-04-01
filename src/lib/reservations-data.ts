@@ -39,6 +39,10 @@ export interface Reservation {
   partySize: number
   time: string // "HH:MM" format
   date?: string // ISO date "YYYY-MM-DD" when from store
+  /** End of hold window (HH:MM). When absent, derived from durationMinutes / party default. */
+  endTime?: string
+  /** Planned sitting length in minutes (from store). */
+  durationMinutes?: number
   status: ReservationStatus
   risk: RiskLevel
   riskScore?: number // percentage for high-risk
@@ -169,6 +173,8 @@ function storeReservationToReservation(r: StoreReservation): Reservation {
     partySize: r.partySize,
     time: time24,
     date: r.date,
+    endTime: r.endTime,
+    durationMinutes: r.duration,
     status: mapStoreStatusToReservationStatus(r.status),
     risk: "low",
     table: r.table ?? r.tableId ?? null,

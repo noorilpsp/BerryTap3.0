@@ -12,7 +12,8 @@ import type { OrdersView } from "./ordersView";
 
 export type GetOrdersViewResult =
   | { data: OrdersView }
-  | { error: "UNAUTHORIZED" | "FORBIDDEN" | "NO_LOCATION" };
+  | { error: "UNAUTHORIZED" | "FORBIDDEN" | "NO_LOCATION" }
+  | { error: "LOAD_ERROR"; message?: string };
 
 /**
  * Fetch OrdersView for server-side render.
@@ -39,10 +40,14 @@ export async function getOrdersView(): Promise<GetOrdersViewResult> {
     return { error: "FORBIDDEN" };
   }
 
-  const view = await buildOrdersView(locationId);
-  if (!view) {
-    return { error: "NO_LOCATION" };
+  try {
+    const view = await buildOrdersView(locationId);
+    if (!view) {
+      return { error: "NO_LOCATION" };
+    }
+    return { data: view };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : undefined;
+    return { error: "LOAD_ERROR", message };
   }
-
-  return { data: view };
 }

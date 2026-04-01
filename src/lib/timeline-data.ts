@@ -68,7 +68,8 @@ export interface TableLane {
   id: string
   label: string                // e.g. "T1"
   seats: number
-  zone: "main" | "patio" | "private"
+  /** Canonical section id from StoreTable.section (real floorplan sections). */
+  zone: string
 }
 
 interface GhostQueryOptions {
@@ -80,36 +81,8 @@ interface GhostQueryOptions {
 
 // ── Table Definitions ────────────────────────────────────────────────────────
 
-export const tableLanes: TableLane[] = [
-  // Main Dining
-  { id: "T1",  label: "T1",  seats: 2, zone: "main" },
-  { id: "T3",  label: "T3",  seats: 2, zone: "main" },
-  { id: "T4",  label: "T4",  seats: 2, zone: "main" },
-  { id: "T5",  label: "T5",  seats: 2, zone: "main" },
-  { id: "T7",  label: "T7",  seats: 4, zone: "main" },
-  { id: "T8",  label: "T8",  seats: 4, zone: "main" },
-  { id: "T9",  label: "T9",  seats: 4, zone: "main" },
-  { id: "T12", label: "T12", seats: 4, zone: "main" },
-  { id: "T14", label: "T14", seats: 4, zone: "main" },
-  { id: "T16", label: "T16", seats: 4, zone: "main" },
-  // Patio
-  { id: "T18", label: "T18", seats: 2, zone: "patio" },
-  { id: "T19", label: "T19", seats: 4, zone: "patio" },
-  { id: "T20", label: "T20", seats: 4, zone: "patio" },
-  { id: "T21", label: "T21", seats: 2, zone: "patio" },
-  { id: "T22", label: "T22", seats: 6, zone: "patio" },
-  // Private Room
-  { id: "T23", label: "T23", seats: 6, zone: "private" },
-  { id: "T24", label: "T24", seats: 4, zone: "private" },
-  { id: "T25", label: "T25", seats: 4, zone: "private" },
-]
-
 /** Build table lanes from store tables so the timeline only shows tables from the floor plan. */
 export function getTableLanesFromStore(tables: StoreTable[]): TableLane[] {
-  const sectionToZone = (section: StoreTable["section"]): TableLane["zone"] => {
-    if (section === "bar") return "main"
-    return section
-  }
   return tables
     .slice()
     .sort((a, b) => a.number - b.number)
@@ -117,15 +90,9 @@ export function getTableLanesFromStore(tables: StoreTable[]): TableLane[] {
       id: `T${t.number}`,
       label: `T${t.number}`,
       seats: t.capacity,
-      zone: sectionToZone(t.section),
+      zone: t.section,
     }))
 }
-
-export const zones = [
-  { id: "main" as const,    name: "Main Dining" },
-  { id: "patio" as const,   name: "Patio" },
-  { id: "private" as const, name: "Private Room" },
-]
 
 // ── Time Axis Config ─────────────────────────────────────────────────────────
 
@@ -1226,7 +1193,7 @@ export function getMergedForTable(tableId: string): MergedBlock | undefined {
 }
 
 export function getTablesForZone(zoneId: string, lanes?: TableLane[]): TableLane[] {
-  const list = lanes ?? tableLanes
+  const list = lanes ?? []
   return list.filter((t) => t.zone === zoneId)
 }
 

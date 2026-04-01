@@ -11,7 +11,10 @@ import {
   getDurationForParty,
   formatDuration,
   getCapacityAtTime,
+  isTimeSlotGloballyViable,
 } from "@/lib/reservation-form-data"
+import type { Reservation } from "@/lib/reservations-data"
+import type { ReservationZone } from "@/lib/reservations/zones"
 
 interface FormBookingDetailsProps {
   date: string
@@ -24,9 +27,16 @@ interface FormBookingDetailsProps {
   tableSeatLimit?: number
   tableSeatLabel?: string
   zonePreference: string
+  zones?: ReservationZone[]
   fitContextLabel?: string
   timeFitByTime?: Record<string, { tone: "open" | "busy" | "tight" | "short" | "full" | "closed"; label: string; available: number; total: number; ratio: number; maxDurationMinutes?: number }>
   totalSeats?: number
+  /** Store/API reservations for the location; drives capacity for the selected date. */
+  reservations?: Reservation[]
+  /** False when a table is assigned and its continuous free window is shorter than `duration`. */
+  selectedTableFitsDuration?: boolean
+  /** Set when placement has a concrete table (auto or manual). */
+  assignedTableId?: string | null
   onDateChange: (date: string) => void
   onTimeChange: (time: string) => void
   onPartySizeChange: (size: number) => void
@@ -76,15 +86,28 @@ function normalizeTime24(timeValue: string): string {
   return `${h}:${m}`
 }
 
+/**
+ * Time dropdown dot colors (global layer — not the assigned table):
+ * - Emerald + "open" / fit label: global table-fit is favorable (or capacity <70% if fit data missing).
+ * - Amber / red: capacity pressure bands (70%+ / 90%+).
+ * - Violet + short label: some tables work but not for full `duration` (partial window).
+ * - Zinc: no global fit at this slot (disabled row).
+ */
 function getPressureTone(
   time24: string,
-  totalSeats?: number
+  totalSeats?: number,
+  selectedDate?: string,
+  reservations?: Reservation[]
 ): {
   itemClass: string
   dotClass: string
   pressureLabel: string | null
 } {
-  const cap = getCapacityAtTime(time24, totalSeats != null ? { totalSeats } : undefined)
+  const cap = getCapacityAtTime(time24, {
+    totalSeats,
+    selectedDate,
+    reservations,
+  })
   if (!cap) {
     return {
       itemClass: "text-muted-foreground",
@@ -164,9 +187,13 @@ export function FormBookingDetails({
   tableSeatLimit,
   tableSeatLabel,
   zonePreference,
+  zones = [],
   fitContextLabel,
   timeFitByTime = {},
   totalSeats,
+  reservations: reservationsProp,
+  selectedTableFitsDuration = true,
+  assignedTableId = null,
   onDateChange,
   onTimeChange,
   onPartySizeChange,
@@ -204,8 +231,12 @@ export function FormBookingDetails({
   })()
   const autoDuration = getDurationForParty(partySize)
   const isCustomDuration = duration !== autoDuration
-  const capacity = getCapacityAtTime(normalizedTime, totalSeats != null ? { totalSeats } : undefined)
-  const availableSet = new Set(availableTimes.map(normalizeTime24))
+  const reservations = reservationsProp ?? []
+  const capacity = getCapacityAtTime(normalizedTime, {
+    totalSeats,
+    selectedDate: date,
+    reservations,
+  })
   const renderedTimeSlots = (() => {
     if (isPastDate) return []
     const base = (allTimes.length > 0 ? allTimes : availableTimes).map(normalizeTime24)
@@ -369,12 +400,7 @@ export function FormBookingDetails({
           Zone Preference
         </label>
         <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-          {[
-            { id: "any", label: "No Pref" },
-            { id: "main", label: "Main" },
-            { id: "patio", label: "Patio" },
-            { id: "private", label: "Private" },
-          ].map((zone) => (
+          {[{ id: "any", label: "No Pref" }, ...zones.map((z) => ({ id: z.id, label: z.name }))].map((zone) => (
             <button
               key={zone.id}
               type="button"
@@ -490,12 +516,15 @@ export function FormBookingDetails({
             </SelectTrigger>
             <SelectContent className="max-h-60">
               {renderedTimeSlots.map((slotTime) => {
-                const slotFit = timeFitByTime[slotTime]
-                const isFullFit = availableSet.has(slotTime) || slotTime === normalizedTime
-                const isShortFit = slotFit?.tone === "short" && slotTime !== normalizedTime
-                const isUnavailable = !isFullFit && !isShortFit
+                const slotKey = normalizeTime24(slotTime)
+                const slotFit = timeFitByTime[slotKey] ?? timeFitByTime[slotTime]
+                const isCurrentSlot = slotKey === normalizedTime
+                const globallyOk = isTimeSlotGloballyViable(slotFit)
+                const isSelectable = globallyOk || isCurrentSlot
+                const isShortFit = slotFit?.tone === "short" && !isCurrentSlot
+                const isUnavailable = !isSelectable && !isShortFit
                 const isDisabled = isUnavailable || isShortFit
-                const slotMinutes = toMinutes(slotTime)
+                const slotMinutes = toMinutes(slotKey)
                 const startedAgoMinutes = (
                   nowMinutes !== null
                   && Number.isFinite(slotMinutes)
@@ -513,7 +542,7 @@ export function FormBookingDetails({
                   : (() => {
                       if (isShortFit && slotFit) return getFitTone(slotFit)
                       if (slotFit) return getFitTone(slotFit)
-                      const base = getPressureTone(slotTime, totalSeats)
+                      const base = getPressureTone(slotKey, totalSeats, date, reservations)
                       if (base.pressureLabel) return base
                       // If no capacity snapshot exists for this time, treat open slots as low pressure.
                       return {
@@ -564,6 +593,11 @@ export function FormBookingDetails({
           {isPastDate && (
             <p className="mt-1.5 text-[10px] text-amber-300/90">
               Past dates cannot be booked.
+            </p>
+          )}
+          {!isPastDate && assignedTableId && !selectedTableFitsDuration && (
+            <p className="mt-1.5 text-[10px] text-amber-300/90">
+              Selected table may not fit the full stay at this time — shorten duration, change time, or pick another table.
             </p>
           )}
           {(capacity || selectedFit) && (

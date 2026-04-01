@@ -8,32 +8,26 @@ import {
   type HeatMapMode,
   type ZoneId,
   type FloorTableState,
-  floorTables,
-  serverSections,
 } from "@/lib/floorplan-data"
+import type { ReservationZone } from "@/lib/reservations/zones"
 import { FloorplanTableNode } from "./floorplan-table-node"
 
 interface CanvasProps {
   tableStates: FloorTableState[]
   heatMap: HeatMapMode
   zone: ZoneId
+  zones: ReservationZone[]
   selectedTable: string | null
   whatIfMode: boolean
   highlightedSeats?: number | null
   onSelectTable: (id: string) => void
 }
 
-// Zone boundaries for labels and overlays
-const zoneBounds = {
-  main:    { x: 3, y: 5, w: 66, h: 82, label: "MAIN DINING" },
-  patio:   { x: 3, y: 88, w: 84, h: 11, label: "PATIO" },
-  private: { x: 76, y: 12, w: 20, h: 65, label: "PRIVATE ROOM" },
-}
-
 export function FloorplanCanvas({
   tableStates,
   heatMap,
   zone,
+  zones,
   selectedTable,
   whatIfMode,
   onSelectTable,
@@ -113,6 +107,18 @@ export function FloorplanCanvas({
 
   // Server section overlays (only in server-load mode)
   const renderServerOverlays = heatMap === "server-load"
+  const zoneBounds = useCallback(
+    (zoneId: string) => {
+      const zoneTables = tableStates.map((s) => s.table).filter((t) => t.zone === zoneId)
+      if (zoneTables.length === 0) return null
+      const minX = Math.max(0, Math.min(...zoneTables.map((t) => t.x)) - 4)
+      const minY = Math.max(0, Math.min(...zoneTables.map((t) => t.y)) - 4)
+      const maxX = Math.min(100, Math.max(...zoneTables.map((t) => t.x + t.width)) + 4)
+      const maxY = Math.min(100, Math.max(...zoneTables.map((t) => t.y + t.height)) + 4)
+      return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
+    },
+    [tableStates]
+  )
 
   return (
     <div className="relative flex-1 overflow-hidden bg-zinc-950">
@@ -185,16 +191,17 @@ export function FloorplanCanvas({
           />
 
           {/* Zone regions */}
-          {Object.entries(zoneBounds).map(([zoneId, bounds]) => {
+          {zones.map((z) => {
+            const bounds = zoneBounds(z.id)
+            if (!bounds) return null
+            const zoneId = z.id
             const isDimmed = zone !== "all" && zone !== zoneId
             return (
               <div
                 key={zoneId}
                 className={cn(
                   "absolute border transition-all duration-300",
-                  zoneId === "patio"
-                    ? "border-dashed border-zinc-700/40 rounded-xl"
-                    : "border-zinc-800/30 rounded-lg",
+                  "border-zinc-800/30 rounded-lg",
                   isDimmed && "opacity-20"
                 )}
                 style={{
@@ -205,51 +212,48 @@ export function FloorplanCanvas({
                 }}
               >
                 <span className={cn(
-                  "absolute top-1.5 left-2 text-[8px] font-bold uppercase tracking-[0.15em] pointer-events-none",
-                  zoneId === "patio" ? "text-zinc-600" : "text-zinc-700"
+                  "absolute top-1.5 left-2 text-[8px] font-bold uppercase tracking-[0.15em] pointer-events-none text-zinc-700"
                 )}>
-                  {bounds.label}
+                  {z.name}
                 </span>
               </div>
             )
           })}
 
           {/* Server section overlays */}
-          {renderServerOverlays && serverSections.map((section) => {
-            const sectionTables = floorTables.filter((t) => section.tables.includes(t.id))
-            if (sectionTables.length === 0) return null
-            const minX = Math.min(...sectionTables.map((t) => t.x)) - 2
-            const minY = Math.min(...sectionTables.map((t) => t.y)) - 2
-            const maxX = Math.max(...sectionTables.map((t) => t.x + t.width)) + 2
-            const maxY = Math.max(...sectionTables.map((t) => t.y + t.height)) + 2
+          {renderServerOverlays && zones.map((z) => {
+            const bounds = zoneBounds(z.id)
+            if (!bounds) return null
+            const zoneTables = tableStates.filter((s) => s.table.zone === z.id)
             return (
               <div
-                key={section.id}
+                key={z.id}
                 className="absolute rounded-lg border border-dashed pointer-events-none transition-all duration-500"
                 style={{
-                  left: `${minX}%`,
-                  top: `${minY}%`,
-                  width: `${maxX - minX}%`,
-                  height: `${maxY - minY}%`,
-                  borderColor: `${section.colorHex}40`,
-                  backgroundColor: `${section.colorHex}08`,
+                  left: `${bounds.x}%`,
+                  top: `${bounds.y}%`,
+                  width: `${bounds.w}%`,
+                  height: `${bounds.h}%`,
+                  borderColor: "hsl(160 84% 39% / 0.3)",
+                  backgroundColor: "hsl(160 84% 39% / 0.07)",
                 }}
               >
                 <span
                   className="absolute -top-2 left-2 rounded-full px-1.5 py-0.5 text-[7px] font-bold"
-                  style={{ backgroundColor: `${section.colorHex}30`, color: section.colorHex }}
+                  style={{ backgroundColor: "hsl(160 84% 39% / 0.2)", color: "hsl(156 72% 67%)" }}
                 >
-                  {section.name} ({section.activeTables} active)
+                  {z.name} ({zoneTables.length} tables)
                 </span>
               </div>
             )
           })}
 
           {/* Merged table connectors */}
-          {floorTables
+          {tableStates
+            .map((s) => s.table)
             .filter((t) => t.mergedWith && t.id < t.mergedWith)
             .map((t) => {
-              const partner = floorTables.find((p) => p.id === t.mergedWith)
+              const partner = tableStates.map((s) => s.table).find((p) => p.id === t.mergedWith)
               if (!partner) return null
               const x1 = t.x + t.width / 2
               const y1 = t.y + t.height / 2
@@ -285,6 +289,7 @@ export function FloorplanCanvas({
                 state={state}
                 heatMap={heatMap}
                 zone={zone}
+                zones={zones}
                 isSelected={selectedTable === state.table.id}
                 whatIfMode={whatIfMode}
                 onSelect={onSelectTable}

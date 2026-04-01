@@ -83,14 +83,16 @@ function timeToMinutes(time24: string): number {
   return h * 60 + m
 }
 
-function normalizeZonePreference(rawZone?: string | null): "any" | "main" | "patio" | "private" | undefined {
+function normalizeZonePreference(rawZone?: string | null): string | undefined {
   if (!rawZone) return undefined
   const normalized = rawZone.trim().toLowerCase()
-  if (normalized === "main" || normalized.includes("main")) return "main"
-  if (normalized === "patio") return "patio"
-  if (normalized === "private" || normalized.includes("private")) return "private"
+  if (!normalized) return undefined
   if (normalized === "any" || normalized.includes("no pref")) return "any"
-  return undefined
+  if (normalized === "main" || normalized.includes("main dining")) return "main"
+  if (normalized === "patio") return "patio"
+  if (normalized === "private" || normalized.includes("private room")) return "private"
+  // If zone is already a real section id (custom sections), preserve it.
+  return normalized
 }
 
 function mapBookedViaToChannel(raw?: string | null): BookingChannel | undefined {
@@ -148,9 +150,8 @@ function inferServicePeriodIdFromTime(
 }
 
 function ReservationsShellLayoutInner({ children }: { children: ReactNode }) {
-  const { reservations, waitlistParties, config, capacitySlots } = useReservationsData()
+  const { reservations, waitlistParties, config, capacitySlots, tables } = useReservationsData()
   const storeReservations = useRestaurantStore((s) => s.reservations)
-  const tables = useRestaurantStore((s) => s.tables) ?? []
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()

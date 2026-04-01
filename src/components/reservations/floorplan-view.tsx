@@ -5,11 +5,12 @@ import { useMediaQuery } from "@/hooks/use-media-query"
 import {
   type HeatMapMode,
   type ZoneId,
-  getFloorTableStates,
+  getFloorTableStatesFromTables,
   minutesToTime,
   NOW_MIN,
   unassignedReservations,
 } from "@/lib/floorplan-data"
+import { useReservationsData } from "@/lib/reservations/reservationsDataContext"
 import { FloorplanTopBar } from "./floorplan-top-bar"
 import { FloorplanCanvas } from "./floorplan-canvas"
 import { FloorplanTimeScrubber } from "./floorplan-time-scrubber"
@@ -19,6 +20,7 @@ import { FloorplanMobile } from "./floorplan-mobile"
 
 export function FloorplanView() {
   const isMobile = useMediaQuery("(max-width: 767px)")
+  const { tables, zones } = useReservationsData()
 
   // State
   const [scrubMin, setScrubMin] = useState(NOW_MIN)
@@ -31,7 +33,10 @@ export function FloorplanView() {
 
   // Compute table states for the scrubbed time
   const scrubTime = useMemo(() => minutesToTime(scrubMin), [scrubMin])
-  const tableStates = useMemo(() => getFloorTableStates(scrubTime), [scrubTime])
+  const tableStates = useMemo(
+    () => getFloorTableStatesFromTables(scrubTime, tables),
+    [scrubTime, tables]
+  )
 
   const selectedState = useMemo(
     () => (selectedTableId ? tableStates.find((s) => s.table.id === selectedTableId) ?? null : null),
@@ -66,6 +71,7 @@ export function FloorplanView() {
           onHeatMapChange={setHeatMap}
           zone={zone}
           onZoneChange={setZone}
+          zones={zones}
           whatIfMode={whatIfMode}
           onToggleWhatIf={() => setWhatIfMode((p) => !p)}
         />
@@ -82,6 +88,7 @@ export function FloorplanView() {
             tableStates={tableStates}
             heatMap={heatMap}
             zone={zone}
+            zones={zones}
             onSelectTable={handleSelectTable}
           />
         </div>
@@ -101,6 +108,7 @@ export function FloorplanView() {
         onHeatMapChange={setHeatMap}
         zone={zone}
         onZoneChange={setZone}
+        zones={zones}
         whatIfMode={whatIfMode}
         onToggleWhatIf={() => setWhatIfMode((p) => !p)}
       />
@@ -120,6 +128,7 @@ export function FloorplanView() {
           tableStates={tableStates}
           heatMap={heatMap}
           zone={zone}
+          zones={zones}
           selectedTable={selectedTableId}
           whatIfMode={whatIfMode}
           onSelectTable={handleSelectTable}
@@ -128,6 +137,7 @@ export function FloorplanView() {
         {/* Detail panel */}
         <FloorplanDetailPanel
           state={selectedState}
+          zones={zones}
           open={!!selectedState}
           onClose={() => setSelectedTableId(null)}
         />

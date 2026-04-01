@@ -3,8 +3,8 @@
 import { Radio, LayoutGrid, Map, ChevronDown, Check, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import type { FilterMode, ViewMode, SectionId, FloorTableStatus, FloorTable } from "@/lib/floor-map-data"
-import { floorStatusConfig } from "@/lib/floor-map-data"
+import type { FilterMode, ViewMode, SectionId, FloorTable } from "@/lib/floor-map-data"
+import { TABLE_COLOR_STATES, type TableColorState } from "@/lib/table-color-state"
 import { CommandSearch } from "./command-search"
 import { useState, useRef, useEffect } from "react"
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -18,7 +18,7 @@ interface MapTopBarProps {
   viewMode: ViewMode
   serverSection: SectionId
   tables: FloorTable[]
-  statusFilter: FloorTableStatus | null
+  statusFilter: TableColorState | null
   sectionFilter: SectionId | null
   activeFilterChips: string[]
   ownTableIds: string[]
@@ -27,7 +27,7 @@ interface MapTopBarProps {
   onFilterModeChange: (mode: FilterMode) => void
   onViewModeChange: (mode: ViewMode) => void
   onTableSelect: (tableId: string) => void
-  onStatusFilterChange: (status: FloorTableStatus | null) => void
+  onStatusFilterChange: (status: TableColorState | null) => void
   onSectionFilterChange: (section: SectionId | null) => void
   onClearAllFilters: () => void
   onFloorplanChange: (floorplanId: string) => void
@@ -87,7 +87,7 @@ export function MapTopBar({
           tables={tables}
           ownTableIds={ownTableIds}
           onSelect={onTableSelect}
-          onStatusFilter={(s) => onStatusFilterChange(s as FloorTableStatus)}
+          onStatusFilter={(s) => onStatusFilterChange(s as TableColorState)}
         />
 
         {/* Assignment filter */}
@@ -189,9 +189,9 @@ export function MapTopBar({
                 type="button"
                 onClick={() => {
                   // Determine which filter to remove
-                  const statusKeys = Object.keys(floorStatusConfig)
+                  const statusLabels = Object.values(TABLE_COLOR_STATES).map((s) => s.label)
                   const sectionKeys = Object.keys(sectionConfig)
-                  if (statusKeys.includes(chip.toLowerCase())) {
+                  if (statusLabels.includes(chip)) {
                     onStatusFilterChange(null)
                   } else if (sectionKeys.some((s) => sectionConfig[s]?.name === chip)) {
                     onSectionFilterChange(null)
@@ -372,12 +372,20 @@ function StatusFilter({
   value,
   onChange,
 }: {
-  value: FloorTableStatus | null
-  onChange: (status: FloorTableStatus | null) => void
+  value: TableColorState | null
+  onChange: (status: TableColorState | null) => void
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-  const statusOrder: FloorTableStatus[] = ["urgent", "active", "billing", "free"]
+  const statusOrder: TableColorState[] = [
+    "needs_attention",
+    "food_ready",
+    "bill_requested",
+    "occupied",
+    "reserved",
+    "available",
+    "cleaning",
+  ]
 
   useEffect(() => {
     if (!open) return
@@ -388,7 +396,7 @@ function StatusFilter({
     return () => document.removeEventListener("mousedown", handleClick)
   }, [open])
 
-  const label = value ? floorStatusConfig[value].label : "All Status"
+  const label = value ? TABLE_COLOR_STATES[value].label : "All Status"
 
   return (
     <div ref={ref} className="relative">
@@ -403,8 +411,7 @@ function StatusFilter({
       >
         {value && (
           <span
-            className="h-2 w-2 shrink-0 rounded-full"
-            style={{ backgroundColor: floorStatusConfig[value].color }}
+            className={cn("h-2 w-2 shrink-0 rounded-full", TABLE_COLOR_STATES[value].dotClass)}
           />
         )}
         <span className="text-muted-foreground truncate">{label}</span>
@@ -424,7 +431,7 @@ function StatusFilter({
             All Statuses
           </button>
           {statusOrder.map((s) => {
-            const cfg = floorStatusConfig[s]
+            const cfg = TABLE_COLOR_STATES[s]
             return (
               <button
                 key={s}
@@ -437,8 +444,7 @@ function StatusFilter({
               >
                 {value === s ? <Check className="h-3 w-3 text-primary" /> : <span className="w-3" />}
                 <span
-                  className="h-2 w-2 shrink-0 rounded-full"
-                  style={{ backgroundColor: cfg.color, boxShadow: `0 0 6px ${cfg.color}` }}
+                  className={cn("h-2 w-2 shrink-0 rounded-full", cfg.dotClass)}
                 />
                 {cfg.label}
               </button>

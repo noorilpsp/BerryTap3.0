@@ -27,7 +27,6 @@ import {
   type ListReservationStatus,
   type GroupByOption,
   SERVERS,
-  ZONES,
   PARTY_RANGES,
   TIME_RANGES,
 } from "@/lib/listview-data"
@@ -53,6 +52,7 @@ interface ListTopBarProps {
   onGroupByChange: (groupBy: GroupByOption) => void
   activeGroupBy: GroupByOption
   activeFilters: ActiveFilter[]
+  zoneOptions: readonly string[]
   onAddFilter: (filter: ActiveFilter) => void
   onRemoveFilter: (filter: ActiveFilter) => void
   onClearFilters: () => void
@@ -149,6 +149,7 @@ export function ListTopBar({
   onGroupByChange,
   activeGroupBy,
   activeFilters,
+  zoneOptions,
   onAddFilter,
   onRemoveFilter,
   onClearFilters,
@@ -357,7 +358,7 @@ export function ListTopBar({
           </DropdownMenu>
           <FilterDropdown label="Party Size" options={PARTY_RANGES} category="party-size" activeFilters={activeFilters} onSelect={onAddFilter} />
           <FilterDropdown label="Time" options={TIME_RANGES} category="time" activeFilters={activeFilters} onSelect={onAddFilter} />
-          <FilterDropdown label="Zone" options={ZONES} category="zone" activeFilters={activeFilters} onSelect={onAddFilter} />
+          <FilterDropdown label="Zone" options={zoneOptions} category="zone" activeFilters={activeFilters} onSelect={onAddFilter} />
           <FilterDropdown label="Server" options={SERVERS} category="server" activeFilters={activeFilters} onSelect={onAddFilter} />
         </div>
 

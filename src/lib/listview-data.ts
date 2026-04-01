@@ -1,5 +1,7 @@
 // ── List View ("Operational Command Center") Data ────────────────────────────
 
+import { getDurationForParty } from "@/lib/reservation-form-data"
+
 export type ListReservationStatus =
   | "arriving"
   | "late"
@@ -65,6 +67,8 @@ export interface ListReservation {
   checkAmount?: number // for completed
   bookedDate?: string // e.g., "Jan 15"
   cancelledNote?: string
+  /** Planned sitting length (minutes). Omitted for waitlist-only rows. */
+  durationMinutes?: number
 }
 
 /** Minimal shape for mapping from store/reservations-data into ListReservation. */
@@ -83,6 +87,7 @@ export interface ReservationLike {
   visitCount?: number
   bookedVia?: string
   confirmationSent?: boolean
+  durationMinutes?: number
 }
 
 /** Format ISO date for list display (e.g. "Mon 1/17" or "Today"). */
@@ -99,6 +104,10 @@ export function formatListDate(iso: string | null | undefined): string | undefin
 
 export function reservationToListReservation(r: ReservationLike): ListReservation {
   const dateLabel = formatListDate(r.date)
+  const durationMinutes =
+    typeof r.durationMinutes === "number" && Number.isFinite(r.durationMinutes) && r.durationMinutes > 0
+      ? r.durationMinutes
+      : getDurationForParty(r.partySize)
   return {
     id: r.id,
     time: r.time,
@@ -116,6 +125,7 @@ export function reservationToListReservation(r: ReservationLike): ListReservatio
     visitCount: r.visitCount,
     bookedVia: (r.bookedVia as BookingChannel) ?? "Direct",
     confirmationSent: r.confirmationSent ?? false,
+    durationMinutes,
   }
 }
 
@@ -894,6 +904,16 @@ export function getTagIcon(type: ListTagType): string {
     case "wheelchair": return "wheelchair"
     case "service-dog": return "paw"
   }
+}
+
+/** Compact sitting length for lists and detail headers (e.g. `90m`, `1h 30m`). */
+export function formatReservationDurationCompact(minutes: number | undefined | null): string {
+  if (minutes == null || !Number.isFinite(minutes) || minutes <= 0) return "—"
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  if (h === 0) return `${m}m`
+  if (m === 0) return `${h}h`
+  return `${h}h ${m}m`
 }
 
 export function formatTime12h(time24: string): string {

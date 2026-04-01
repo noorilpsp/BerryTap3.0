@@ -8,6 +8,7 @@ import {
   formatTime12h,
   formatDateTime,
 } from "@/lib/detail-modal-data"
+import { formatReservationDurationCompact } from "@/lib/listview-data"
 import { cn } from "@/lib/utils"
 
 interface DetailBookingProps {
@@ -59,7 +60,7 @@ export function DetailBooking({ reservation }: DetailBookingProps) {
   const rows: { label: string; value: string }[] = [
     { label: "Date", value: formatDateFull(reservation.date) },
     { label: "Time", value: formatTime12h(reservation.time) },
-    { label: "Duration", value: `${reservation.duration} min (estimated)` },
+    { label: "Duration (est.)", value: formatReservationDurationCompact(reservation.duration) },
     { label: "Party Size", value: `${reservation.partySize} guests` },
   ]
 
@@ -92,7 +93,9 @@ export function DetailBooking({ reservation }: DetailBookingProps) {
   rows.push({ label: "Deposit", value: depositLabel })
 
   if (reservation.finalCheck) rows.push({ label: "Final Check", value: `$${reservation.finalCheck.toFixed(2)}` })
-  if (reservation.actualDuration) rows.push({ label: "Actual Duration", value: `${reservation.actualDuration} min` })
+  if (reservation.actualDuration) {
+    rows.push({ label: "Actual duration", value: formatReservationDurationCompact(reservation.actualDuration) })
+  }
   if (reservation.cancelNote) rows.push({ label: "Cancel Reason", value: reservation.cancelNote })
 
   // No-show history

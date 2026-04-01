@@ -17,7 +17,6 @@ import { WaitlistAddDialog } from "./waitlist-add-dialog"
 import { WaitlistSeatDialog } from "./waitlist-seat-dialog"
 import { WaitlistDetailPanel } from "./waitlist-detail-panel"
 import { toast } from "sonner"
-import { useRestaurantStore } from "@/store/restaurantStore"
 import {
   type WaitlistEntry,
   type SortMode,
@@ -30,9 +29,8 @@ export function WaitlistView() {
   const isDesktop = useMediaQuery("(min-width: 1280px)")
   const isTablet = useMediaQuery("(min-width: 768px)")
   const { addToWaitlist, removeFromWaitlist, seatFromWaitlist } = useRestaurantMutations()
-  const tables = useRestaurantStore((s) => s.tables) ?? []
 
-  const { waitlistParties } = useReservationsData()
+  const { waitlistParties, tables } = useReservationsData()
   const entries = useMemo(
     () => waitlistParties.map((wp) => waitlistPartyToWaitlistEntry(wp, tables)),
     [waitlistParties, tables]

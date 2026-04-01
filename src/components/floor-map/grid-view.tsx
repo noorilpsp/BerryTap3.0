@@ -21,9 +21,15 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import type { FloorTable, FloorTableStatus } from "@/lib/floor-map-data"
 import {
-  floorStatusConfig,
+  WaveBadge,
+  waveStatusColors,
+  waveStatusDot,
+  waveStatusLabel,
+} from "@/components/shared/wave-badges"
+import type { FloorTable } from "@/lib/floor-map-data"
+import { getFloorTableColorState, isOccupiedColorState, TABLE_CARD_COLOR_STATES, TABLE_COLOR_STATES, type TableColorState } from "@/lib/table-color-state"
+import {
   minutesAgo,
   defaultSectionConfig,
 } from "@/lib/floor-map-data"
@@ -42,83 +48,27 @@ interface GridViewProps {
 }
 
 // ── Urgency ordering ───────────────────────────────────────────────────────
-const statusOrder: FloorTableStatus[] = ["urgent", "active", "billing", "free", "closed"]
+const statusOrder: TableColorState[] = [
+  "needs_attention",
+  "food_ready",
+  "bill_requested",
+  "occupied",
+  "reserved",
+  "available",
+  "cleaning",
+]
 
-const statusBorderClasses: Record<FloorTableStatus, string> = {
-  free: "border-l-emerald-400/60",
-  active: "border-l-amber-400/60",
-  urgent: "border-l-red-400/80",
-  billing: "border-l-blue-400/60",
-  closed: "border-l-muted-foreground/20",
-}
-
-const statusDotClasses: Record<FloorTableStatus, string> = {
-  free: "bg-emerald-400",
-  active: "bg-amber-400",
-  urgent: "bg-red-400",
-  billing: "bg-blue-400",
-  closed: "bg-muted-foreground/40",
-}
-
-const statusTextClasses: Record<FloorTableStatus, string> = {
-  free: "text-emerald-400",
-  active: "text-amber-400",
-  urgent: "text-red-400",
-  billing: "text-blue-400",
-  closed: "text-muted-foreground",
-}
-
-const statusGlowBorder: Record<FloorTableStatus, string> = {
-  free: "",
-  active: "",
-  urgent: "shadow-[inset_0_0_0_1px_hsl(var(--glow-urgent)/0.15)]",
-  billing: "",
-  closed: "",
-}
+// statusOrder kept for grouping; visual colors now come from table-color-state.
 
 // ── Group config ───────────────────────────────────────────────────────────
-const groupConfig: Record<FloorTableStatus, { label: string; defaultExpanded: boolean; emptyMsg: string }> = {
-  urgent:  { label: "URGENT",  defaultExpanded: true,  emptyMsg: "No urgent tables -- great work!" },
-  active:  { label: "ACTIVE",  defaultExpanded: true,  emptyMsg: "No active tables" },
-  billing: { label: "BILLING", defaultExpanded: true,  emptyMsg: "No tables billing" },
-  free:    { label: "FREE",    defaultExpanded: true,  emptyMsg: "All tables occupied -- full house!" },
-  closed:  { label: "CLOSED",  defaultExpanded: false, emptyMsg: "No closed tables" },
-}
-
-const waveStatusColors: Record<WaveStatus, string> = {
-  served: "text-emerald-400",
-  ready: "text-red-400",
-  cooking: "text-amber-400",
-  fired: "text-orange-400",
-  held: "text-muted-foreground/50",
-  not_started: "text-muted-foreground/30",
-}
-
-const waveStatusDot: Record<WaveStatus, string> = {
-  served: "bg-emerald-400",
-  ready: "bg-red-400 animate-pulse",
-  cooking: "bg-amber-400",
-  fired: "bg-orange-400",
-  held: "bg-muted-foreground/40",
-  not_started: "bg-muted-foreground/20",
-}
-
-const waveStatusLabel: Record<WaveStatus, string> = {
-  served: "Served",
-  ready: "Ready",
-  cooking: "Cooking",
-  fired: "New",
-  held: "Held",
-  not_started: "--",
-}
-
-const waveStatusChip: Record<WaveStatus, string> = {
-  served: "border-emerald-400/55 bg-emerald-500/14 text-emerald-300",
-  ready: "border-red-400/55 bg-red-500/14 text-red-300",
-  cooking: "border-amber-400/55 bg-amber-500/14 text-amber-300",
-  fired: "border-orange-400/55 bg-orange-500/14 text-orange-300",
-  held: "border-white/15 bg-white/[0.04] text-muted-foreground",
-  not_started: "border-white/10 bg-white/[0.02] text-muted-foreground/60",
+const groupConfig: Record<TableColorState, { label: string; defaultExpanded: boolean; emptyMsg: string }> = {
+  needs_attention: { label: "NEEDS ATTENTION", defaultExpanded: true, emptyMsg: "No tables need attention — great work!" },
+  food_ready: { label: "FOOD READY", defaultExpanded: true, emptyMsg: "No food ready tables" },
+  bill_requested: { label: "BILL REQUESTED", defaultExpanded: true, emptyMsg: "No tables requesting the bill" },
+  occupied: { label: "OCCUPIED", defaultExpanded: true, emptyMsg: "No occupied tables" },
+  reserved: { label: "RESERVED", defaultExpanded: false, emptyMsg: "No reserved tables" },
+  available: { label: "AVAILABLE", defaultExpanded: true, emptyMsg: "All tables occupied — full house!" },
+  cleaning: { label: "CLEANING", defaultExpanded: false, emptyMsg: "No tables cleaning" },
 }
 
 // ── Quick action buttons logic ─────────────────────────────────────────────
@@ -185,48 +135,38 @@ function WaveProgress({ waves, compact = false }: { waves: Wave[]; compact?: boo
 
   if (compact) {
     return (
-      <div className="flex items-center gap-3">
-        {waves.map((w, index) => (
-          <div key={`${w.type}-${index}`} className="flex items-center gap-1.5">
-            <span
-              className={cn(
-                "inline-flex h-5 min-w-[2rem] items-center justify-center rounded-md border px-1.5 text-[10px] font-bold tracking-wide",
-                waveStatusChip[w.status]
-              )}
-            >
-              W{index + 1}
-            </span>
-            <span
-              className={cn("h-1.5 w-1.5 rounded-full", waveStatusDot[w.status])}
-            />
-          </div>
-        ))}
+      <div className="w-full overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="inline-flex items-center gap-3">
+          {waves.map((w, index) => (
+            <div key={`${w.type}-${index}`} className="flex items-center gap-1.5">
+              <WaveBadge label={`W${index + 1}`} status={w.status} size="xs" variant="floorplan" />
+              <span
+                className={cn("h-1.5 w-1.5 rounded-full", waveStatusDot[w.status])}
+              />
+            </div>
+          ))}
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="flex items-center gap-4">
-      {waves.map((w, index) => (
-        <div key={`${w.type}-${index}`} className="flex items-center gap-1.5">
-          <span
-            className={cn(
-              "inline-flex h-6 min-w-[2.3rem] items-center justify-center rounded-md border px-2 text-[11px] font-black tracking-wide",
-              waveStatusChip[w.status]
-            )}
-          >
-            W{index + 1}
-          </span>
-          <div className="flex flex-col">
-            <div className="flex items-center gap-1">
-              <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", waveStatusDot[w.status])} />
-              <span className={cn("text-[10px] font-medium", waveStatusColors[w.status])}>
-                {waveStatusLabel[w.status]}
-              </span>
+    <div className="w-full overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="inline-flex items-center gap-4">
+        {waves.map((w, index) => (
+          <div key={`${w.type}-${index}`} className="flex items-center gap-1.5">
+            <WaveBadge label={`W${index + 1}`} status={w.status} size="sm" variant="floorplan" />
+            <div className="flex flex-col">
+              <div className="flex items-center gap-1">
+                <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", waveStatusDot[w.status])} />
+                <span className={cn("text-[10px] font-medium", waveStatusColors[w.status])}>
+                  {waveStatusLabel[w.status]}
+                </span>
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   )
 }
@@ -256,8 +196,7 @@ const TableCard = React.memo(function TableCard({
   const [hovered, setHovered] = useState(false)
   const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const elapsed = table.seatedAt ? minutesAgo(table.seatedAt) : null
-  const isUrgent = table.status === "urgent"
-  const isFree = table.status === "free"
+  const reserved = Boolean((table as unknown as { reserved?: boolean }).reserved)
 
   const waves = detail?.waves ?? []
   const alerts = detail?.alerts ?? []
@@ -267,6 +206,12 @@ const TableCard = React.memo(function TableCard({
   const hasDietary = detail?.seats.some((s) => s.dietary.length > 0)
   const hasSpecial = detail?.seats.some((s) => s.specialOccasion)
   const quickActions = getQuickActions(table, waves)
+
+  const colorState = getFloorTableColorState({ status: table.status, reserved, alerts, waves })
+  const cardColors = TABLE_CARD_COLOR_STATES[colorState]
+  const tableColorVisual = TABLE_COLOR_STATES[colorState]
+  const isUrgent = colorState === "needs_attention"
+  const isIdle = !isOccupiedColorState(colorState)
 
   const viewportPrefetchRef = useViewportPrefetch(
     table.id,
@@ -308,14 +253,13 @@ const TableCard = React.memo(function TableCard({
       onPointerEnter={handlePointerEnter}
       onPointerLeave={handlePointerLeave}
       className={cn(
-        "group flex flex-col rounded-xl border-l-[3px] border border-white/[0.06] text-left cursor-pointer",
-        "bg-card/60 backdrop-blur-sm transition-all duration-200",
-        statusBorderClasses[table.status],
-        statusGlowBorder[table.status],
-        isUrgent && "bg-red-500/[0.04]",
-        isFree && "bg-emerald-500/[0.03] opacity-70",
+        "group flex flex-col rounded-xl border-l-[3px] border text-left cursor-pointer",
+        "backdrop-blur-sm transition-all duration-200",
+        cardColors.bgClass,
+        cardColors.borderClass,
+        isUrgent && "shadow-[0_0_18px_rgba(248,113,113,0.35)]",
         isOwn && "ring-1 ring-primary/15",
-        "hover:bg-card/80 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/20",
+        "hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/20",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background",
       )}
       style={{
@@ -329,14 +273,14 @@ const TableCard = React.memo(function TableCard({
         <span
           className={cn(
             "relative flex h-2 w-2 rounded-full shrink-0",
-            statusDotClasses[table.status],
+            tableColorVisual.dotClass,
           )}
         >
           {isUrgent && (
             <span className="absolute inset-0 rounded-full bg-red-400 animate-ping opacity-50" />
           )}
         </span>
-        <span className={cn("font-mono text-sm font-bold tracking-wide", statusTextClasses[table.status])}>
+        <span className={cn("font-mono text-sm font-bold tracking-wide", cardColors.textClass)}>
           T{table.number}
         </span>
         {table.guests > 0 && (
@@ -377,7 +321,7 @@ const TableCard = React.memo(function TableCard({
       )}
 
       {/* ── Wave Progress ───────────────────────────────────────── */}
-      {waves.length > 0 && !isFree && (
+      {waves.length > 0 && !isIdle && (
         <div className="px-4 pb-2.5">
           {/* Compact on mobile, detailed on tablet+ */}
           <div className="sm:hidden">
@@ -390,8 +334,8 @@ const TableCard = React.memo(function TableCard({
       )}
 
       {/* ── Footer ──────────────────────────────────────────────── */}
-      {!isFree && (
-        <div className="flex items-center gap-2 border-t border-white/[0.04] px-4 py-2.5">
+      {!isIdle && (
+        <div className="flex items-center gap-2 border-t border-white/4 px-4 py-2.5">
           {serverName && (
             <span className="text-[11px] text-muted-foreground/60 truncate">
               {serverName}
@@ -411,8 +355,8 @@ const TableCard = React.memo(function TableCard({
       )}
 
       {/* ── Quick Action Buttons (Desktop hover only) ───────────── */}
-      {hovered && !isFree && (
-        <div className="hidden lg:flex items-center gap-1 border-t border-white/[0.04] px-3 py-2 animate-fade-slide-in">
+      {hovered && !isIdle && (
+        <div className="hidden lg:flex items-center gap-1 border-t border-white/4 px-3 py-2 animate-fade-slide-in">
           {quickActions.map((action) => (
             <Button
               key={action.label}
@@ -422,7 +366,7 @@ const TableCard = React.memo(function TableCard({
                 "h-7 gap-1.5 rounded-lg px-2.5 text-[10px] font-medium",
                 action.accent
                   ? "text-primary bg-primary/10 hover:bg-primary/20 hover:text-primary"
-                  : "text-muted-foreground hover:text-foreground hover:bg-white/[0.06]"
+                  : "text-muted-foreground hover:text-foreground hover:bg-white/6"
               )}
               onClick={(e) => {
                 e.stopPropagation()
@@ -485,8 +429,8 @@ export function GridView({
   onTableTap,
   onTablePrefetch,
 }: GridViewProps) {
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<FloorTableStatus>>(() => {
-    const initial = new Set<FloorTableStatus>()
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<TableColorState>>(() => {
+    const initial = new Set<TableColorState>()
     for (const s of statusOrder) {
       if (!groupConfig[s].defaultExpanded) initial.add(s)
     }
@@ -499,21 +443,33 @@ export function GridView({
       .map((status) => ({
         status,
         tables: tables
-          .filter((t) => t.status === status)
+          .filter((t) => {
+            const detail = liveDetailByTableId.get(t.id) ?? null
+            const reserved = Boolean((t as unknown as { reserved?: boolean }).reserved)
+            const colorState = getFloorTableColorState({
+              status: t.status,
+              reserved,
+              alerts: detail?.alerts ?? [],
+              waves: detail?.waves ?? [],
+            })
+            return colorState === status
+          })
           .sort((a, b) => {
-            // Within urgent, sort by oldest first (most neglected)
-            if (a.seatedAt && b.seatedAt) return new Date(a.seatedAt).getTime() - new Date(b.seatedAt).getTime()
+            // Within attention-needed, sort by oldest first (most neglected)
+            if (status === "needs_attention" && a.seatedAt && b.seatedAt) {
+              return new Date(a.seatedAt).getTime() - new Date(b.seatedAt).getTime()
+            }
             return a.number - b.number
           }),
       })),
-    [tables]
+    [tables, liveDetailByTableId]
   )
 
-  const urgentCount = grouped.find((g) => g.status === "urgent")?.tables.length ?? 0
+  const urgentCount = grouped.find((g) => g.status === "needs_attention")?.tables.length ?? 0
 
-  const toggleGroup = useCallback((status: FloorTableStatus) => {
-    // Urgent is always expanded
-    if (status === "urgent") return
+  const toggleGroup = useCallback((status: TableColorState) => {
+    // Needs-attention is always expanded
+    if (status === "needs_attention") return
     setCollapsedGroups((prev) => {
       const next = new Set(prev)
       if (next.has(status)) next.delete(status)
@@ -548,12 +504,12 @@ export function GridView({
       <UrgentBanner urgentCount={urgentCount} onScrollToUrgent={scrollToUrgent} />
 
       {grouped.map(({ status, tables: groupTables }) => {
-        if (groupTables.length === 0 && status !== "urgent") return null
+        if (groupTables.length === 0 && status !== "needs_attention") return null
 
-        const cfg = floorStatusConfig[status]
         const gcfg = groupConfig[status]
         const isCollapsed = collapsedGroups.has(status)
-        const isUrgentGroup = status === "urgent"
+        const isUrgentGroup = status === "needs_attention"
+        const visual = TABLE_COLOR_STATES[status]
 
         return (
           <div key={status} ref={isUrgentGroup ? urgentRef : undefined}>
@@ -563,16 +519,15 @@ export function GridView({
               onClick={() => toggleGroup(status)}
               className={cn(
                 "sticky top-0 z-10 flex w-full items-center gap-2.5 px-4 py-2.5 md:px-6",
-                "bg-background/85 backdrop-blur-md border-b border-white/[0.04]",
-                "transition-colors hover:bg-white/[0.02]",
+                "bg-background/85 backdrop-blur-md border-b border-white/4",
+                "transition-colors hover:bg-white/2",
                 isUrgentGroup && "cursor-default",
               )}
               aria-expanded={!isCollapsed}
               aria-label={`${gcfg.label} group, ${groupTables.length} tables`}
             >
               <span
-                className="h-2 w-2 rounded-full shrink-0"
-                style={{ backgroundColor: cfg.color, boxShadow: `0 0 6px ${cfg.color}40` }}
+                className={cn("h-2 w-2 rounded-full shrink-0", visual.dotClass)}
               />
               <span className="font-mono text-[10px] font-bold uppercase tracking-[0.15em] text-muted-foreground/80">
                 {gcfg.label}
@@ -580,14 +535,14 @@ export function GridView({
               <span
                 className="flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 font-mono text-[9px] font-bold"
                 style={{
-                  backgroundColor: `${cfg.color}18`,
-                  color: cfg.color,
+                  backgroundColor: `color-mix(in oklab, ${visual.fill} 22%, transparent)`,
+                  color: "rgba(255,255,255,0.85)",
                 }}
               >
                 {groupTables.length}
               </span>
 
-              <div className="ml-2 flex-1 border-t border-white/[0.04]" />
+              <div className="ml-2 flex-1 border-t border-white/4" />
 
               {!isUrgentGroup && (
                 isCollapsed
