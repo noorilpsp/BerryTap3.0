@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { merchantUsers } from "@/lib/db/schema/merchant-users";
 import { merchantLocations } from "@/lib/db/schema/merchant-locations";
 import { unstable_cache } from "@/lib/unstable-cache";
+import { devTimer } from "@/lib/pos/devTimer";
 
 const DEV = process.env.NODE_ENV !== "production";
 
@@ -46,14 +47,10 @@ export async function getPosMerchantContext(userId: string): Promise<PosMerchant
   const getCachedMerchantUsers = unstable_cache(
     async () => {
       merchantUsersHit.value = false;
-      if (DEV) {
-        // eslint-disable-next-line no-console
-        console.time("[pos][ctx] merchantUsers DB");
-      }
+      const start = DEV ? performance.now() : 0;
       const rows = await fetchMerchantUsersDb(userId);
       if (DEV) {
-        // eslint-disable-next-line no-console
-        console.timeEnd("[pos][ctx] merchantUsers DB");
+        devTimer("[ctx] merchantUsers DB", start, rows.length);
       }
       return rows;
     },
@@ -85,14 +82,10 @@ export async function getPosMerchantContext(userId: string): Promise<PosMerchant
   const getCachedLocations = unstable_cache(
     async () => {
       merchantLocationsHit.value = false;
-      if (DEV) {
-        // eslint-disable-next-line no-console
-        console.time("[pos][ctx] merchantLocations DB");
-      }
+      const start = DEV ? performance.now() : 0;
       const rows = await fetchMerchantLocationsDb(merchantIdsSorted);
       if (DEV) {
-        // eslint-disable-next-line no-console
-        console.timeEnd("[pos][ctx] merchantLocations DB");
+        devTimer("[ctx] merchantLocations DB", start, rows.length);
       }
       return rows;
     },
@@ -113,4 +106,3 @@ export async function getPosMerchantContext(userId: string): Promise<PosMerchant
     locationIds,
   };
 }
-

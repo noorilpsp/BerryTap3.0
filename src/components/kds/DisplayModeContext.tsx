@@ -26,7 +26,8 @@ export const displayModeThemes = {
     headerSeparator: "",
     columnTitleSeparator: "",
     columnTitleSeparatorPreparing: "",
-    headerOutlineButton: "",
+    headerOutlineButton:
+      "!bg-gray-100 border border-gray-200 text-gray-700 hover:!bg-gray-200 hover:!text-gray-900",
     headerBg: "bg-white",
     urgencyBorder: "border-red-500",
     warningBorder: "border-amber-500",

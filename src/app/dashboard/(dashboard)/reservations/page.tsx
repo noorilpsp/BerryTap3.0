@@ -823,7 +823,11 @@ export default function ReservationsPage() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {paginatedReservations.map((res) => (
+                        {paginatedReservations.map((res) => {
+                          const tags = Array.isArray(res.tags) ? res.tags : []
+                          const dietaryNeeds = Array.isArray(res.dietaryNeeds) ? res.dietaryNeeds : []
+
+                          return (
                           <TableRow
                             key={res.id}
                             className={cn(
@@ -844,8 +848,8 @@ export default function ReservationsPage() {
                                 <span className="font-medium">{res.guestName}</span>
                                 {res.isVIP && <Star className="size-3 fill-amber-500 text-amber-500" />}
                                 {res.isRegular && <Repeat className="size-3 text-blue-500" />}
-                                {res.tags.includes("Birthday") && <Cake className="size-3 text-pink-500" />}
-                                {res.dietaryNeeds.length > 0 && <Accessibility className="size-3 text-purple-500" />}
+                                {tags.includes("Birthday") && <Cake className="size-3 text-pink-500" />}
+                                {dietaryNeeds.length > 0 && <Accessibility className="size-3 text-purple-500" />}
                               </div>
                             </TableCell>
                             <TableCell className="text-center align-middle">
@@ -940,7 +944,8 @@ export default function ReservationsPage() {
                               </div>
                             </TableCell>
                           </TableRow>
-                        ))}
+                          )
+                        })}
                       </TableBody>
                     </Table>
                   </div>
@@ -1266,7 +1271,10 @@ export default function ReservationsPage() {
         title={reservation?.guestName || "Reservation Details"}
         subtitle={`${reservation?.time} • ${reservation?.code}`}
       >
-        {reservation && (
+        {reservation && (() => {
+          const dietaryNeeds = Array.isArray(reservation.dietaryNeeds) ? reservation.dietaryNeeds : []
+
+          return (
           <div className="space-y-6">
             <ConnectedRecords
               reservation={{ id: reservation.code, name: reservation.guestName, time: reservation.time }}
@@ -1370,11 +1378,11 @@ export default function ReservationsPage() {
                     <p className="text-sm">{reservation.specialRequests}</p>
                   </div>
                 )}
-                {reservation.dietaryNeeds.length > 0 && (
+                {dietaryNeeds.length > 0 && (
                   <div>
                     <p className="text-xs text-muted-foreground mb-1">Dietary Needs</p>
                     <div className="flex flex-wrap gap-1">
-                      {reservation.dietaryNeeds.map((need) => (
+                      {dietaryNeeds.map((need) => (
                         <Badge key={need} variant="outline" className="text-xs">
                           {need}
                         </Badge>
@@ -1483,7 +1491,8 @@ export default function ReservationsPage() {
               </Button>
             </div>
           </div>
-        )}
+          )
+        })()}
       </Drawer>
 
       {/* Conflict Drawer */}

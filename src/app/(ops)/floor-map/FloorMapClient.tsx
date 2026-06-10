@@ -19,11 +19,13 @@ import {
   getSectionBounds,
 } from "@/lib/floor-map-data"
 import { buildFloorMapLiveDetail, type FloorMapLiveDetail } from "@/lib/floor-map-live-detail"
-import { getActiveFloorplanDb, setActiveFloorplanIdDb } from "@/lib/floorplan-storage-db"
+import { setLastViewedFloorMapFloorplanId } from "@/app/actions/floor-map-preferences"
+import { setActiveFloorplanIdDb } from "@/lib/floorplan-storage-db"
 import type { SavedFloorplan } from "@/lib/floorplan-storage-db"
 import { useFloorMapView } from "@/lib/hooks/useFloorMapView"
 import { prefetchFloorMapView } from "@/lib/floor-map/prefetchFloorMapView"
 import { useFloorMapMutations } from "@/lib/hooks/useFloorMapMutations"
+import { setLastViewedFloorplanClient } from "@/lib/floor-map/lastViewedFloorplan"
 import {
   viewTablesToFloorTables,
 } from "@/lib/floor-map/floorMapView"
@@ -57,25 +59,27 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
   const searchParamsSnapshot = searchParams.toString()
   const { currentLocationId, loading: locationLoading } = useLocation()
   const locationIdResolved = !locationLoading
+  const initialSelectedFloorplanId = floorplanParam ?? initialFloorMapView?.floorplan.activeId ?? null
   /**
-   * URL `?floorplan=` is restored on browser back and is available on the first client render, so we don’t flash
-   * the DB default before async IDB hydration. When the param is absent, fall back to stored active floorplan.
+   * Keep the currently displayed floorplan stable across hydration.
+   * The server render already resolved the best first-paint floorplan, so do not
+   * re-query a different active plan on mount and override it.
    */
-  const [idbActiveFloorplanId, setIdbActiveFloorplanId] = React.useState<string | null>(null)
+  const [selectedFloorplanId, setSelectedFloorplanId] = React.useState<string | null>(initialSelectedFloorplanId)
   React.useEffect(() => {
-    if (!currentLocationId) {
-      setIdbActiveFloorplanId(null)
+    if (floorplanParam) {
+      setSelectedFloorplanId(floorplanParam)
       return
     }
-    let cancelled = false
-    getActiveFloorplanDb(currentLocationId).then((fp) => {
-      if (!cancelled) setIdbActiveFloorplanId(fp?.id ?? null)
-    })
-    return () => {
-      cancelled = true
+    if (!currentLocationId) {
+      setSelectedFloorplanId(null)
+      return
     }
-  }, [currentLocationId])
-  const selectedFloorplanId = floorplanParam ?? idbActiveFloorplanId ?? null
+    setSelectedFloorplanId(initialFloorMapView?.floorplan.activeId ?? null)
+  }, [currentLocationId, floorplanParam, initialFloorMapView?.floorplan.activeId])
+  React.useEffect(() => {
+    setLastViewedFloorplanClient(currentLocationId, selectedFloorplanId)
+  }, [currentLocationId, selectedFloorplanId])
   const isMobile = useIsMobile()
   const reducedMotion = usePrefersReducedMotion()
   const windowWidth = typeof window !== "undefined" ? window.innerWidth : 1024
@@ -149,8 +153,12 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
   const applyFloorplanSelection = useCallback(
     async (floorplanId: string | null) => {
       if (!currentLocationId) return
-      setIdbActiveFloorplanId(floorplanId)
-      await setActiveFloorplanIdDb(currentLocationId, floorplanId)
+      setSelectedFloorplanId(floorplanId)
+      setLastViewedFloorplanClient(currentLocationId, floorplanId)
+      await Promise.all([
+        setActiveFloorplanIdDb(currentLocationId, floorplanId),
+        setLastViewedFloorMapFloorplanId(currentLocationId, floorplanId),
+      ])
       const next = new URLSearchParams(searchParamsSnapshot)
       if (floorplanId) next.set("floorplan", floorplanId)
       else next.delete("floorplan")

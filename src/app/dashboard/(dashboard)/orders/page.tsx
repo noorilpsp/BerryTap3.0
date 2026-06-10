@@ -950,7 +950,8 @@ export default function OrdersPage() {
   const [tableWaveOverrides, setTableWaveOverrides] = useState<Record<string, Record<number, LocalWaveStatus>>>({})
   const [collapsedGroups, setCollapsedGroups] = useState<Set<UnifiedStatus>>(new Set())
 
-  const floorTables = useRestaurantStore((s) => storeTablesToFloorTables(s.tables ?? []))
+  const storeTables = useRestaurantStore((s) => s.tables ?? [])
+  const floorTables = useMemo(() => storeTablesToFloorTables(storeTables), [storeTables])
 
   useEffect(() => {
     const load = () => setTrackedOrders(getAllTrackingSnapshots())

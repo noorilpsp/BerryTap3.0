@@ -946,7 +946,7 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
   const ensureSessionForMutations = useCallback(async (): Promise<string | null> => {
     if (effectiveSessionId) return effectiveSessionId
     if (!currentLocationId || !id) return null
-    const ensureRes = await fetch("/api/sessions/ensure", {
+    const ensureRes = await fetchPos("/api/sessions/ensure", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1302,10 +1302,10 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
         existingWaves[0]?.status === "held" &&
         (existingWaves[0]?.itemCount ?? 0) === 0 &&
         !hasAnyNonVoidItems
-      if (placeholderW1) {
+      if (placeholderW1 && reason === "add_items") {
         setSelectedWaveNumber(1)
         setAutoCreatedWaveNumber(1)
-        if (reason === "add_items") setArmedWaveDelete(null)
+        setArmedWaveDelete(null)
         return 1
       }
 

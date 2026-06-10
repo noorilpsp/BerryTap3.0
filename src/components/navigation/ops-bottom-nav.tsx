@@ -1,9 +1,11 @@
 "use client"
 
+import { useEffect, useMemo, useState } from "react"
 import { Link } from "@/components/ui/link"
 import { usePathname } from "next/navigation"
 import { Bell, CalendarDays, ChefHat, Clock, Combine, ClipboardList, LayoutGrid, PencilRuler, ShoppingBasket, Table2, Users } from "lucide-react"
 
+import { getLastViewedFloorplanClientGlobal } from "@/lib/floor-map/lastViewedFloorplan"
 import { cn } from "@/lib/utils"
 
 type OpsNavItem = {
@@ -84,11 +86,28 @@ const items: OpsNavItem[] = [
 
 export function OpsBottomNav() {
   const pathname = usePathname()
+  const [lastFloorplanId, setLastFloorplanId] = useState<string | null>(null)
+
+  useEffect(() => {
+    setLastFloorplanId(getLastViewedFloorplanClientGlobal())
+  }, [pathname])
+
+  const resolvedItems = useMemo(
+    () =>
+      items.map((item) => {
+        if (item.href !== "/floor-map" || !lastFloorplanId) return item
+        return {
+          ...item,
+          href: `/floor-map?floorplan=${encodeURIComponent(lastFloorplanId)}`,
+        }
+      }),
+    [lastFloorplanId]
+  )
 
   return (
     <nav className="fixed inset-x-0 bottom-0 z-[70] border-t border-cyan-200/35 bg-[linear-gradient(135deg,rgba(2,6,23,0.96),rgba(15,23,42,0.94))] px-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-14px_36px_rgba(2,6,23,0.5)] backdrop-blur-xl">
       <div className="mx-auto flex w-full max-w-[1680px] flex-nowrap items-stretch gap-1.5">
-        {items.map((item) => {
+        {resolvedItems.map((item) => {
           const isActive = item.active(pathname)
           return (
             <Link
