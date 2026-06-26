@@ -87,7 +87,15 @@ export function useStationSettingsMutations({
       const updated = payload.data;
       patch((prev) => ({
         ...prev,
-        stations: prev.stations.map((s) => (s.id === id ? updated : s)),
+        stations: prev.stations.map((s) =>
+          s.id === id
+            ? {
+                ...s,
+                ...updated,
+                substations: updated.substations ?? s.substations ?? [],
+              }
+            : s
+        ),
       }));
       return true;
     },
@@ -154,7 +162,7 @@ export function useStationSettingsMutations({
           s.id === stationId
             ? {
                 ...s,
-                substations: [...s.substations, substation].sort(
+                substations: [...(s.substations ?? []), substation].sort(
                   (a, b) => a.displayOrder - b.displayOrder
                 ),
               }
@@ -190,7 +198,7 @@ export function useStationSettingsMutations({
         ...prev,
         stations: prev.stations.map((s) => ({
           ...s,
-          substations: s.substations.map((ss) =>
+          substations: (s.substations ?? []).map((ss) =>
             ss.id === id ? updated : ss
           ),
         })),
@@ -215,7 +223,7 @@ export function useStationSettingsMutations({
         ...prev,
         stations: prev.stations.map((s) => ({
           ...s,
-          substations: s.substations.filter((ss) => ss.id !== id),
+          substations: (s.substations ?? []).filter((ss) => ss.id !== id),
         })),
       }));
       return true;
@@ -245,7 +253,7 @@ export function useStationSettingsMutations({
       const station = view.stations.find((s) => s.id === stationId);
       if (!station) return true;
       const orderMap = new Map(substations.map(({ id, displayOrder }) => [id, displayOrder]));
-      const updatedSubs = station.substations
+      const updatedSubs = (station.substations ?? [])
         .map((ss) => ({
           ...ss,
           displayOrder: orderMap.get(ss.id) ?? ss.displayOrder,

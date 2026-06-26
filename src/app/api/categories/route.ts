@@ -6,6 +6,7 @@ import { categories, menuCategories, categoryItems, menus } from "@/db/schema";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
 import { unstable_cache } from "@/lib/unstable-cache";
 import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
+import { withDbRetry, toUserFacingDbError } from "@/lib/db/withDbRetry";
 
 export const runtime = "nodejs";
 
@@ -141,13 +142,15 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify location exists and user has access
-    const location = await db.query.merchantLocations.findFirst({
-      where: eq(merchantLocations.id, locationId),
-      columns: {
-        id: true,
-        merchantId: true,
-      },
-    });
+    const location = await withDbRetry(() =>
+      db.query.merchantLocations.findFirst({
+        where: eq(merchantLocations.id, locationId),
+        columns: {
+          id: true,
+          merchantId: true,
+        },
+      })
+    );
 
     if (!location) {
       return NextResponse.json(
@@ -157,16 +160,18 @@ export async function POST(request: NextRequest) {
     }
 
     // Check user has access to this merchant
-    const membership = await db.query.merchantUsers.findFirst({
-      where: and(
-        eq(merchantUsers.merchantId, location.merchantId),
-        eq(merchantUsers.userId, user.id),
-        eq(merchantUsers.isActive, true)
-      ),
-      columns: {
-        id: true,
-      },
-    });
+    const membership = await withDbRetry(() =>
+      db.query.merchantUsers.findFirst({
+        where: and(
+          eq(merchantUsers.merchantId, location.merchantId),
+          eq(merchantUsers.userId, user.id),
+          eq(merchantUsers.isActive, true)
+        ),
+        columns: {
+          id: true,
+        },
+      })
+    );
 
     if (!membership) {
       return NextResponse.json(
@@ -176,16 +181,18 @@ export async function POST(request: NextRequest) {
     }
 
     // Create category
-    const [newCategory] = await db
-      .insert(categories)
-      .values({
-        locationId,
-        name,
-        emoji: emoji || null,
-        description: description || null,
-        displayOrder: displayOrder ?? 0,
-      })
-      .returning();
+    const [newCategory] = await withDbRetry(() =>
+      db
+        .insert(categories)
+        .values({
+          locationId,
+          name,
+          emoji: emoji || null,
+          description: description || null,
+          displayOrder: displayOrder ?? 0,
+        })
+        .returning()
+    );
 
     // Link category to menus if menuIds provided
     if (menuIds && Array.isArray(menuIds) && menuIds.length > 0) {
@@ -238,10 +245,7 @@ export async function POST(request: NextRequest) {
     console.error("[POST /api/categories] Error:", error);
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to create category",
+        error: toUserFacingDbError(error, "Internal server error - Failed to create category"),
       },
       { status: 500 }
     );

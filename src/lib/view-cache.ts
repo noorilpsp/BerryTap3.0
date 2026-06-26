@@ -117,10 +117,15 @@ export const OPS_POST_SEATING_EVENT = "ops:post-seating";
 
 export type PostSeatingDetail = { locationId: string; tableId?: string };
 
-/** Invalidate caches and notify mounted views to refresh. Call after Seat Now or Seat from Waitlist. */
-export function postSeatingInvalidate(locationId: string, tableId?: string): void {
+/** Clear caches only — no refresh event. Use when optimistic UI already shows the seated state. */
+export function invalidatePostSeatingCaches(locationId: string, tableId?: string): void {
   invalidateFloorMapCache(locationId);
   if (tableId) invalidateTableCache(tableId);
+}
+
+/** Invalidate caches and notify mounted views to refresh. Call after Seat Now or Seat from Waitlist. */
+export function postSeatingInvalidate(locationId: string, tableId?: string): void {
+  invalidatePostSeatingCaches(locationId, tableId);
   if (typeof window !== "undefined") {
     window.dispatchEvent(
       new CustomEvent<PostSeatingDetail>(OPS_POST_SEATING_EVENT, {

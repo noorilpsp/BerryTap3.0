@@ -111,9 +111,19 @@ export function useFloorMapView(
     [locationId, floorplanId]
   );
 
-  const patch = useCallback((updater: (prev: FloorMapView) => FloorMapView) => {
-    setView((prev) => (prev ? updater(prev) : prev));
-  }, []);
+  const patch = useCallback(
+    (updater: (prev: FloorMapView) => FloorMapView) => {
+      setView((prev) => {
+        if (!prev) return prev;
+        const next = updater(prev);
+        if (locationId) {
+          setFloorMapCache(locationId, floorplanId ?? null, next);
+        }
+        return next;
+      });
+    },
+    [locationId, floorplanId]
+  );
 
   const initialDataRef = useRef(initialData);
   initialDataRef.current = initialData;
@@ -182,6 +192,16 @@ export function useFloorMapView(
     document.addEventListener("visibilitychange", handler);
     return () => document.removeEventListener("visibilitychange", handler);
   }, [locationId, refresh]);
+
+  // Auto-refresh while tables are in cleaning so they return to available after the window expires.
+  useEffect(() => {
+    const cleaningCount = view?.statusCounts?.closed ?? 0;
+    if (!locationId || cleaningCount === 0) return;
+    const intervalId = window.setInterval(() => {
+      void refresh(true);
+    }, 30_000);
+    return () => window.clearInterval(intervalId);
+  }, [locationId, view?.statusCounts?.closed, refresh]);
 
   return {
     view,

@@ -8,6 +8,19 @@ import type { Menu } from "@/types/menu"
 import { toast } from "sonner"
 import { useLocations } from "@/lib/hooks/useLocations"
 
+function formatMenuMutationError(message: string): string {
+  const lower = message.toLowerCase()
+  if (
+    lower.includes("failed query") ||
+    lower.includes("fetch failed") ||
+    lower.includes("etimedout") ||
+    lower.includes("database connection timed out")
+  ) {
+    return "Database connection timed out. Please try again."
+  }
+  return message
+}
+
 interface MenuContextType {
   // State
   items: MenuItem[]
@@ -842,7 +855,7 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
     setCategories((prev) => [...prev, optimisticCategory])
 
     try {
-      const response = await fetch('/api/categories', {
+      const response = await retryFetch('/api/categories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -859,21 +872,26 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
       if (!response.ok) {
         // Rollback optimistic update
         setCategories((prev) => prev.filter((c) => c.id !== tempId))
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to create category')
+        const error = await response.json().catch(() => ({}))
+        const message = formatMenuMutationError(
+          (typeof error?.error === "string" ? error.error : null) ?? 'Failed to create category'
+        )
+        toast.error(message)
+        return
       }
-      const newCategory = await response.json()
+      await response.json()
       
       toast.success(`${category.name} created`)
       await fetchData()
     } catch (err) {
       // Rollback optimistic update
       setCategories((prev) => prev.filter((c) => c.id !== tempId))
-      const errorMessage = err instanceof Error ? err.message : 'Failed to create category'
+      const errorMessage = formatMenuMutationError(
+        err instanceof Error ? err.message : 'Failed to create category'
+      )
       toast.error(errorMessage)
-      throw err
     }
-  }, [locationId, fetchData])
+  }, [locationId, fetchData, retryFetch])
 
   const updateCategory = useCallback(async (id: string, updates: Partial<Category>) => {
     try {
@@ -914,26 +932,44 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
   }, [fetchData])
 
   const deleteCategory = useCallback(async (id: string) => {
+    if (id.startsWith("temp-")) {
+      setCategories((prev) => prev.filter((c) => c.id !== id))
+      return
+    }
+
+    const category = categories.find((c) => c.id === id)
+    setCategories((prev) => prev.filter((c) => c.id !== id))
+
     try {
-      const response = await fetch(`/api/categories/${id}`, {
+      const response = await retryFetch(`/api/categories/${id}`, {
         method: 'DELETE',
         credentials: 'include',
       })
 
       if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to delete category')
+        if (category) {
+          setCategories((prev) => [...prev, category])
+        }
+        const error = await response.json().catch(() => ({}))
+        const message = formatMenuMutationError(
+          (typeof error?.error === "string" ? error.error : null) ?? 'Failed to delete category'
+        )
+        toast.error(message)
+        return
       }
 
-      const category = categories.find((c) => c.id === id)
       toast.success(`${category?.name || "Category"} deleted`)
       await fetchData()
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to delete category'
+      if (category) {
+        setCategories((prev) => [...prev, category])
+      }
+      const errorMessage = formatMenuMutationError(
+        err instanceof Error ? err.message : 'Failed to delete category'
+      )
       toast.error(errorMessage)
-      throw err
     }
-  }, [categories, fetchData])
+  }, [categories, fetchData, retryFetch])
 
   const reorderCategories = useCallback(async (reorderedCategories: Category[]) => {
     // Optimistically update UI immediately

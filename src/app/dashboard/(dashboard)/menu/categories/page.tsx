@@ -7,7 +7,6 @@ import { CreateCategoryDrawer } from "@/components/drawers/create-category-drawe
 import { EditCategoryDrawer } from "@/components/drawers/edit-category-drawer"
 // import { DeleteCategoryDialog } from "@/components/modals/delete-category-dialog"
 import { useMenu } from "../menu-context"
-import { toast } from "sonner"
 import type { Category } from "@/types/category"
 
 export default function MenuCategoriesPage() {
@@ -114,9 +113,7 @@ export default function MenuCategoriesPage() {
       const category = categories.find((c) => c.id === id)
       if (!category) return
 
-      // Direct delete - no dialog needed since CategoriesContent handles confirmation
       deleteCategory(id)
-      toast.success(`${category.name} deleted`)
     },
     [categories, deleteCategory],
   )

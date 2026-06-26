@@ -3,6 +3,8 @@
 import { useCallback } from "react";
 import { fetchPos } from "@/lib/pos/fetchPos";
 import { toast } from "sonner";
+import { fireAndForget } from "@/lib/pos/fireAndForget";
+import { invalidatePostSeatingCaches } from "@/lib/view-cache";
 import type { FloorMapView } from "@/lib/floor-map/floorMapView";
 
 export type UseFloorMapMutationsOptions = {
@@ -24,29 +26,44 @@ export async function mutateThenRefresh<T>(opts: {
   requestFn: () => Promise<T>;
   onSuccess?: (result: T) => void;
   skipRefreshOnSuccess?: boolean;
+  /** Apply optimistic patch, then run request + refresh without blocking the caller. */
+  background?: boolean;
 }): Promise<T | null> {
-  const snapshot = opts.view ? structuredClone(opts.view) : null;
+  let snapshot: FloorMapView | null = null;
 
-  if (opts.optimisticPatch && opts.view) {
-    opts.patch(opts.optimisticPatch);
+  if (opts.optimisticPatch) {
+    opts.patch((prev) => {
+      if (!prev) return prev;
+      if (!snapshot) snapshot = structuredClone(prev);
+      return opts.optimisticPatch!(prev);
+    });
   }
 
-  try {
-    const result = await opts.requestFn();
-    if (!opts.skipRefreshOnSuccess) {
-      await opts.refresh(true);
+  const run = async (): Promise<T | null> => {
+    try {
+      const result = await opts.requestFn();
+      if (!opts.skipRefreshOnSuccess) {
+        await opts.refresh(true);
+      }
+      opts.onSuccess?.(result);
+      return result;
+    } catch (error) {
+      if (snapshot && opts.optimisticPatch) {
+        opts.patch(() => snapshot as FloorMapView);
+      }
+      const message =
+        error instanceof Error ? error.message : "Request failed. Please try again.";
+      toast.error(message);
+      return null;
     }
-    opts.onSuccess?.(result);
-    return result;
-  } catch (error) {
-    if (snapshot && opts.optimisticPatch) {
-      opts.patch(() => snapshot);
-    }
-    const message =
-      error instanceof Error ? error.message : "Request failed. Please try again.";
-    toast.error(message);
+  };
+
+  if (opts.background) {
+    void run();
     return null;
   }
+
+  return run();
 }
 
 /**
@@ -64,9 +81,22 @@ export function useFloorMapMutations({
       locationId: string;
       serverId: string;
       skipRefreshOnSuccess?: boolean;
+      /** Close UI immediately; API + refresh continue in the background. */
+      background?: boolean;
     }): Promise<boolean> => {
-      const { tableId, partySize, locationId, serverId, skipRefreshOnSuccess = false } = params;
-      if (!view) return false;
+      const {
+        tableId,
+        partySize,
+        locationId,
+        serverId,
+        skipRefreshOnSuccess = false,
+        background = false,
+      } = params;
+      if (!locationId?.trim() || !tableId?.trim()) return false;
+
+      const tableNumber = view?.tables.find(
+        (t) => t.id.toLowerCase() === tableId.toLowerCase()
+      )?.number;
 
       const optimisticPatch = (prev: FloorMapView): FloorMapView => {
         const tables = prev.tables.map((t) =>
@@ -101,7 +131,16 @@ export function useFloorMapMutations({
         refresh,
         view,
         optimisticPatch,
-        skipRefreshOnSuccess,
+        skipRefreshOnSuccess: background ? true : skipRefreshOnSuccess,
+        background,
+        onSuccess: background
+          ? () => {
+              if (tableNumber != null) {
+                toast.success(`Party seated at T${tableNumber}`);
+              }
+              invalidatePostSeatingCaches(locationId, tableId);
+            }
+          : undefined,
         requestFn: async () => {
           const res = await fetchPos("/api/sessions/ensure", {
             method: "POST",
@@ -122,9 +161,8 @@ export function useFloorMapMutations({
           }
           const data = payload.data as { sessionId?: string };
           if (data?.sessionId) {
-            const evRes = await fetchPos(
-              `/api/sessions/${encodeURIComponent(data.sessionId)}/events`,
-              {
+            fireAndForget(
+              fetchPos(`/api/sessions/${encodeURIComponent(data.sessionId)}/events`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -132,15 +170,75 @@ export function useFloorMapMutations({
                   payload: { guestCount: partySize },
                   eventSource: "floor_map",
                 }),
-              }
+              }),
+              "record guest_seated event"
             );
-            const evPayload = await evRes.json().catch(() => ({}));
-            if (!evRes.ok || evPayload?.ok !== true) {
-              // Session exists; event failure is non-fatal
-              console.warn("[FloorMap] guest_seated event failed:", evPayload?.error?.message);
-            }
           }
           return data;
+        },
+      });
+
+      if (background) return true;
+      return result != null;
+    },
+    [view, patch, refresh]
+  );
+
+  const markTableAvailable = useCallback(
+    async (tableId: string): Promise<boolean> => {
+      if (!view) return false;
+
+      const optimisticPatch = (prev: FloorMapView): FloorMapView => {
+        const tables = prev.tables.map((t) =>
+          t.id.toLowerCase() === tableId.toLowerCase()
+            ? {
+                ...t,
+                status: "free" as const,
+                guests: 0,
+                stage: null,
+                serverId: null,
+                serverName: null,
+                seatedAt: null,
+                billTotal: undefined,
+                waves: undefined,
+              }
+            : t
+        );
+        const freeCount = tables.filter((t) => t.status === "free").length;
+        const closedCount = tables.filter((t) => t.status === "closed").length;
+        return {
+          ...prev,
+          tables,
+          statusCounts: {
+            ...prev.statusCounts,
+            free: freeCount,
+            closed: closedCount,
+          },
+        };
+      };
+
+      const result = await mutateThenRefresh({
+        label: "Mark table available",
+        patch,
+        refresh,
+        view,
+        optimisticPatch,
+        requestFn: async () => {
+          const res = await fetchPos(
+            `/api/tables/${encodeURIComponent(tableId)}/mark-available`,
+            { method: "POST" }
+          );
+          const payload = await res.json().catch(() => ({}));
+          if (!res.ok || payload?.ok !== true) {
+            const msg =
+              (payload?.error && typeof payload.error === "object" && payload.error.message) ||
+              (typeof payload?.error === "string" ? payload.error : null);
+            throw new Error(msg ?? "Failed to mark table available");
+          }
+          return payload.data;
+        },
+        onSuccess: () => {
+          toast.success("Table marked available");
         },
       });
 
@@ -149,5 +247,5 @@ export function useFloorMapMutations({
     [view, patch, refresh]
   );
 
-  return { seatParty };
+  return { seatParty, markTableAvailable };
 }

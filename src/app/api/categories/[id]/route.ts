@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { categories, menuCategories, categoryItems, menus } from "@/db/schema";
 import { merchantLocations, merchantUsers } from "@/lib/db/schema";
 import { unstable_cache } from "@/lib/unstable-cache";
+import { withDbRetry, toUserFacingDbError } from "@/lib/db/withDbRetry";
 
 export const runtime = "nodejs";
 
@@ -308,17 +309,19 @@ export async function DELETE(
     }
 
     // Get existing category to verify access
-    const existingCategory = await db.query.categories.findFirst({
-      where: eq(categories.id, categoryId),
-      with: {
-        location: {
-          columns: {
-            id: true,
-            merchantId: true,
+    const existingCategory = await withDbRetry(() =>
+      db.query.categories.findFirst({
+        where: eq(categories.id, categoryId),
+        with: {
+          location: {
+            columns: {
+              id: true,
+              merchantId: true,
+            },
           },
         },
-      },
-    });
+      })
+    );
 
     if (!existingCategory) {
       return NextResponse.json(
@@ -328,16 +331,18 @@ export async function DELETE(
     }
 
     // Check user has access
-    const membership = await db.query.merchantUsers.findFirst({
-      where: and(
-        eq(merchantUsers.merchantId, existingCategory.location.merchantId),
-        eq(merchantUsers.userId, user.id),
-        eq(merchantUsers.isActive, true)
-      ),
-      columns: {
-        id: true,
-      },
-    });
+    const membership = await withDbRetry(() =>
+      db.query.merchantUsers.findFirst({
+        where: and(
+          eq(merchantUsers.merchantId, existingCategory.location.merchantId),
+          eq(merchantUsers.userId, user.id),
+          eq(merchantUsers.isActive, true)
+        ),
+        columns: {
+          id: true,
+        },
+      })
+    );
 
     if (!membership) {
       return NextResponse.json(
@@ -347,17 +352,14 @@ export async function DELETE(
     }
 
     // Delete category (cascade will handle related records)
-    await db.delete(categories).where(eq(categories.id, categoryId));
+    await withDbRetry(() => db.delete(categories).where(eq(categories.id, categoryId)));
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("[DELETE /api/categories/[id]] Error:", error);
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Internal server error - Failed to delete category",
+        error: toUserFacingDbError(error, "Internal server error - Failed to delete category"),
       },
       { status: 500 }
     );

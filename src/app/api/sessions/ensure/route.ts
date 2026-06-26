@@ -75,7 +75,9 @@ export async function POST(request: NextRequest) {
       locationId,
       tableUuid.trim(),
       effectiveGuestCount,
-      user.id
+      user.id,
+      null,
+      { accessVerified: true }
     );
 
     if (!result.ok) {

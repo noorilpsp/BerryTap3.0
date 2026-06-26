@@ -79,6 +79,8 @@ export interface TableDetail {
   /** Owning floor plan for /floor-map?floorplan= when returning from this table. */
   floorPlanId?: string | null
   number: number
+  /** Max guests the table can seat. */
+  capacity?: number
   shape: "rectangular" | "round" | "square"
   section: string
   server: Server | null
@@ -212,6 +214,7 @@ export function buildTableDetailFromStore(st: StoreTable): TableDetail {
   return {
     id: st.id,
     number: st.number,
+    capacity,
     shape: mapStoreShapeToTableShape(st.shape),
     section: SECTION_LABELS[st.section] ?? st.section,
     server:

@@ -30,7 +30,7 @@ import {
   viewTablesToFloorTables,
 } from "@/lib/floor-map/floorMapView"
 import { useLocation } from "@/lib/contexts/LocationContext"
-import { OPS_POST_SEATING_EVENT, postSeatingInvalidate, type PostSeatingDetail } from "@/lib/view-cache"
+import { OPS_POST_SEATING_EVENT, type PostSeatingDetail } from "@/lib/view-cache"
 import { FloorplanSelector } from "@/components/floor-map/floorplan-selector"
 import type { FilterMode, ViewMode, SectionId, SeatPartyForm } from "@/lib/floor-map-data"
 import { Plus, Hammer } from "lucide-react"
@@ -89,7 +89,7 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
     selectedFloorplanId,
     { initialData: initialFloorMapView }
   )
-  const { seatParty } = useFloorMapMutations({ patch, refresh, view })
+  const { seatParty, markTableAvailable } = useFloorMapMutations({ patch, refresh, view })
 
   const currentServer = React.useMemo(() => {
     const cs = view?.currentServer
@@ -199,6 +199,7 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
     tableId: string
     tableNumber: number
     position: { x: number; y: number }
+    isCleaning?: boolean
   } | null>(null)
   const [navigatingTableId, setNavigatingTableId] = useState<string | null>(null)
 
@@ -405,6 +406,20 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
 
   const handleTableTap = useCallback(
     (tableId: string) => {
+      const table = tables.find((t) => t.id === tableId)
+      if (table?.status === "closed") {
+        setQuickAction({
+          tableId: table.id,
+          tableNumber: table.number,
+          position: {
+            x: typeof window !== "undefined" ? window.innerWidth / 2 - 112 : 0,
+            y: typeof window !== "undefined" ? window.innerHeight / 2 - 140 : 0,
+          },
+          isCleaning: true,
+        })
+        return
+      }
+
       const base = `/table/${encodeURIComponent(tableId)}`
       const href =
         selectedFloorplanId && selectedFloorplanId !== ""
@@ -415,7 +430,7 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
         router.push(href)
       })
     },
-    [router, selectedFloorplanId]
+    [router, selectedFloorplanId, tables]
   )
 
   const prefetchTable = useCallback(
@@ -441,21 +456,16 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
   }, [])
 
   const handlePartySeated = useCallback(
-    async (formData: SeatPartyForm) => {
-      if (!formData.tableId || !currentLocationId) return false
+    (formData: SeatPartyForm) => {
+      if (!formData.tableId || !currentLocationId) return Promise.resolve(false)
 
-      const ok = await seatParty({
+      return seatParty({
         tableId: formData.tableId,
         partySize: formData.partySize,
         locationId: currentLocationId,
         serverId: currentServer.id,
+        background: true,
       })
-      if (ok) {
-        postSeatingInvalidate(currentLocationId, formData.tableId)
-        setSeatPartyOpen(false)
-        setSeatPartyPreSelect(null)
-      }
-      return ok
     },
     [currentLocationId, currentServer.id, seatParty]
   )
@@ -481,9 +491,14 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
         x = e.touches[0].clientX
         y = e.touches[0].clientY
       }
-      setQuickAction({ tableId: table.id, tableNumber: table.number, position: { x, y } })
+      setQuickAction({
+        tableId: table.id,
+        tableNumber: table.number,
+        position: { x, y },
+        isCleaning: table.status === "closed",
+      })
     },
-    []
+    [tables]
   )
 
   const handleSectionFocus = useCallback(
@@ -732,6 +747,9 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
               ownTableIds={currentServer.assignedTables}
               onTableTap={handleTableTap}
               onTablePrefetch={prefetchTable}
+              onMarkAvailable={(tableId) => {
+                void markTableAvailable(tableId)
+              }}
             />
           </div>
         )}
@@ -741,10 +759,14 @@ export function FloorMapClient({ initialFloorMapView }: FloorMapClientProps) {
         <QuickActionsMenu
           tableNumber={quickAction.tableNumber}
           position={quickAction.position}
+          isCleaning={quickAction.isCleaning}
           onClose={() => setQuickAction(null)}
           onSeatParty={() => {
             setQuickAction(null)
             handleOpenSeatParty(quickAction.tableId)
+          }}
+          onMarkAvailable={() => {
+            void markTableAvailable(quickAction.tableId)
           }}
         />
       )}

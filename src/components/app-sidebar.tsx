@@ -72,6 +72,7 @@ const operationsItems = [
   { title: "Reservations", href: "/dashboard/reservations", icon: Calendar },
   { title: "Reservations (Ops)", href: "/reservations", icon: Calendar },
   { title: "Kitchen Display", href: "/kds", icon: ChefHat },
+  { title: "KDS Settings", href: "/dashboard/kds", icon: Settings },
 ]
 
 const businessItems = [

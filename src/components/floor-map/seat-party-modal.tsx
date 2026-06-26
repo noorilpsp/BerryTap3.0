@@ -39,7 +39,7 @@ import { useIsMobile } from "@/hooks/use-mobile"
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type Step = "size" | "table" | "review"
-type ModalState = "form" | "seating" | "success"
+type ModalState = "form" | "success"
 
 interface SeatPartyModalProps {
   sectionConfig?: Record<string, { name: string }>
@@ -97,33 +97,37 @@ export function SeatPartyModal({ sectionConfig = defaultSectionConfig, currentSe
   const [tableFilter, setTableFilter] = useState<SectionId | null>(null)
   const [validationError, setValidationError] = useState<string | null>(null)
   const [submissionError, setSubmissionError] = useState<string | null>(null)
+  const wasOpenRef = useRef(false)
 
-  // Reset when modal opens/closes
+  // Reset only when the modal opens — not when `tables` refreshes during seating.
   useEffect(() => {
-    if (open) {
-      const preTable = preSelectedTableId
-        ? tables.find((t) => t.id === preSelectedTableId)
-        : null
+    const justOpened = open && !wasOpenRef.current
+    wasOpenRef.current = open
 
-      setForm({
-        partySize: preTable?.capacity ?? 2,
-        tableId: preTable?.id ?? null,
-        dietary: [],
-        occasion: null,
-        notes: "",
-      })
-      // Always start at "size" step - if table is preselected, we skip "table" step during navigation
-      setStep("size")
-      setModalState("form")
-      setShowCustomSize(false)
-      setShowDietary(false)
-      setShowOccasion(false)
-      setShowNotes(false)
-      setValidationError(null)
-      setSubmissionError(null)
-      setTableFilter(null)
-      setCustomSize("")
-    }
+    if (!justOpened) return
+
+    const preTable = preSelectedTableId
+      ? tables.find((t) => t.id === preSelectedTableId)
+      : null
+
+    setForm({
+      partySize: preTable?.capacity ?? 2,
+      tableId: preTable?.id ?? null,
+      dietary: [],
+      occasion: null,
+      notes: "",
+    })
+    // Always start at "size" step - if table is preselected, we skip "table" step during navigation
+    setStep("size")
+    setModalState("form")
+    setShowCustomSize(false)
+    setShowDietary(false)
+    setShowOccasion(false)
+    setShowNotes(false)
+    setValidationError(null)
+    setSubmissionError(null)
+    setTableFilter(null)
+    setCustomSize("")
   }, [open, preSelectedTableId, tables])
 
   // ── Available Tables ────────────────────────────────────────────────────────
@@ -227,16 +231,10 @@ export function SeatPartyModal({ sectionConfig = defaultSectionConfig, currentSe
   const handleSeat = useCallback(() => {
     if (!form.tableId) return
     setSubmissionError(null)
-    setModalState("seating")
-    void onSeated(form).then((ok) => {
-      if (ok) {
-        setModalState("success")
-        return
-      }
-      setSubmissionError("Failed to seat party. Please try again.")
-      setModalState("form")
-    })
-  }, [form, onSeated])
+    const payload = form
+    onClose()
+    void onSeated(payload)
+  }, [form, onClose, onSeated])
 
   const handleSuccess = useCallback((action: "view" | "another") => {
     if (action === "another") {
@@ -288,21 +286,7 @@ export function SeatPartyModal({ sectionConfig = defaultSectionConfig, currentSe
   const stepIndex = steps.indexOf(step)
   const stepLabels: Record<Step, string> = { size: "Party Size", table: "Table", review: "Review" }
 
-  // ── Seating State ───────────────────────────────────────────────────────────
-  if (modalState === "seating") {
-    return (
-      <ModalShell onClose={onClose} isMobile={isMobile}>
-        <div className="flex flex-1 flex-col items-center justify-center gap-6 p-8">
-          <div className="relative h-16 w-16">
-            <div className="absolute inset-0 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
-          </div>
-          <p className="font-mono text-sm font-medium text-foreground/80 tracking-wide">Seating party...</p>
-        </div>
-      </ModalShell>
-    )
-  }
-
-  // ── Success State ───────────────────────────────────────────────────────────
+  // ── Success State (legacy path; Seat Now closes the modal immediately) ─────
   if (modalState === "success") {
     return (
       <ModalShell onClose={onClose} isMobile={isMobile}>

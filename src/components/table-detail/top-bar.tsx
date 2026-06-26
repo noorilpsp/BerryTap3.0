@@ -52,10 +52,18 @@ export function TopBar({
       </Button>
 
       {/* Table number */}
-      <h1 className="text-lg font-bold tracking-tight text-foreground md:text-xl">
-        {"T-"}
-        {table.number}
-      </h1>
+      <div className="flex items-baseline gap-2">
+        <h1 className="text-lg font-bold tracking-tight text-foreground md:text-xl">
+          {"T-"}
+          {table.number}
+        </h1>
+        {(table.capacity ?? table.seats.length) > 0 && (
+          <span className="text-sm text-muted-foreground">
+            {(table.capacity ?? table.seats.length)}{" "}
+            {(table.capacity ?? table.seats.length) === 1 ? "seat" : "seats"}
+          </span>
+        )}
+      </div>
 
       {/* Guest count */}
       <div className="flex items-center gap-1 text-sm text-muted-foreground">

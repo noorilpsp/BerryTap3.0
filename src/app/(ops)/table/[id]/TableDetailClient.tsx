@@ -53,17 +53,28 @@ import type { MenuItem, OrderItem as TakeOrderItem } from "@/lib/take-order-data
 import { useLocationMenu } from "@/lib/hooks/useLocationMenu"
 import { useRestaurantStore } from "@/store/restaurantStore"
 import { useLocation } from "@/lib/contexts/LocationContext"
-import { isTableView, type TableView, type TableViewItemStatus, type TableViewUiMode } from "@/lib/pos/tableView"
+import { isTableView, buildOptimisticSeatedTableView, buildOptimisticForceClosedTableView, type TableView, type TableViewItemStatus, type TableViewUiMode } from "@/lib/pos/tableView"
 import type { StoreTable, StoreTableSessionState } from "@/store/types"
 import { storeTablesToFloorTables } from "@/lib/floor-map-data"
 import { floorMapPath } from "@/lib/floor-map/floorMapNav"
+import { patchFloorMapViewTableCleaning } from "@/lib/floor-map/floorMapView"
 import { prefetchFloorMapView } from "@/lib/floor-map/prefetchFloorMapView"
 import { prefetchRoute } from "@/components/ui/link"
 import { fetchPos, getPosCorrelationId, makeIdempotencyKey } from "@/lib/pos/fetchPos"
 import { fireAndForget } from "@/lib/pos/fireAndForget"
 import { posDebugError } from "@/lib/pos/posDebugError"
 import { TablePageSkeleton } from "@/components/table-detail/TablePageSkeleton"
-import { getTableCache, setTableCache, invalidateFloorMapCache, invalidateTableCache, OPS_POST_SEATING_EVENT, type PostSeatingDetail } from "@/lib/view-cache"
+import {
+  getTableCache,
+  getFloorMapCache,
+  setTableCache,
+  setFloorMapCache,
+  invalidateFloorMapCache,
+  invalidateTableCache,
+  invalidatePostSeatingCaches,
+  OPS_POST_SEATING_EVENT,
+  type PostSeatingDetail,
+} from "@/lib/view-cache"
 import {
   deriveCanonicalWaveStatusFromItems,
   mapCanonicalWaveStatusToTablePageStatus,
@@ -327,6 +338,7 @@ function createEmptyTableDetail(tableId: string): TableDetail {
     id: tableId,
     floorPlanId: null,
     number: 0,
+    capacity: 0,
     shape: "round",
     section: "Main Dining",
     server: null,
@@ -410,6 +422,7 @@ function projectTableView(view: TableView | null, tableId: string): {
     id: view.table.id,
     floorPlanId: view.table.floorPlanId ?? null,
     number: view.table.number,
+    capacity: view.table.capacity,
     section: view.table.section,
     shape: mapPosShapeToUi(view.table.shape),
     guestCount: view.openSession?.guestCount ?? view.table.guests ?? seatsSorted.length,
@@ -521,12 +534,10 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
   )
   const [tableViewError, setTableViewError] = useState<string | null>(null)
   const [kitchenDelayDismissed, setKitchenDelayDismissed] = useState(false)
-  const [closePendingLabel, setClosePendingLabel] = useState<string | null>(null)
   const waveHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const seatHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const waveHoldTriggeredRef = useRef<number | null>(null)
   const addContextPulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const closeToastRef = useRef<string | number | null>(null)
   const [addContextPulse, setAddContextPulse] = useState<{
     id: number
     targetLabel: string
@@ -2470,43 +2481,55 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
       arg?: { force?: boolean } | { mode: string; method: string; subtotal: number; tip: number; total: number; charges: Array<{ label: string; amount: number }> }
     ) => {
       const isForceClose = arg != null && !("total" in arg) && arg.force === true
-      const pendingLabel = isForceClose ? "Force closing table..." : "Closing table..."
-      setClosePendingLabel(pendingLabel)
-      closeToastRef.current = toast.loading(pendingLabel)
+      const isPaymentSummary = arg != null && "total" in arg
 
-      const result = await mutateThenRefresh("Cannot close table", "/api/sessions/{sid}/close", async () => {
+      type CloseResult = {
+        ok: boolean
+        reason?: string
+        error?: unknown
+        items?: Array<{ id: string; itemName: string; status: string; quantity: number }>
+        remaining?: number
+        sessionTotal?: number
+        paymentsTotal?: number
+        correlationId?: string
+      }
+
+      const formatCloseError = (closeResult: CloseResult): string => {
+        const fallbackReason = toUiErrorMessage(closeResult.error, "")
+        const reason =
+          closeResult.reason ??
+          (fallbackReason === "unfinished_items" ||
+          fallbackReason === "unpaid_balance" ||
+          fallbackReason === "invalid_tip" ||
+          fallbackReason === "payment_in_progress" ||
+          fallbackReason === "kitchen_mid_fire" ||
+          fallbackReason === "session_not_open"
+            ? fallbackReason
+            : undefined)
+        if (reason === "unfinished_items") {
+          return typeof closeResult.items?.length === "number"
+            ? `Cannot close: ${closeResult.items.length} item(s) still pending, preparing, or ready. Finish or void them first.`
+            : "Cannot close: items are still pending, preparing, or ready. Finish or void them first."
+        }
+        if (reason === "unpaid_balance") {
+          return `Cannot close: $${(closeResult.remaining ?? 0).toFixed(2)} unpaid. Session total: $${(closeResult.sessionTotal ?? 0).toFixed(2)}, payments: $${(closeResult.paymentsTotal ?? 0).toFixed(2)}.`
+        }
+        if (reason === "invalid_tip") return "Tip amount must be >= 0."
+        if (reason === "payment_in_progress") return "Cannot close: a payment is in progress."
+        if (reason === "kitchen_mid_fire") {
+          return "Cannot close: items sent to kitchen but not yet started."
+        }
+        if (reason === "session_not_open") return "Session is not open."
+        return toUiErrorMessage(closeResult.error, "Cannot close table.")
+      }
+
+      const requestCloseSession = async (
+        sid: string,
+        payment: { amount: number; tipAmount: number; method: "card" | "cash" | "mobile" | "other" },
+        options?: { force?: boolean }
+      ): Promise<CloseResult> => {
         const idempotencyKey = makeIdempotencyKey()
-        const isPaymentSummary = arg != null && "total" in arg
-        const options = isPaymentSummary ? undefined : (arg as { force?: boolean } | undefined)
-        const payment = isPaymentSummary
-          ? {
-              amount: (arg as { total: number }).total,
-              tipAmount: (arg as { tip: number }).tip ?? 0,
-              method: ((arg as { method: string }).method ?? "other") as "card" | "cash" | "mobile" | "other",
-            }
-          : {
-              amount: table.bill?.total ?? 0,
-              tipAmount: 0,
-              method: "other" as const,
-            }
-
-        type CloseResult = {
-          ok: boolean
-          reason?: string
-          error?: unknown
-          items?: Array<{ id: string; itemName: string; status: string; quantity: number }>
-          remaining?: number
-          sessionTotal?: number
-          paymentsTotal?: number
-          correlationId?: string
-        }
-
-        const sid = effectiveSessionId
-        if (!sid) {
-          throw mutationError("Session is not open.")
-        }
-
-        const closeResult: CloseResult = await fetchPos(`/api/sessions/${sid}/close`, {
+        return fetchPos(`/api/sessions/${sid}/close`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2527,81 +2550,120 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
             } satisfies CloseResult
           })
           .catch(() => ({ ok: false, reason: "network_error", error: "Network request failed" }) satisfies CloseResult)
+      }
 
-        if (!closeResult.ok) {
-          const fallbackReason = toUiErrorMessage(closeResult.error, "")
-          const reason =
-            closeResult.reason ??
-            (fallbackReason === "unfinished_items" ||
-            fallbackReason === "unpaid_balance" ||
-            fallbackReason === "invalid_tip" ||
-            fallbackReason === "payment_in_progress" ||
-            fallbackReason === "kitchen_mid_fire" ||
-            fallbackReason === "session_not_open"
-              ? fallbackReason
-              : undefined)
-          const msg =
-            reason === "unfinished_items"
-              ? typeof closeResult.items?.length === "number"
-                ? `Cannot close: ${closeResult.items.length} item(s) still pending, preparing, or ready. Finish or void them first.`
-                : "Cannot close: items are still pending, preparing, or ready. Finish or void them first."
-              : reason === "unpaid_balance"
-                ? `Cannot close: $${(closeResult.remaining ?? 0).toFixed(2)} unpaid. Session total: $${(closeResult.sessionTotal ?? 0).toFixed(2)}, payments: $${(closeResult.paymentsTotal ?? 0).toFixed(2)}.`
-                : reason === "invalid_tip"
-                  ? "Tip amount must be >= 0."
-                  : reason === "payment_in_progress"
-                    ? "Cannot close: a payment is in progress."
-                    : reason === "kitchen_mid_fire"
-                      ? "Cannot close: items sent to kitchen but not yet started."
-                      : reason === "session_not_open"
-                        ? "Session is not open."
-                        : toUiErrorMessage(closeResult.error, "Cannot close table.")
-          throw mutationError(msg, closeResult, null)
-        }
-
-        fireAndForget(
-          fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              type: "payment_completed",
-              eventSource: "table_page",
-            }),
-          }),
-          "record payment_completed event"
-        )
-
-        return { sessionId: sid }
-      }, { skipRefreshOnSuccess: true })
-
-      if (!result) {
-        setClosePendingLabel(null)
-        if (closeToastRef.current != null) {
-          toast.error("Table was not closed.", { id: closeToastRef.current })
-          closeToastRef.current = null
-        }
+      const sid = effectiveSessionId
+      if (!sid || !tableView) {
+        toast.error("No open session to close.")
         return
       }
+      if (!currentLocationId) {
+        toast.error("No location selected.")
+        return
+      }
+
+      const payment = isPaymentSummary
+        ? {
+            amount: (arg as { total: number }).total,
+            tipAmount: (arg as { tip: number }).tip ?? 0,
+            method: ((arg as { method: string }).method ?? "other") as
+              | "card"
+              | "cash"
+              | "mobile"
+              | "other",
+          }
+        : {
+            amount: table.bill?.total ?? 0,
+            tipAmount: 0,
+            method: "other" as const,
+          }
+
+      const closeOptions = isForceClose ? { force: true } : undefined
+      const successMessage = isForceClose ? "Table force closed" : "Table closed"
+
+      const tableViewSnapshot = structuredClone(tableView)
+      const floorPlanId = table.floorPlanId
+      const cachedFloorMap = getFloorMapCache(currentLocationId, floorPlanId)
+      const floorMapSnapshot = cachedFloorMap ? structuredClone(cachedFloorMap) : null
+      const optimisticTableView = buildOptimisticForceClosedTableView(tableView)
+
+      applyTableView(optimisticTableView)
+      setTableCache(id, optimisticTableView)
 
       if (activeStoreTable?.orderId) {
         closeOrder(activeStoreTable.orderId, table.bill)
       }
 
-      invalidateTableCache(id)
-      if (currentLocationId) {
-        invalidateFloorMapCache(currentLocationId)
+      if (floorMapSnapshot) {
+        setFloorMapCache(
+          currentLocationId,
+          floorPlanId,
+          patchFloorMapViewTableCleaning(floorMapSnapshot, id)
+        )
       }
 
-      if (closeToastRef.current != null) {
-        toast.success("Table closed.", { id: closeToastRef.current })
-        closeToastRef.current = null
+      if (isPaymentSummary) {
+        setPaymentOpen(false)
       }
 
+      const destination = floorMapPath(table.floorPlanId)
+      toast.success(successMessage)
       startTransition(() => {
-        router.push(floorMapPath(table.floorPlanId))
+        router.push(destination)
       })
+
+      void (async () => {
+        try {
+          const closeResult = await requestCloseSession(sid, payment, closeOptions)
+          if (!closeResult.ok) {
+            throw mutationError(formatCloseError(closeResult), closeResult, null)
+          }
+
+          fireAndForget(
+            fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                type: "payment_completed",
+                eventSource: "table_page",
+              }),
+            }),
+            "record payment_completed event"
+          )
+
+          invalidateTableCache(id)
+          invalidateFloorMapCache(currentLocationId)
+        } catch (error) {
+          applyTableView(tableViewSnapshot)
+          setTableCache(id, tableViewSnapshot)
+          if (floorMapSnapshot) {
+            setFloorMapCache(currentLocationId, floorPlanId, floorMapSnapshot)
+          }
+          if (isPaymentSummary) {
+            setPaymentOpen(true)
+          }
+          const normalized = isPosMutationError(error)
+            ? error
+            : mutationError(toUiErrorMessage(error, "Failed to close table."))
+          toast.error(normalized.message)
+          startTransition(() => {
+            router.push(`/table/${encodeURIComponent(id)}`)
+          })
+        }
+      })()
     },
-    [activeStoreTable, closeOrder, currentLocationId, table.bill, table.floorPlanId, router, effectiveSessionId, id, mutateThenRefresh]
+    [
+      activeStoreTable,
+      applyTableView,
+      closeOrder,
+      currentLocationId,
+      effectiveSessionId,
+      id,
+      router,
+      table.bill,
+      table.floorPlanId,
+      tableView,
+    ]
   )
 
   const handlePaymentComplete = handleCloseTable
@@ -2662,60 +2724,101 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
     triggerAddContextPulse(seatNumber, selectedWaveNumber)
   }, [ensureNewHeldWaveTarget, isHeldWaveNumber, selectedSeatNumber, selectedWaveNumber, triggerAddContextPulse])
 
-  const handleSeated = useCallback(async (formData: import("@/lib/floor-map-data").SeatPartyForm) => {
-    const result = await mutateThenRefresh("Failed to seat party", "/api/sessions/ensure", async () => {
-    if (!currentLocationId) {
-      setWarningDialog({
-        open: true,
-        title: "Failed to seat party",
-        description: "No location selected.",
-      })
-      return
-    }
-    openOrderForTable(activeStoreTable?.id ?? id, formData.partySize)
-    const res = await fetchPos("/api/sessions/ensure", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        tableUuid: id,
-        locationId: currentLocationId,
-        guestCount: formData.partySize,
-        eventSource: "table_page",
-      }),
-    }).catch(() => null)
-    const payload = res ? await res.json().catch(() => null) : null
-    if (!res?.ok || payload?.ok === false) {
-      throw mutationError(
-        toUiErrorMessage(payload?.error, res ? "Could not create session. Please try again." : "Network error. Please try again."),
-        payload,
-        res
-      )
-    }
-    const sid = typeof payload?.data?.sessionId === "string" ? payload.data.sessionId : null
-    if (!sid) {
-      throw mutationError("Could not create session. Please try again.", payload, res)
-      return
-    }
-    fireAndForget(
-      fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "guest_seated",
-          payload: { guestCount: formData.partySize },
-          eventSource: "table_page",
-        }),
-      }),
-      "record guest_seated event"
-    )
-    setSeatPartyOpen(false)
-    setIsOrderingInline(false)
-    setArmedWaveDelete(null)
-    setArmedSeatDelete(null)
-    setOrderItems([])
-    })
-    return result !== null
-  }, [activeStoreTable, currentLocationId, id, mutateThenRefresh, openOrderForTable])
+  const handleSeated = useCallback(
+    async (formData: import("@/lib/floor-map-data").SeatPartyForm) => {
+      if (!currentLocationId) {
+        setWarningDialog({
+          open: true,
+          title: "Failed to seat party",
+          description: "No location selected.",
+        });
+        return false;
+      }
+      if (!tableView) {
+        toast.error("Table data is still loading. Please try again.");
+        return false;
+      }
+
+      const partySize = formData.partySize;
+      const snapshot = structuredClone(tableView);
+      const optimistic = buildOptimisticSeatedTableView(tableView, partySize);
+
+      applyTableView(optimistic);
+      setTableCache(id, optimistic);
+      openOrderForTable(activeStoreTable?.id ?? id, partySize);
+      setSeatPartyOpen(false);
+      setIsOrderingInline(false);
+      setArmedWaveDelete(null);
+      setArmedSeatDelete(null);
+      setOrderItems([]);
+
+      void (async () => {
+        try {
+          const res = await fetchPos("/api/sessions/ensure", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              tableUuid: id,
+              locationId: currentLocationId,
+              guestCount: partySize,
+              eventSource: "table_page",
+            }),
+          });
+          const payload = await res.json().catch(() => null);
+          if (!res.ok || payload?.ok === false) {
+            throw mutationError(
+              toUiErrorMessage(
+                payload?.error,
+                "Could not create session. Please try again."
+              ),
+              payload,
+              res
+            );
+          }
+          const sid =
+            typeof payload?.data?.sessionId === "string" ? payload.data.sessionId : null;
+          if (!sid) {
+            throw mutationError("Could not create session. Please try again.", payload, res);
+          }
+          fireAndForget(
+            fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                type: "guest_seated",
+                payload: { guestCount: partySize },
+                eventSource: "table_page",
+              }),
+            }),
+            "record guest_seated event"
+          );
+          invalidatePostSeatingCaches(currentLocationId, id);
+          toast.success(`Party of ${partySize} seated`);
+          void refreshTableView({ silent: true });
+        } catch (error) {
+          applyTableView(snapshot);
+          setTableCache(id, snapshot);
+          const normalized = isPosMutationError(error)
+            ? error
+            : mutationError(
+                toUiErrorMessage(error, "Failed to seat party. Please try again.")
+              );
+          toast.error(normalized.message);
+        }
+      })();
+
+      return true;
+    },
+    [
+      activeStoreTable?.id,
+      applyTableView,
+      currentLocationId,
+      id,
+      openOrderForTable,
+      refreshTableView,
+      tableView,
+    ]
+  );
 
   if (tableView === null && !tableViewError) {
     return <TablePageSkeleton />
@@ -2728,15 +2831,7 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
         table={table}
         onToggleInfo={() => setInfoOpen((v) => !v)}
         onCloseTable={handleCloseTable}
-        closePendingLabel={closePendingLabel}
       />
-
-      {closePendingLabel && (
-        <div className="mx-3 mt-2 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200 md:mx-4">
-          <span className="inline-block h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
-          <span>{closePendingLabel}</span>
-        </div>
-      )}
 
       {tableViewError && (
         <div className="mx-3 mt-2 flex items-center justify-between rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200 md:mx-4">
@@ -2779,6 +2874,7 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
               <div className="p-3">
                 <TableVisual
                   tableNumber={table.number}
+                  capacity={table.capacity}
                   seats={projectedSeats}
                   selectedSeat={selectedSeat}
                   onSelectSeat={setSelectedSeat}
@@ -3260,6 +3356,7 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
               <div className="px-4 pt-7 pb-1">
                 <TableVisual
                   tableNumber={table.number}
+                  capacity={table.capacity}
                   seats={projectedSeats}
                   selectedSeat={selectedSeat}
                   onSelectSeat={setSelectedSeat}

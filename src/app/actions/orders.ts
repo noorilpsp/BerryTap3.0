@@ -129,7 +129,6 @@ async function getOrCreateSessionForTable(
     .returning({ id: sessionsTable.id });
   if (!inserted?.id) return null;
   await ensureSeatsForSession(inserted.id, guestCount);
-  await createNextWave(inserted.id);
   return inserted.id;
 }
 
@@ -162,6 +161,11 @@ export type EnsureSessionResult =
   | { ok: false; reason: "no_table" }
   | { ok: false; reason: "table_not_active" };
 
+export type EnsureSessionOptions = {
+  /** Caller already validated location + merchant membership (e.g. API route). */
+  accessVerified?: boolean;
+};
+
 /**
  * Get or create an open session for a table by table UUID (tables.id) or displayId.
  * Table lookup matches /api/tables/[id]/pos: UUID → eq(id), else ilike(displayId).
@@ -173,34 +177,35 @@ export async function ensureSessionForTableByTableUuid(
   tableUuid: string,
   guestCount: number,
   userId: string,
-  reservationId?: string | null
+  reservationId?: string | null,
+  options?: EnsureSessionOptions
 ): Promise<EnsureSessionResult> {
-  const location = await verifyLocationAccess(locationId);
-  if (!location) return { ok: false, reason: "no_location" };
+  if (!options?.accessVerified) {
+    const location = await verifyLocationAccess(locationId);
+    if (!location) return { ok: false, reason: "no_location" };
+  }
 
-  const staffId = await getStaffIdForUser(locationId, userId);
-  if (!staffId) return { ok: false, reason: "user_not_staff" };
-
-  let tableRow: { id: string; status: string | null } | null;
-  if (isValidUuid(tableUuid)) {
-    tableRow =
-      (await db.query.tables.findFirst({
+  const tableLookup = isValidUuid(tableUuid)
+    ? db.query.tables.findFirst({
         where: and(
           eq(tablesTable.locationId, locationId),
           eq(tablesTable.id, tableUuid)
         ),
         columns: { id: true, status: true },
-      })) ?? null;
-  } else {
-    tableRow =
-      (await db.query.tables.findFirst({
+      })
+    : db.query.tables.findFirst({
         where: and(
           eq(tablesTable.locationId, locationId),
           ilike(tablesTable.displayId, tableUuid)
         ),
         columns: { id: true, status: true },
-      })) ?? null;
-  }
+      });
+
+  const [staffId, tableRow] = await Promise.all([
+    getStaffIdForUser(locationId, userId),
+    tableLookup,
+  ]);
+  if (!staffId) return { ok: false, reason: "user_not_staff" };
   if (!tableRow) return { ok: false, reason: "no_table" };
 
   const furnitureStatus = normalizeFurnitureStatus(tableRow.status ?? "");

@@ -40,6 +40,7 @@ import {
   type CloseOrderForTableOptions,
   type PickupDeliveryLineItemInput,
   type AddItemToOrderByOrderIdInput,
+  type EnsureSessionOptions,
 } from "@/app/actions/orders";
 import {
   markItemPreparing as markItemPreparingAction,
@@ -213,7 +214,8 @@ export async function ensureSessionByTableUuid(
   tableUuid: string,
   guestCount = 1,
   userId?: string | null,
-  reservationId?: string | null
+  reservationId?: string | null,
+  options?: EnsureSessionOptions
 ): Promise<ServiceResult> {
   const effectiveUserId = userId ?? (await getCurrentUserId());
   if (!effectiveUserId) return { ok: false, reason: "Unauthorized" };
@@ -222,7 +224,8 @@ export async function ensureSessionByTableUuid(
     tableUuid,
     guestCount,
     effectiveUserId,
-    reservationId
+    reservationId,
+    options
   );
   if (!result.ok) {
     const msg = result.reason === "user_not_staff" ? "You are not staff at this location" : result.reason;

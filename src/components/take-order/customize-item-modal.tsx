@@ -151,8 +151,16 @@ export function CustomizeItemModal({
         <DialogHeader className="border-b border-border px-6 py-4">
           <DialogTitle className="flex items-start justify-between gap-4">
             <div className="flex gap-4">
-              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-muted text-2xl">
-                {item.category === "drinks" ? "🍹" : "🍽️"}
+              <div className="relative flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted text-2xl">
+                {item.image ? (
+                  <img
+                    src={item.image}
+                    alt={item.name}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <span>{item.category === "drinks" ? "🍹" : "🍽️"}</span>
+                )}
               </div>
               <div>
                 <h2 className="text-lg font-semibold">{item.name}</h2>

@@ -248,3 +248,73 @@ export function isTableView(x: unknown): x is TableView {
 
   return true
 }
+
+/** Optimistic table view after seating — reverted if the session API fails. */
+export function buildOptimisticSeatedTableView(
+  prev: TableView,
+  guestCount: number
+): TableView {
+  const now = new Date().toISOString();
+  const safeGuestCount = Math.max(1, Math.floor(guestCount));
+  const seats = Array.from({ length: safeGuestCount }, (_, i) => ({
+    id: prev.seats[i]?.id ?? `optimistic-seat-${i + 1}`,
+    seatNumber: i + 1,
+    guestName: prev.seats[i]?.guestName ?? null,
+  }));
+
+  return {
+    ...prev,
+    uiMode: "in_service",
+    serviceStage: "seated",
+    table: {
+      ...prev.table,
+      guests: safeGuestCount,
+      seatedAt: now,
+      status: "active",
+      stage: "drinks",
+    },
+    openSession: {
+      id: prev.openSession?.id ?? `optimistic-${Date.now()}`,
+      status: "open",
+      guestCount: safeGuestCount,
+      openedAt: now,
+      waveCount: prev.openSession?.waveCount ?? 1,
+    },
+    seats,
+    actions: {
+      ...prev.actions,
+      canSend: false,
+      canAddWave: true,
+      canDeleteWave: false,
+      canCloseSession: false,
+    },
+  };
+}
+
+/** Optimistic table view after force close — reverted if the close API fails. */
+export function buildOptimisticForceClosedTableView(prev: TableView): TableView {
+  return {
+    ...prev,
+    uiMode: "needs_seating",
+    serviceStage: "available",
+    openSession: null,
+    seats: [],
+    items: [],
+    waves: [],
+    table: {
+      ...prev.table,
+      guests: 0,
+      seatedAt: null,
+      stage: null,
+    },
+    actions: {
+      canSend: false,
+      canAddWave: false,
+      canDeleteWave: false,
+      canCloseSession: false,
+    },
+    bill: { subtotal: 0, tax: 0, total: 0 },
+    outstanding: null,
+    delays: null,
+  };
+}

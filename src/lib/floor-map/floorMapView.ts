@@ -203,3 +203,35 @@ export function viewTablesToFloorTables(
     reservation: t.reservation,
   }));
 }
+
+/** Optimistic floor map patch when a table enters cleaning after close. */
+export function patchFloorMapViewTableCleaning(
+  prev: FloorMapView,
+  tableId: string
+): FloorMapView {
+  const tables = prev.tables.map((t) =>
+    t.id.toLowerCase() === tableId.toLowerCase()
+      ? {
+          ...t,
+          status: "closed" as const,
+          guests: 0,
+          stage: null,
+          serverId: null,
+          serverName: null,
+          seatedAt: null,
+          billTotal: undefined,
+          waves: undefined,
+        }
+      : t
+  );
+  return {
+    ...prev,
+    tables,
+    statusCounts: {
+      ...prev.statusCounts,
+      free: tables.filter((t) => t.status === "free").length,
+      active: tables.filter((t) => t.status === "active").length,
+      closed: tables.filter((t) => t.status === "closed").length,
+    },
+  };
+}

@@ -11,6 +11,7 @@ import { dietaryIcons, formatCurrency, getSeatTotal } from "@/lib/table-data"
 
 interface TableVisualProps {
   tableNumber: number
+  capacity?: number
   seats: Seat[]
   selectedSeat: number | null
   onSelectSeat: (seatNumber: number | null) => void
@@ -67,6 +68,7 @@ function SeatBadge({
 
 export function TableVisual({
   tableNumber,
+  capacity,
   seats,
   selectedSeat,
   onSelectSeat,
@@ -76,6 +78,7 @@ export function TableVisual({
   const selected = seats.find((s) => s.number === selectedSeat)
   const colorConfig = TABLE_COLOR_STATES[getTableDetailColorState(status)]
   const isTableSelected = selectedSeat === null
+  const seatCapacity = capacity ?? seats.length
 
   return (
     <div className="flex flex-col gap-4">
@@ -120,9 +123,16 @@ export function TableVisual({
             />
             <span className="pointer-events-none absolute inset-[3px] rounded-[10px] border border-white/7" />
             <span className="pointer-events-none absolute left-1/2 top-2 h-2 w-40 -translate-x-1/2 rounded-full bg-white/8 blur-[0.8px]" />
-            <span className={cn("relative z-10 text-xl font-bold tracking-[0.08em] drop-shadow-[0_1px_6px_rgba(2,6,23,0.55)]", colorConfig.textClass)}>
-              {"T-"}
-              {tableNumber}
+            <span className={cn("relative z-10 flex flex-col items-center gap-0.5", colorConfig.textClass)}>
+              <span className="text-xl font-bold tracking-[0.08em] drop-shadow-[0_1px_6px_rgba(2,6,23,0.55)]">
+                {"T-"}
+                {tableNumber}
+              </span>
+              {seatCapacity > 0 && (
+                <span className="text-[11px] font-medium tracking-wide opacity-80">
+                  {seatCapacity} {seatCapacity === 1 ? "seat" : "seats"}
+                </span>
+              )}
             </span>
           </button>
 

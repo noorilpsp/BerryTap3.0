@@ -42,9 +42,21 @@ export function MenuItemCard({
     >
       {/* Image */}
       <div className={cn("relative overflow-hidden bg-muted", isCompact ? "aspect-[16/9]" : "aspect-[3/2]")}>
-        <div className="absolute inset-0 flex items-center justify-center text-4xl text-muted-foreground/20">
-          {item.category === "drinks" ? "🍹" : "🍽️"}
-        </div>
+        {item.image ? (
+          <img
+            src={item.image}
+            alt={item.name}
+            className={cn(
+              "absolute inset-0 h-full w-full object-cover",
+              isUnavailable && "grayscale"
+            )}
+            loading="lazy"
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center text-4xl text-muted-foreground/20">
+            {item.category === "drinks" ? "🍹" : "🍽️"}
+          </div>
+        )}
 
         {/* Status Badges */}
         <div className="absolute right-2 top-2 flex flex-col gap-1">

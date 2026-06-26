@@ -9,14 +9,17 @@ import {
   ArrowRightLeft,
   X,
   UserPlus,
+  Sparkles,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 interface QuickActionsMenuProps {
   tableNumber: number
   position: { x: number; y: number }
+  isCleaning?: boolean
   onClose: () => void
   onSeatParty?: () => void
+  onMarkAvailable?: () => void
 }
 
 const actions = [
@@ -31,8 +34,10 @@ const actions = [
 export function QuickActionsMenu({
   tableNumber,
   position,
+  isCleaning = false,
   onClose,
   onSeatParty,
+  onMarkAvailable,
 }: QuickActionsMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -75,17 +80,31 @@ export function QuickActionsMenu({
 
       {/* Actions */}
       <div className="py-1.5">
-        {actions.map(({ icon: Icon, label, key, accent, isSeatParty }) => (
+        {isCleaning ? (
           <button
-            key={key}
             type="button"
-            onClick={isSeatParty && onSeatParty ? onSeatParty : onClose}
-            className="group flex w-full items-center gap-2.5 px-3 py-2.5 text-sm text-foreground font-medium transition-all hover:bg-white/[0.08]"
+            onClick={() => {
+              onMarkAvailable?.()
+              onClose()
+            }}
+            className="group flex w-full items-center gap-2.5 px-3 py-2.5 text-sm font-medium text-foreground transition-all hover:bg-white/[0.08]"
           >
-            <Icon className={cn("h-4 w-4 transition-colors", accent)} />
-            {label}
+            <Sparkles className="h-4 w-4 text-emerald-400 transition-colors" />
+            Mark Available
           </button>
-        ))}
+        ) : (
+          actions.map(({ icon: Icon, label, key, accent, isSeatParty }) => (
+            <button
+              key={key}
+              type="button"
+              onClick={isSeatParty && onSeatParty ? onSeatParty : onClose}
+              className="group flex w-full items-center gap-2.5 px-3 py-2.5 text-sm text-foreground font-medium transition-all hover:bg-white/[0.08]"
+            >
+              <Icon className={cn("h-4 w-4 transition-colors", accent)} />
+              {label}
+            </button>
+          ))
+        )}
       </div>
     </div>
   )

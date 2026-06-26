@@ -45,6 +45,7 @@ interface GridViewProps {
   ownTableIds: string[]
   onTableTap: (tableId: string) => void
   onTablePrefetch?: (tableId: string) => void
+  onMarkAvailable?: (tableId: string) => void
 }
 
 // ── Urgency ordering ───────────────────────────────────────────────────────
@@ -181,6 +182,7 @@ const TableCard = React.memo(function TableCard({
   isOwn,
   onTap,
   onPrefetch,
+  onMarkAvailable,
   cardIndex,
   sectionConfig,
 }: {
@@ -190,6 +192,7 @@ const TableCard = React.memo(function TableCard({
   isOwn: boolean
   onTap: () => void
   onPrefetch?: () => void
+  onMarkAvailable?: () => void
   cardIndex: number
   sectionConfig?: Record<string, { name: string }>
 }) {
@@ -334,7 +337,24 @@ const TableCard = React.memo(function TableCard({
       )}
 
       {/* ── Footer ──────────────────────────────────────────────── */}
-      {!isIdle && (
+      {colorState === "cleaning" && onMarkAvailable && (
+        <div className="border-t border-white/4 px-4 py-2.5">
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 w-full gap-2 rounded-lg bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+            onClick={(e) => {
+              e.stopPropagation()
+              onMarkAvailable()
+            }}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            Mark Available
+          </Button>
+        </div>
+      )}
+
+      {!isIdle && colorState !== "cleaning" && (
         <div className="flex items-center gap-2 border-t border-white/4 px-4 py-2.5">
           {serverName && (
             <span className="text-[11px] text-muted-foreground/60 truncate">
@@ -428,6 +448,7 @@ export function GridView({
   ownTableIds,
   onTableTap,
   onTablePrefetch,
+  onMarkAvailable,
 }: GridViewProps) {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<TableColorState>>(() => {
     const initial = new Set<TableColorState>()
@@ -574,6 +595,9 @@ export function GridView({
                           isOwn={isOwn}
                           onTap={() => onTableTap(table.id)}
                           onPrefetch={onTablePrefetch ? () => onTablePrefetch(table.id) : undefined}
+                          onMarkAvailable={
+                            onMarkAvailable ? () => onMarkAvailable(table.id) : undefined
+                          }
                           cardIndex={idx}
                           sectionConfig={sectionConfig}
                         />

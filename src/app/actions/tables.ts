@@ -1,11 +1,16 @@
 "use server";
 
-import { eq, and, desc, ilike, or, sql } from "drizzle-orm";
+import { eq, and, desc, ilike, inArray, or, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { tables as tablesTable, sessions as sessionsTable } from "@/lib/db/schema/orders";
+import {
+  tables as tablesTable,
+  sessions as sessionsTable,
+  sessionEvents as sessionEventsTable,
+} from "@/lib/db/schema/orders";
 import { verifyLocationAccess } from "@/lib/location-access";
 import { updateTableMutation } from "@/domain/table-mutations";
 import { isValidUuid } from "@/lib/resolveTableUuid";
+import { recordSessionEventWithSource } from "@/app/actions/session-events";
 import type { StoreTable } from "@/store/types";
 
 /**
@@ -74,6 +79,24 @@ function mapDbStatusToStoreStatus(
 /** Minutes after session close that table is considered "cleaning". */
 const CLEANING_WINDOW_MINUTES = 5;
 
+function cleaningWindowSql() {
+  return sql`${sessionsTable.closedAt} >= now() - interval '${sql.raw(String(CLEANING_WINDOW_MINUTES))} minutes'`;
+}
+
+async function getCleanedSessionIds(sessionIds: string[]): Promise<Set<string>> {
+  if (sessionIds.length === 0) return new Set();
+  const rows = await db
+    .select({ sessionId: sessionEventsTable.sessionId })
+    .from(sessionEventsTable)
+    .where(
+      and(
+        inArray(sessionEventsTable.sessionId, sessionIds),
+        eq(sessionEventsTable.type, "table_cleaned")
+      )
+    );
+  return new Set(rows.map((row) => row.sessionId));
+}
+
 export type ComputedTableStatus = "available" | "occupied" | "cleaning";
 
 /**
@@ -100,14 +123,17 @@ export async function computeTableStatus(tableId: string): Promise<ComputedTable
       and(
         eq(sessionsTable.tableId, tableId),
         eq(sessionsTable.status, "closed"),
-        sql`${sessionsTable.closedAt} >= now() - interval '${sql.raw(String(CLEANING_WINDOW_MINUTES))} minutes'`
+        cleaningWindowSql()
       )
     )
     .orderBy(desc(sessionsTable.closedAt))
     .limit(1);
-  if (recentlyClosed.length > 0) return "cleaning";
+  if (recentlyClosed.length === 0) return "available";
 
-  return "available";
+  const cleanedSessionIds = await getCleanedSessionIds([recentlyClosed[0].id]);
+  if (cleanedSessionIds.has(recentlyClosed[0].id)) return "available";
+
+  return "cleaning";
 }
 
 /** Batch: derive status from sessions for many tables. Used by getTablesForLocation/getTablesForFloorPlan and API routes. */
@@ -123,28 +149,96 @@ export async function getComputedStatusesForTables(
       columns: { tableId: true },
     }),
     db
-      .select({ tableId: sessionsTable.tableId })
+      .select({
+        id: sessionsTable.id,
+        tableId: sessionsTable.tableId,
+        closedAt: sessionsTable.closedAt,
+      })
       .from(sessionsTable)
       .where(
         and(
           eq(sessionsTable.locationId, locationId),
           eq(sessionsTable.status, "closed"),
-          sql`${sessionsTable.closedAt} >= now() - interval '${sql.raw(String(CLEANING_WINDOW_MINUTES))} minutes'`
+          cleaningWindowSql()
         )
-      ),
+      )
+      .orderBy(desc(sessionsTable.closedAt)),
   ]);
 
   const openTableIds = new Set(openSessions.map((s) => s.tableId));
+  const latestClosedByTable = new Map<string, string>();
+  for (const session of recentlyClosedSessions) {
+    if (!latestClosedByTable.has(session.tableId)) {
+      latestClosedByTable.set(session.tableId, session.id);
+    }
+  }
+  const cleanedSessionIds = await getCleanedSessionIds([
+    ...latestClosedByTable.values(),
+  ]);
+
   const result = new Map<string, ComputedTableStatus>();
   for (const s of openSessions) {
     result.set(s.tableId, "occupied");
   }
-  for (const r of recentlyClosedSessions) {
-    if (!openTableIds.has(r.tableId)) {
-      result.set(r.tableId, "cleaning");
+  for (const [tableId, sessionId] of latestClosedByTable) {
+    if (!openTableIds.has(tableId) && !cleanedSessionIds.has(sessionId)) {
+      result.set(tableId, "cleaning");
     }
   }
   return result;
+}
+
+/**
+ * Mark a table as available after cleaning by recording table_cleaned on the
+ * most recent closed session within the cleaning window.
+ */
+export async function markTableCleaningDone(
+  locationId: string,
+  tableId: string
+): Promise<{ ok: boolean; error?: string }> {
+  const location = await verifyLocationAccess(locationId);
+  if (!location) {
+    return { ok: false, error: "Unauthorized or location not found" };
+  }
+
+  const tableRow = await db.query.tables.findFirst({
+    where: and(eq(tablesTable.locationId, locationId), eq(tablesTable.id, tableId)),
+    columns: { id: true },
+  });
+  if (!tableRow) {
+    return { ok: false, error: "Table not found" };
+  }
+
+  const recentSession = await db.query.sessions.findFirst({
+    where: and(
+      eq(sessionsTable.locationId, locationId),
+      eq(sessionsTable.tableId, tableId),
+      eq(sessionsTable.status, "closed"),
+      cleaningWindowSql()
+    ),
+    orderBy: [desc(sessionsTable.closedAt)],
+    columns: { id: true },
+  });
+  if (!recentSession) {
+    return { ok: false, error: "Table is not in cleaning state" };
+  }
+
+  const cleanedSessionIds = await getCleanedSessionIds([recentSession.id]);
+  if (cleanedSessionIds.has(recentSession.id)) {
+    return { ok: true };
+  }
+
+  const eventResult = await recordSessionEventWithSource(
+    locationId,
+    recentSession.id,
+    "table_cleaned",
+    "api"
+  );
+  if (!eventResult.ok) {
+    return { ok: false, error: eventResult.error ?? "Failed to mark table available" };
+  }
+
+  return { ok: true };
 }
 
 export async function getTablesForLocation(
