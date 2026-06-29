@@ -2,7 +2,8 @@ import { NextRequest } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPosUserId } from "@/lib/pos/posAuth";
 import { getPosMerchantContext } from "@/lib/pos/posMerchantContext";
-import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
+import { withDbRetry, toUserFacingDbError } from "@/lib/db/withDbRetry";
+import { posFailure, posSuccess } from "@/app/api/_lib/pos-envelope";
 import { buildFloorMapView } from "@/lib/floor-map/buildFloorMapView";
 
 /**
@@ -37,7 +38,9 @@ export async function GET(request: NextRequest) {
     }
 
     const floorplanId = floorplanIdParam?.trim() || undefined;
-    const view = await buildFloorMapView(locationId, authResult.userId, floorplanId);
+    const view = await withDbRetry(() =>
+      buildFloorMapView(locationId, authResult.userId, floorplanId)
+    );
     if (!view) {
       return posFailure("INTERNAL_ERROR", "Failed to build FloorMapView", { status: 500 });
     }
@@ -46,7 +49,7 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     return posFailure(
       "INTERNAL_ERROR",
-      toErrorMessage(error, "Internal server error - Failed to load floor map view"),
+      toUserFacingDbError(error, "Failed to load floor map. Please try again."),
       { status: 500 }
     );
   }

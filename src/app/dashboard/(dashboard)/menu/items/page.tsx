@@ -8,6 +8,7 @@ import { SelectionToolbar } from "@/components/selection-toolbar"
 import { ItemDrawer } from "@/components/item-drawer"
 import { BulkActionModal } from "@/components/bulk-action-modal"
 import { DeleteConfirmationDialog } from "@/components/modals/delete-confirmation-dialog"
+import { MenuImportModal } from "@/components/modals/menu-import-modal"
 import { useMenu } from "../menu-context"
 import type { MenuItem } from "@/types/menu-item"
 import { toast } from "sonner"
@@ -15,7 +16,7 @@ import { toast } from "sonner"
 const availableTags = ["Vegan", "Vegetarian", "Gluten-Free", "Spicy", "Popular", "New", "Chef's Pick"]
 
 export default function MenuItemsPage() {
-  const { items, categories, createItem, updateItem, deleteItem, bulkUpdateItems, bulkDeleteItems } = useMenu()
+  const { items, categories, menus, locationId, createItem, updateItem, deleteItem, bulkUpdateItems, bulkDeleteItems, importItems } = useMenu()
   const searchParams = useSearchParams()
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [view, setView] = useState<"grid" | "list">("grid")
@@ -44,6 +45,7 @@ export default function MenuItemsPage() {
     open: false,
     item: null,
   })
+  const [menuImportOpen, setMenuImportOpen] = useState(false)
 
   // Handle URL parameters for filtering
   useEffect(() => {
@@ -312,6 +314,7 @@ export default function MenuItemsPage() {
             selectedTags={selectedTags}
             onTagsChange={setSelectedTags}
             onAddItem={handleCreateItem}
+            onImportCsv={() => setMenuImportOpen(true)}
             totalItems={filteredItems.length}
             categories={categories}
           />
@@ -414,6 +417,15 @@ export default function MenuItemsPage() {
         onConfirm={handleConfirmDelete}
         entityType="item"
         entityName={deleteConfirmation.item?.name || "this item"}
+      />
+
+      <MenuImportModal
+        open={menuImportOpen}
+        onOpenChange={setMenuImportOpen}
+        locationId={locationId}
+        categories={categories}
+        menus={menus}
+        onImport={importItems}
       />
     </div>
   )

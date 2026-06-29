@@ -5,6 +5,7 @@
 
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "@/db";
+import { withDbRetry } from "@/lib/db/withDbRetry";
 import { tables, sessions, seats, orders, orderItems, reservations } from "@/lib/db/schema/orders";
 import type { OutstandingItemsResult } from "@/app/actions/session-close-validation";
 import { computeKitchenDelaysFromOrderItems } from "@/lib/pos/computeKitchenDelays";
@@ -101,6 +102,14 @@ export async function buildTableView(
   locationIds: string[],
   options?: BuildTableViewOptions
 ): Promise<TableView | null> {
+  return withDbRetry(() => buildTableViewCore(tableId, locationIds, options));
+}
+
+async function buildTableViewCore(
+  tableId: string,
+  locationIds: string[],
+  options?: BuildTableViewOptions
+): Promise<TableView | null> {
   const tableLookupMode = isValidUuid(tableId) ? "uuid" : "displayId";
   const displayIdForLookup =
     tableLookupMode === "displayId" ? tableId.trim().toUpperCase() : "";
@@ -124,9 +133,6 @@ export async function buildTableView(
             stage: true,
             alerts: true,
           },
-          with: {
-            location: { columns: { merchantId: true } },
-          },
         })
       : await db.query.tables.findFirst({
           where: and(
@@ -148,12 +154,9 @@ export async function buildTableView(
             stage: true,
             alerts: true,
           },
-          with: {
-            location: { columns: { merchantId: true } },
-          },
         });
 
-  if (!table?.location) return null;
+  if (!table) return null;
 
   const openSession = await db.query.sessions.findFirst({
     where: and(eq(sessions.tableId, table.id), eq(sessions.status, "open")),

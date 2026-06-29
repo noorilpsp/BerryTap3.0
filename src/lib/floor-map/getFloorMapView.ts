@@ -7,6 +7,7 @@ import { getCurrentLocationId } from "@/app/actions/location";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPosMerchantContext } from "@/lib/pos/posMerchantContext";
 import { getPosUserId } from "@/lib/pos/posAuth";
+import { withDbRetry } from "@/lib/db/withDbRetry";
 import { buildFloorMapView } from "@/lib/floor-map/buildFloorMapView";
 import type { FloorMapView } from "@/lib/floor-map/floorMapView";
 
@@ -59,10 +60,8 @@ export async function getFloorMapView(
   }
 
   const t3 = DEV ? performance.now() : 0;
-  const view = await buildFloorMapView(
-    locationId,
-    authResult.userId,
-    floorplanId
+  const view = await withDbRetry(() =>
+    buildFloorMapView(locationId, authResult.userId, floorplanId)
   );
   if (DEV) devTimer("buildFloorMapView", t3);
   if (!view) {

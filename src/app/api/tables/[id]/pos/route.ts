@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
-import { posFailure, posSuccess, toErrorMessage } from "@/app/api/_lib/pos-envelope";
+import { toUserFacingDbError } from "@/lib/db/withDbRetry";
+import { posFailure, posSuccess } from "@/app/api/_lib/pos-envelope";
 import type { TableView } from "@/lib/pos/tableView";
 import { getPosMerchantContext } from "@/lib/pos/posMerchantContext";
 import { getPosUserId } from "@/lib/pos/posAuth";
@@ -235,7 +236,7 @@ export async function GET(
   } catch (error) {
     return posFailure(
       "INTERNAL_ERROR",
-      toErrorMessage(error, "Internal server error - Failed to load table POS view"),
+      toUserFacingDbError(error, "Failed to load table. Please try again."),
       { status: 500 }
     );
   }

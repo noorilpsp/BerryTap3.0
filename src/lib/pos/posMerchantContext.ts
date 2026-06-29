@@ -2,33 +2,40 @@ import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import { merchantUsers } from "@/lib/db/schema/merchant-users";
 import { merchantLocations } from "@/lib/db/schema/merchant-locations";
+import { withDbRetry } from "@/lib/db/withDbRetry";
 import { unstable_cache } from "@/lib/unstable-cache";
 import { devTimer } from "@/lib/pos/devTimer";
 
 const DEV = process.env.NODE_ENV !== "production";
 
+const inflightContextByUserId = new Map<string, Promise<PosMerchantContext>>();
+
 // Module-scope fetchers (DB logic not recreated per call)
 async function fetchMerchantUsersDb(userId: string) {
-  return db.query.merchantUsers.findMany({
-    where: and(
-      eq(merchantUsers.userId, userId),
-      eq(merchantUsers.isActive, true),
-    ),
-    columns: {
-      id: true,
-      merchantId: true,
-    },
-  });
+  return withDbRetry(() =>
+    db.query.merchantUsers.findMany({
+      where: and(
+        eq(merchantUsers.userId, userId),
+        eq(merchantUsers.isActive, true),
+      ),
+      columns: {
+        id: true,
+        merchantId: true,
+      },
+    })
+  );
 }
 
 async function fetchMerchantLocationsDb(merchantIds: string[]) {
-  return db.query.merchantLocations.findMany({
-    where: inArray(merchantLocations.merchantId, merchantIds),
-    columns: {
-      id: true,
-      merchantId: true,
-    },
-  });
+  return withDbRetry(() =>
+    db.query.merchantLocations.findMany({
+      where: inArray(merchantLocations.merchantId, merchantIds),
+      columns: {
+        id: true,
+        merchantId: true,
+      },
+    })
+  );
 }
 
 export type PosMerchantContext = {
@@ -41,8 +48,20 @@ export type PosMerchantContext = {
  * Cached helper for resolving merchant and location context used by POS routes.
  * - Caches merchantUsers by userId (10 minutes)
  * - Caches merchantLocations by sorted merchantIds (10 minutes)
+ * - Coalesces concurrent lookups for the same user (avoids cache stampede)
  */
 export async function getPosMerchantContext(userId: string): Promise<PosMerchantContext> {
+  const inflight = inflightContextByUserId.get(userId);
+  if (inflight) return inflight;
+
+  const promise = loadPosMerchantContext(userId).finally(() => {
+    inflightContextByUserId.delete(userId);
+  });
+  inflightContextByUserId.set(userId, promise);
+  return promise;
+}
+
+async function loadPosMerchantContext(userId: string): Promise<PosMerchantContext> {
   const merchantUsersHit = { value: true };
   const getCachedMerchantUsers = unstable_cache(
     async () => {

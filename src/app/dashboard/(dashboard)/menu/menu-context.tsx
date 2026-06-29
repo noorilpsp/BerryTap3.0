@@ -5,6 +5,7 @@ import type { MenuItem } from "@/types/menu-item"
 import type { Category } from "@/types/category"
 import type { CustomizationGroup } from "@/types/customization"
 import type { Menu } from "@/types/menu"
+import type { ImportRow, ImportOptions } from "@/lib/menu/import-items"
 import { toast } from "sonner"
 import { useLocations } from "@/lib/hooks/useLocations"
 
@@ -42,6 +43,15 @@ interface MenuContextType {
   bulkUpdateItems: (ids: string[], updates: Partial<MenuItem>) => Promise<void>
   bulkDeleteItems: (ids: string[]) => Promise<void>
   reorderItems: (items: MenuItem[]) => Promise<void>
+  importItems: (
+    rows: ImportRow[],
+    options: ImportOptions,
+  ) => Promise<{
+    created: number
+    skipped: number
+    categoriesCreated: string[]
+    errors: Array<{ row: number; field?: string; message: string }>
+  }>
 
   // Categories CRUD
   createCategory: (category: Omit<Category, "id" | "itemCount">) => Promise<void>
@@ -814,6 +824,69 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
     }
   }, [deleteItem])
 
+  const importItems = useCallback(
+    async (rows: ImportRow[], options: ImportOptions) => {
+      if (!locationId) {
+        toast.error("No location selected")
+        return {
+          created: 0,
+          skipped: rows.length,
+          categoriesCreated: [],
+          errors: [{ row: 0, message: "No location selected" }],
+        }
+      }
+
+      try {
+        const response = await retryFetch("/api/items/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ locationId, rows, options }),
+        })
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}))
+          const message =
+            (typeof error?.error === "string" ? error.error : null) ??
+            "Failed to import menu items"
+          throw new Error(message)
+        }
+
+        const result = await response.json()
+        const created = result.created ?? 0
+        const skipped = result.skipped ?? 0
+        if (created > 0) {
+          toast.success(
+            `Imported ${created} item${created === 1 ? "" : "s"}${
+              skipped > 0 ? ` (${skipped} skipped)` : ""
+            }`,
+          )
+        } else if (skipped > 0) {
+          toast.error(`No items imported (${skipped} row${skipped === 1 ? "" : "s"} skipped)`)
+        }
+        await fetchData()
+        return {
+          created,
+          skipped,
+          categoriesCreated: result.categoriesCreated ?? [],
+          errors: result.errors ?? [],
+        }
+      } catch (err) {
+        const errorMessage = formatMenuMutationError(
+          err instanceof Error ? err.message : "Failed to import menu items",
+        )
+        toast.error(errorMessage)
+        return {
+          created: 0,
+          skipped: rows.length,
+          categoriesCreated: [],
+          errors: [{ row: 0, message: errorMessage }],
+        }
+      }
+    },
+    [locationId, retryFetch, fetchData],
+  )
+
   const reorderItems = useCallback(async (reorderedItems: MenuItem[]) => {
     // Optimistically update UI immediately
     const previousItems = items
@@ -1287,6 +1360,7 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
     deleteItem,
     bulkUpdateItems,
     bulkDeleteItems,
+    importItems,
     reorderItems,
     createCategory,
     updateCategory,

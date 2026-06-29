@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Search, ChevronDown, ChevronsUpDown, Plus, LayoutGrid, LayoutList } from "lucide-react"
+import { Search, ChevronDown, ChevronsUpDown, Plus, LayoutGrid, LayoutList, Upload } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -27,6 +27,7 @@ interface ToolbarProps {
   selectedTags: string[]
   onTagsChange: (tags: string[]) => void
   onAddItem: () => void
+  onImportCsv?: () => void
   isCollapsed?: boolean
   onToggleCollapse?: () => void
   totalItems?: number
@@ -58,6 +59,7 @@ export function Toolbar({
   selectedTags,
   onTagsChange,
   onAddItem,
+  onImportCsv,
   isCollapsed,
   onToggleCollapse,
   totalItems = 127,
@@ -297,6 +299,12 @@ export function Toolbar({
             <Plus className="h-4 w-4 mr-2" />
             New Item
           </Button>
+          {onImportCsv && (
+            <Button variant="outline" onClick={onImportCsv} className="px-4">
+              <Upload className="h-4 w-4 mr-2" />
+              Import CSV
+            </Button>
+          )}
         </div>
       </div>
 
@@ -447,6 +455,12 @@ export function Toolbar({
             <Plus className="h-4 w-4 mr-2" />
             New Item
           </Button>
+          {onImportCsv && (
+            <Button variant="outline" onClick={onImportCsv} className="px-4">
+              <Upload className="h-4 w-4 mr-2" />
+              Import CSV
+            </Button>
+          )}
         </div>
       </div>
 
@@ -588,7 +602,14 @@ export function Toolbar({
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-2"></div>
+        <div className="flex items-center gap-2">
+          {onImportCsv && (
+            <Button variant="outline" onClick={onImportCsv} className="flex-1">
+              <Upload className="h-4 w-4 mr-2" />
+              Import CSV
+            </Button>
+          )}
+        </div>
 
         {/* Add Button - Full Width */}
         <Button onClick={onAddItem} className="w-full bg-orange-600 hover:bg-orange-700">

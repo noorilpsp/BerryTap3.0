@@ -249,6 +249,11 @@ export function isTableView(x: unknown): x is TableView {
   return true
 }
 
+/** Client-only placeholder IDs — must not be sent to session APIs. */
+export function isOptimisticSessionId(id: string | null | undefined): boolean {
+  return typeof id === "string" && id.startsWith("optimistic-")
+}
+
 /** Optimistic table view after seating — reverted if the session API fails. */
 export function buildOptimisticSeatedTableView(
   prev: TableView,

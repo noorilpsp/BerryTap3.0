@@ -45,6 +45,67 @@ const STATUS_TRANSITIONS: Record<string, "pending" | "preparing" | "ready" | "se
   served: "ready",
 };
 
+function isNotPreparingForReady(payload: unknown): boolean {
+  const message =
+    payload && typeof payload === "object" && "error" in payload
+      ? (payload as { error?: { message?: unknown } }).error?.message
+      : null;
+  if (typeof message !== "string") return false;
+  return (
+    message.includes("item_not_preparing") ||
+    message.includes("expected preparing") ||
+    message.includes("→ ready")
+  );
+}
+
+async function putItemStatus(
+  orderId: string,
+  itemId: string,
+  status: "preparing" | "ready" | "served",
+  options?: { recall?: boolean }
+): Promise<{ ok: boolean; payload: unknown }> {
+  const res = await fetchPos(`/api/orders/${orderId}/items/${itemId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      status,
+      ...(options?.recall ? { recall: true } : {}),
+      eventSource: "kds",
+    }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  return { ok: Boolean(res.ok && (payload as { ok?: boolean })?.ok), payload };
+}
+
+/** Mark ready; if the server still has pending, prepare first then retry. */
+async function markItemReadyOnServer(
+  orderId: string,
+  itemId: string
+): Promise<unknown> {
+  let result = await putItemStatus(orderId, itemId, "ready");
+  if (!result.ok && isNotPreparingForReady(result.payload)) {
+    const prep = await putItemStatus(orderId, itemId, "preparing");
+    if (prep.ok) {
+      result = await putItemStatus(orderId, itemId, "ready");
+    }
+  }
+  if (!result.ok) {
+    const message =
+      result.payload &&
+      typeof result.payload === "object" &&
+      "error" in result.payload &&
+      typeof (result.payload as { error?: { message?: unknown } }).error?.message === "string"
+        ? (result.payload as { error: { message: string } }).error.message
+        : "Request failed";
+    throw new Error(message);
+  }
+  return result.payload;
+}
+
+function touchPatchCooldown(patch: (updater: (prev: KdsView) => KdsView) => void) {
+  patch((prev) => prev);
+}
+
 function snapshotView(v: KdsView): KdsView {
   return structuredClone(v);
 }
@@ -141,9 +202,34 @@ export function useKdsMutations({
         };
         return {
           ...prev,
-          orderItems: prev.orderItems.map((it) =>
-            itemIdSet.has(it.id) ? { ...it, status: newStatus } : it
-          ),
+          orderItems: prev.orderItems.map((it) => {
+            if (!itemIdSet.has(it.id)) return it;
+            const now = new Date().toISOString();
+            if (newStatus === "ready") {
+              return {
+                ...it,
+                status: newStatus,
+                readyAt: now,
+                startedAt: it.startedAt ?? now,
+              };
+            }
+            if (newStatus === "preparing") {
+              return {
+                ...it,
+                status: newStatus,
+                startedAt: now,
+                sentToKitchenAt: it.sentToKitchenAt ?? now,
+              };
+            }
+            if (newStatus === "served") {
+              return {
+                ...it,
+                status: newStatus,
+                servedAt: now,
+              };
+            }
+            return { ...it, status: newStatus };
+          }),
           actions: {
             ...prev.actions,
             ...Object.fromEntries(
@@ -156,16 +242,22 @@ export function useKdsMutations({
       const requestFn = async () => {
         const results = await Promise.all(
           itemsToUpdate.map(async (item) => {
-            const res = await fetchPos(`/api/orders/${orderId}/items/${item.id}`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ status: newStatus, eventSource: "kds" }),
-            });
-            const p = await res.json().catch(() => ({}));
-            if (!res.ok || !p?.ok) {
-              throw new Error(p?.error?.message ?? "Request failed");
+            if (newStatus === "ready") {
+              return markItemReadyOnServer(orderId, item.id);
             }
-            return p;
+            const result = await putItemStatus(orderId, item.id, newStatus);
+            if (!result.ok) {
+              const message =
+                result.payload &&
+                typeof result.payload === "object" &&
+                "error" in result.payload &&
+                typeof (result.payload as { error?: { message?: unknown } }).error?.message ===
+                  "string"
+                  ? (result.payload as { error: { message: string } }).error.message
+                  : "Request failed";
+              throw new Error(message);
+            }
+            return result.payload;
           })
         );
         return results;
@@ -176,10 +268,12 @@ export function useKdsMutations({
         optimisticPatch,
         patch,
         requestFn,
-        onSuccess: () => onLocalAction?.(orderId),
+        onSuccess: () => {
+          onLocalAction?.(orderId);
+          touchPatchCooldown(patch);
+        },
         onFailure: () => {
           toast.error("Failed to update item status");
-          void refresh(true);
         },
       });
 

@@ -5,6 +5,9 @@ import type { FloorMapView } from "@/lib/floor-map/floorMapView";
 import { isFloorMapView } from "@/lib/floor-map/floorMapView";
 import { getFloorMapCache, setFloorMapCache } from "@/lib/view-cache";
 
+const FLOOR_MAP_PATCH_COOLDOWN_MS = 3000;
+const FLOOR_MAP_BACKGROUND_REFRESH_MS = 15_000;
+
 function pickInitialFloorMapView(
   initialData: FloorMapView | null | undefined,
   locationId: string | null,
@@ -53,6 +56,7 @@ export function useFloorMapView(
   const viewRef = useRef<FloorMapView | null>(null);
   viewRef.current = view;
   const prevLocationIdRef = useRef<string | null>(null);
+  const lastPatchAtRef = useRef(0);
 
   const refresh = useCallback(
     async (silent = false): Promise<boolean> => {
@@ -63,7 +67,11 @@ export function useFloorMapView(
         return false;
       }
       if (refreshInFlightRef.current) return false;
+      if (silent && Date.now() - lastPatchAtRef.current < FLOOR_MAP_PATCH_COOLDOWN_MS) {
+        return false;
+      }
       refreshInFlightRef.current = true;
+      const refreshStartedAt = Date.now();
       if (!silent) {
         setLoading(true);
         setError(null);
@@ -90,7 +98,12 @@ export function useFloorMapView(
           return false;
         }
         const data = payload.data;
-        setView(data);
+        setView((current) => {
+          if (current && lastPatchAtRef.current > refreshStartedAt) {
+            return current;
+          }
+          return data;
+        });
         setError(null);
         setStaleError(null);
         setFloorMapCache(locationId, floorplanId, data);
@@ -121,6 +134,7 @@ export function useFloorMapView(
         }
         return next;
       });
+      lastPatchAtRef.current = Date.now();
     },
     [locationId, floorplanId]
   );
@@ -128,6 +142,12 @@ export function useFloorMapView(
   const initialDataRef = useRef(initialData);
   initialDataRef.current = initialData;
   const consumedInitialDataRef = useRef(false);
+  const hasInitialFromServer =
+    initialData != null &&
+    locationId != null &&
+    (floorplanId == null ||
+      floorplanId === "" ||
+      initialData.floorplan.activeId === floorplanId);
 
   useEffect(() => {
     if (!locationId) {
@@ -153,7 +173,6 @@ export function useFloorMapView(
         setLoading(false);
         setError(null);
         setStaleError(null);
-        void refresh(true);
         return;
       }
       const cachedMismatch = getFloorMapCache(locationId, floorplanId ?? null);
@@ -184,10 +203,21 @@ export function useFloorMapView(
     }
   }, [refresh, locationId, floorplanId]);
 
+  // Background sync after SSR — avoids duplicating heavy DB work on immediate mount.
+  useEffect(() => {
+    if (!locationId || !hasInitialFromServer) return;
+    const timer = window.setTimeout(() => {
+      void refresh(true);
+    }, FLOOR_MAP_BACKGROUND_REFRESH_MS);
+    return () => window.clearTimeout(timer);
+  }, [locationId, hasInitialFromServer, refresh]);
+
   // Refresh when page becomes visible (e.g. returning from another tab)
   useEffect(() => {
     const handler = () => {
-      if (document.visibilityState === "visible" && locationId) void refresh(true);
+      if (document.visibilityState !== "visible" || !locationId) return;
+      if (Date.now() - lastPatchAtRef.current < FLOOR_MAP_PATCH_COOLDOWN_MS) return;
+      void refresh(true);
     };
     document.addEventListener("visibilitychange", handler);
     return () => document.removeEventListener("visibilitychange", handler);

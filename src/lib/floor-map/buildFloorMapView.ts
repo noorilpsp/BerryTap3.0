@@ -285,22 +285,10 @@ async function getTableLiveEnrichment(
   return result;
 }
 
-async function getOccupiedTableIdsForFloorPlan(
-  locationId: string,
-  floorPlanId: string
-): Promise<Set<string>> {
-  const rows = await db
-    .select({ tableId: sessions.tableId })
-    .from(sessions)
-    .innerJoin(tablesTable, eq(sessions.tableId, tablesTable.id))
-    .where(
-      and(
-        eq(sessions.locationId, locationId),
-        eq(sessions.status, "open"),
-        eq(tablesTable.floorPlanId, floorPlanId)
-      )
-    );
-  return new Set(rows.map((r) => r.tableId).filter(Boolean));
+function occupiedTableIdsFromStoreTables(storeTables: StoreTable[]): Set<string> {
+  return new Set(
+    storeTables.filter((t) => t.status === "active").map((t) => t.id)
+  );
 }
 
 function storeTablesToFloorMapTables(
@@ -465,14 +453,12 @@ export async function buildFloorMapView(
 
   const t3 = DEV ? performance.now() : 0;
   const tableIds = storeTables.map((t) => t.id);
-  const [enrichment, currentServer, occupiedTableIds] = await Promise.all([
+  const occupiedTableIds = occupiedTableIdsFromStoreTables(storeTables);
+  const [enrichment, currentServer] = await Promise.all([
     activeFloorplan?.id
       ? getTableLiveEnrichment(locationId, activeFloorplan.id)
       : Promise.resolve(undefined),
     getCurrentServerForUser(locationId, userId),
-    activeFloorplan?.id
-      ? getOccupiedTableIdsForFloorPlan(locationId, activeFloorplan.id)
-      : Promise.resolve(new Set<string>()),
   ]);
   const reservationOverlay =
     tableIds.length > 0

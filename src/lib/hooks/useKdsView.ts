@@ -3,9 +3,12 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 
 const KDS_POLL_INTERVAL_MS = 10_000;
-const KDS_PATCH_COOLDOWN_MS = 2000;
+export const KDS_PATCH_COOLDOWN_MS = 2000;
 import type { KdsView, KdsOrderItem } from "@/lib/kds/kdsView";
 import { isKdsView } from "@/lib/kds/kdsView";
+import { mergeKdsViewAfterRefresh } from "@/lib/kds/mergeKdsViewAfterRefresh";
+
+const KDS_MERGE_WINDOW_MS = 10_000;
 
 export type ItemsByStation = Record<string, KdsOrderItem[]>;
 
@@ -54,6 +57,7 @@ export function useKdsView(
   const refreshInFlightRef = useRef(false);
   const viewRef = useRef<KdsView | null>(null);
   viewRef.current = view;
+  const lastPatchAtRef = useRef(0);
 
   const refresh = useCallback(
     async (silent = false): Promise<boolean> => {
@@ -63,7 +67,11 @@ export function useKdsView(
         return false;
       }
       if (refreshInFlightRef.current) return false;
+      if (silent && Date.now() - lastPatchAtRef.current < KDS_PATCH_COOLDOWN_MS) {
+        return false;
+      }
       refreshInFlightRef.current = true;
+      const refreshStartedAt = Date.now();
       if (!silent) {
         setLoading(true);
         setError(null);
@@ -85,7 +93,19 @@ export function useKdsView(
           }
           return false;
         }
-        setView(payload.data);
+        const nextView = payload.data;
+        setView((current) => {
+          if (current && lastPatchAtRef.current > refreshStartedAt) {
+            return current;
+          }
+          if (
+            current &&
+            Date.now() - lastPatchAtRef.current < KDS_MERGE_WINDOW_MS
+          ) {
+            return mergeKdsViewAfterRefresh(current, nextView);
+          }
+          return nextView;
+        });
         setError(null);
         setStaleError(null);
         return true;
@@ -105,7 +125,6 @@ export function useKdsView(
     [locationId]
   );
 
-  const lastPatchAtRef = useRef(0);
   const patch = useCallback((updater: (prev: KdsView) => KdsView) => {
     setView((prev) => (prev ? updater(prev) : prev));
     lastPatchAtRef.current = Date.now();
@@ -125,7 +144,9 @@ export function useKdsView(
   // Refresh when page becomes visible (e.g. returning from another tab)
   useEffect(() => {
     const handler = () => {
-      if (document.visibilityState === "visible" && locationId) void refresh(true);
+      if (document.visibilityState !== "visible" || !locationId) return;
+      if (Date.now() - lastPatchAtRef.current < KDS_PATCH_COOLDOWN_MS) return;
+      void refresh(true);
     };
     document.addEventListener("visibilitychange", handler);
     return () => document.removeEventListener("visibilitychange", handler);

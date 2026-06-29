@@ -53,7 +53,7 @@ import type { MenuItem, OrderItem as TakeOrderItem } from "@/lib/take-order-data
 import { useLocationMenu } from "@/lib/hooks/useLocationMenu"
 import { useRestaurantStore } from "@/store/restaurantStore"
 import { useLocation } from "@/lib/contexts/LocationContext"
-import { isTableView, buildOptimisticSeatedTableView, buildOptimisticForceClosedTableView, type TableView, type TableViewItemStatus, type TableViewUiMode } from "@/lib/pos/tableView"
+import { isTableView, buildOptimisticSeatedTableView, buildOptimisticForceClosedTableView, isOptimisticSessionId, type TableView, type TableViewItemStatus, type TableViewUiMode } from "@/lib/pos/tableView"
 import type { StoreTable, StoreTableSessionState } from "@/store/types"
 import { storeTablesToFloorTables } from "@/lib/floor-map-data"
 import { floorMapPath } from "@/lib/floor-map/floorMapNav"
@@ -494,6 +494,7 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
   const [alertDismissed, setAlertDismissed] = useState(false)
   const [seatPartyOpen, setSeatPartyOpen] = useState(false)
   const [paymentOpen, setPaymentOpen] = useState(false)
+  const [closeInFlight, setCloseInFlight] = useState(false)
   const [isOrderingInline, setIsOrderingInline] = useState(false)
   const [selectedCategory, setSelectedCategory] = useState("drinks")
   const [searchQuery, setSearchQuery] = useState("")
@@ -955,7 +956,9 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
   }, [effectiveSessionId, refreshTableView])
 
   const ensureSessionForMutations = useCallback(async (): Promise<string | null> => {
-    if (effectiveSessionId) return effectiveSessionId
+    if (effectiveSessionId && !isOptimisticSessionId(effectiveSessionId)) {
+      return effectiveSessionId
+    }
     if (!currentLocationId || !id) return null
     const ensureRes = await fetchPos("/api/sessions/ensure", {
       method: "POST",
@@ -982,8 +985,50 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
         ? ensurePayload.data.sessionId
         : null
     if (!sid) return null
+
+    setTableView((prev) => {
+      if (!prev?.openSession) return prev
+      const next: TableView = {
+        ...prev,
+        openSession: { ...prev.openSession, id: sid },
+      }
+      setTableCache(id, next)
+      return next
+    })
+
     return sid
   }, [currentLocationId, effectiveSessionId, id, table.guestCount])
+
+  const resolveOpenSessionIdForClose = useCallback(async (): Promise<string | null> => {
+    if (effectiveSessionId && !isOptimisticSessionId(effectiveSessionId)) {
+      return effectiveSessionId
+    }
+    if (!id) return null
+    try {
+      const res = await fetch(`/api/tables/${encodeURIComponent(id)}/pos`, {
+        cache: "no-store",
+      })
+      const payload = await res.json().catch(() => null)
+      if (!res.ok || payload?.ok === false || !isTableView(payload?.data)) {
+        return null
+      }
+      const sid =
+        typeof payload.data.openSession?.id === "string" ? payload.data.openSession.id : null
+      if (!sid || isOptimisticSessionId(sid)) return null
+      setTableView((prev) => {
+        if (!prev?.openSession) return prev
+        const next: TableView = {
+          ...prev,
+          openSession: { ...prev.openSession, id: sid },
+        }
+        setTableCache(id, next)
+        return next
+      })
+      return sid
+    } catch {
+      return null
+    }
+  }, [effectiveSessionId, id])
 
   // Use real menu from location when available; otherwise placeholder for demo/no-location
   const menuSource = useMemo(() => {
@@ -2552,7 +2597,7 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
           .catch(() => ({ ok: false, reason: "network_error", error: "Network request failed" }) satisfies CloseResult)
       }
 
-      const sid = effectiveSessionId
+      const sid = await resolveOpenSessionIdForClose()
       if (!sid || !tableView) {
         toast.error("No open session to close.")
         return
@@ -2581,84 +2626,72 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
       const closeOptions = isForceClose ? { force: true } : undefined
       const successMessage = isForceClose ? "Table force closed" : "Table closed"
 
-      const tableViewSnapshot = structuredClone(tableView)
-      const floorPlanId = table.floorPlanId
-      const cachedFloorMap = getFloorMapCache(currentLocationId, floorPlanId)
-      const floorMapSnapshot = cachedFloorMap ? structuredClone(cachedFloorMap) : null
-      const optimisticTableView = buildOptimisticForceClosedTableView(tableView)
-
-      applyTableView(optimisticTableView)
-      setTableCache(id, optimisticTableView)
-
-      if (activeStoreTable?.orderId) {
-        closeOrder(activeStoreTable.orderId, table.bill)
-      }
-
-      if (floorMapSnapshot) {
-        setFloorMapCache(
-          currentLocationId,
-          floorPlanId,
-          patchFloorMapViewTableCleaning(floorMapSnapshot, id)
-        )
-      }
-
-      if (isPaymentSummary) {
-        setPaymentOpen(false)
-      }
-
-      const destination = floorMapPath(table.floorPlanId)
-      toast.success(successMessage)
-      startTransition(() => {
-        router.push(destination)
-      })
-
-      void (async () => {
-        try {
-          const closeResult = await requestCloseSession(sid, payment, closeOptions)
-          if (!closeResult.ok) {
-            throw mutationError(formatCloseError(closeResult), closeResult, null)
-          }
-
-          fireAndForget(
-            fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                type: "payment_completed",
-                eventSource: "table_page",
-              }),
-            }),
-            "record payment_completed event"
-          )
-
-          invalidateTableCache(id)
-          invalidateFloorMapCache(currentLocationId)
-        } catch (error) {
-          applyTableView(tableViewSnapshot)
-          setTableCache(id, tableViewSnapshot)
-          if (floorMapSnapshot) {
-            setFloorMapCache(currentLocationId, floorPlanId, floorMapSnapshot)
-          }
-          if (isPaymentSummary) {
-            setPaymentOpen(true)
-          }
-          const normalized = isPosMutationError(error)
-            ? error
-            : mutationError(toUiErrorMessage(error, "Failed to close table."))
-          toast.error(normalized.message)
-          startTransition(() => {
-            router.push(`/table/${encodeURIComponent(id)}`)
-          })
+      setCloseInFlight(true)
+      try {
+        const closeResult = await requestCloseSession(sid, payment, closeOptions)
+        if (!closeResult.ok) {
+          toast.error(formatCloseError(closeResult))
+          return
         }
-      })()
+
+        const optimisticTableView = buildOptimisticForceClosedTableView(tableView)
+        applyTableView(optimisticTableView)
+        setTableCache(id, optimisticTableView)
+
+        if (activeStoreTable?.orderId) {
+          closeOrder(activeStoreTable.orderId, table.bill)
+        }
+
+        const floorPlanId = table.floorPlanId
+        const cachedFloorMap = getFloorMapCache(currentLocationId, floorPlanId)
+        if (cachedFloorMap) {
+          setFloorMapCache(
+            currentLocationId,
+            floorPlanId,
+            patchFloorMapViewTableCleaning(cachedFloorMap, id)
+          )
+        }
+
+        if (isPaymentSummary) {
+          setPaymentOpen(false)
+        }
+
+        fireAndForget(
+          fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              type: "payment_completed",
+              eventSource: "table_page",
+            }),
+          }),
+          "record payment_completed event"
+        )
+
+        invalidateTableCache(id)
+        invalidateFloorMapCache(currentLocationId)
+
+        const destination = floorMapPath(table.floorPlanId)
+        toast.success(successMessage)
+        startTransition(() => {
+          router.push(destination)
+        })
+      } catch (error) {
+        const normalized = isPosMutationError(error)
+          ? error
+          : mutationError(toUiErrorMessage(error, "Failed to close table."))
+        toast.error(normalized.message)
+      } finally {
+        setCloseInFlight(false)
+      }
     },
     [
       activeStoreTable,
       applyTableView,
       closeOrder,
       currentLocationId,
-      effectiveSessionId,
       id,
+      resolveOpenSessionIdForClose,
       router,
       table.bill,
       table.floorPlanId,
@@ -2780,6 +2813,23 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
           if (!sid) {
             throw mutationError("Could not create session. Please try again.", payload, res);
           }
+          setTableView((prev) => {
+            if (!prev) return prev
+            const next: TableView = {
+              ...prev,
+              openSession: prev.openSession
+                ? { ...prev.openSession, id: sid }
+                : {
+                    id: sid,
+                    status: "open",
+                    guestCount: partySize,
+                    openedAt: new Date().toISOString(),
+                    waveCount: 1,
+                  },
+            }
+            setTableCache(id, next)
+            return next
+          })
           fireAndForget(
             fetchPos(`/api/sessions/${encodeURIComponent(sid)}/events`, {
               method: "POST",
@@ -2831,6 +2881,7 @@ export function TableDetailClient({ initialTableView, tableId }: TableDetailClie
         table={table}
         onToggleInfo={() => setInfoOpen((v) => !v)}
         onCloseTable={handleCloseTable}
+        closePendingLabel={closeInFlight ? "Closing table…" : null}
       />
 
       {tableViewError && (
